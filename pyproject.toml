@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ccq"
+version = "0.1.0"
+description = "A local batch queue for Claude Code — SGE-style job files that run prompts unattended in 5-hour windows."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "click",
+    "sqlite-utils",
+]
+
+[project.scripts]
+ccq = "ccq.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ccq"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
