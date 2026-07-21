@@ -92,10 +92,13 @@ CREATE TABLE IF NOT EXISTS events (    -- audit trail; feeds ccq report
 );
 """
 
-# Job states treated as "finished" for §6.1 name resolution. The full
-# lifecycle enum is DESIGN.md §7 (out of scope here); this is just the
-# terminal/non-terminal split that --hold-jid / --resume-from need.
-TERMINAL_STATES: frozenset[str] = frozenset({"done", "failed", "killed", "cancelled"})
+# Job states treated as "finished" for §6.1 name resolution. This is the
+# terminal set from the DESIGN.md §7 lifecycle exactly -- note "killed" and
+# "timeout" are run *outcomes* (§6 runs.outcome), not job states, so they are
+# not here; a killed/timed-out run leaves a "failed" job.
+TERMINAL_STATES: frozenset[str] = frozenset(
+    {"done", "failed", "expired", "skipped", "cancelled"}
+)
 
 _JOB_JSON_FIELDS = ("passthrough", "hold_jid")
 
