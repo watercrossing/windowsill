@@ -1,0 +1,543 @@
+"""Tests for ccq.cli -- the M1 command set (DESIGN.md §8.1).
+
+These tests spawn NO real `claude`, touch NO network, block on NO real
+clock, and spawn NO real subprocess: every command is driven through
+`click.testing.CliRunner` against a temp DB (`--home tmp_path`), and the
+handful of side-effecting seams cli.py exposes as private module
+attributes (`_iso_now`, `_sleep`, `_terminate`, `_exec`, `_spawn_run`) are
+monkeypatched exactly like the sibling modules' injectable keywords.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+import pytest
+from click.testing import CliRunner
+
+from ccq import cli, db, scheduler
+
+NOW = "2026-07-22T09:00:00+00:00"
+PAST = "2026-07-21T09:00:00+00:00"
+FUTURE = "2026-07-23T09:00:00+00:00"
+OLD = "2026-07-01T09:00:00+00:00"  # well over 7 / 30 days before NOW
+
+
+# ---------------------------------------------------------------------------
+# helpers
+# ---------------------------------------------------------------------------
+
+
+def run(runner: CliRunner, home: Path, *args: str, input: str | None = None):
+    return runner.invoke(cli.main, ["--home", str(home), *args], input=input)
+
+
+def make_db(home: Path) -> "db.sqlite_utils.Database":
+    return db.connect(home=home)
+
+
+def add_job(
+    conn: "db.sqlite_utils.Database",
+    *,
+    name: str = "job",
+    state: str = "queued",
+    submitted_at: str = PAST,
+    started_at: str | None = None,
+    finished_at: str | None = None,
+    cwd: str = "/tmp/work",
+    pid: int | None = None,
+    conversation_id: str | None = None,
+    at_time: str | None = None,
+) -> int:
+    return db.insert_job(
+        conn,
+        name=name,
+        state=state,
+        submitted_at=submitted_at,
+        started_at=started_at,
+        finished_at=finished_at,
+        cwd=cwd,
+        body="do the thing",
+        passthrough=["--model", "claude-opus-4-8"],
+        pid=pid,
+        conversation_id=conversation_id,
+        at_time=at_time,
+    )
+
+
+@pytest.fixture(autouse=True)
+def _fixed_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(cli, "_iso_now", lambda: NOW)
+
+
+@pytest.fixture()
+def runner() -> CliRunner:
+    return CliRunner()
+
+
+BASIC_JOB = """\
+#$ --name refactor-auth
+#$ --at 2026-07-18T02:00
+#$ --cwd ~/code/myapp
+#$ --window fresh
+#$ --retry 2
+#$ --notify email
+
+Do the thing.
+"""
+
+
+# ---------------------------------------------------------------------------
+# ccq sub
+# ---------------------------------------------------------------------------
+
+
+def test_sub_from_file_parses_directives_and_prints_id(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    job_file = tmp_path / "refactor-auth.md"
+    job_file.write_text(BASIC_JOB)
+
+    result = run(runner, home, "sub", str(job_file))
+
+    assert result.exit_code == 0, result.output
+    job_id = int(result.output.strip())
+
+    conn = make_db(home)
+    job = db.get_job(conn, job_id)
+    assert job["name"] == "refactor-auth"
+    assert job["state"] == "queued"
+    assert job["at_time"] == "2026-07-18T02:00"
+    assert job["cwd"] == str(Path("~/code/myapp").expanduser())
+    assert job["window_policy"] == "fresh"
+    assert job["retry_max"] == 2
+    assert job["notify"] == "email"
+    assert job["body"] == "Do the thing.\n"
+    assert job["submitted_at"] == NOW
+
+
+def test_sub_from_stdin_defaults_name_to_stdin(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    text = "#$ --cwd /tmp/work\n\nHello from stdin.\n"
+
+    result = run(runner, home, "sub", "-", input=text)
+
+    assert result.exit_code == 0, result.output
+    job_id = int(result.output.strip())
+
+    conn = make_db(home)
+    job = db.get_job(conn, job_id)
+    assert job["name"] == "stdin"
+    assert job["body"] == "Hello from stdin.\n"
+
+
+def test_sub_default_name_is_filename_stem(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    job_file = tmp_path / "my-cool-job.md"
+    job_file.write_text("#$ --cwd /tmp/work\n\nbody\n")
+
+    result = run(runner, home, "sub", str(job_file))
+
+    assert result.exit_code == 0, result.output
+    job_id = int(result.output.strip())
+    job = db.get_job(make_db(home), job_id)
+    assert job["name"] == "my-cool-job"
+
+
+def test_sub_now_bypasses_at(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    job_file = tmp_path / "j.md"
+    job_file.write_text(BASIC_JOB)  # has "--at 2026-07-18T02:00"
+
+    result = run(runner, home, "sub", "--now", str(job_file))
+
+    assert result.exit_code == 0, result.output
+    job_id = int(result.output.strip())
+    job = db.get_job(make_db(home), job_id)
+    assert job["at_time"] is None
+
+
+def test_sub_hold_directive_submits_held(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    job_file = tmp_path / "j.md"
+    job_file.write_text("#$ --cwd /tmp/work\n#$ --hold\n\nbody\n")
+
+    result = run(runner, home, "sub", str(job_file))
+
+    assert result.exit_code == 0, result.output
+    job_id = int(result.output.strip())
+    job = db.get_job(make_db(home), job_id)
+    assert job["state"] == "held"
+
+
+def test_sub_defaults_isolate_and_notify_from_config(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    job_file = tmp_path / "j.md"
+    job_file.write_text("#$ --cwd /tmp/work\n\nbody\n")
+
+    result = run(runner, home, "sub", str(job_file))
+    job_id = int(result.output.strip())
+    job = db.get_job(make_db(home), job_id)
+
+    assert job["isolate"] == "worktree"  # DEFAULTS["safety"]["default_isolate"]
+    assert job["notify"] == "email"  # DEFAULTS["notify"]["default"]
+
+
+def test_sub_mirrors_model_from_passthrough(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    job_file = tmp_path / "j.md"
+    job_file.write_text("#$ --cwd /tmp/work\n#$ --model claude-opus-4-8\n\nbody\n")
+
+    result = run(runner, home, "sub", str(job_file))
+    job_id = int(result.output.strip())
+    job = db.get_job(make_db(home), job_id)
+
+    assert job["model"] == "claude-opus-4-8"
+    assert job["passthrough"] == ["--model", "claude-opus-4-8"]
+
+
+# ---------------------------------------------------------------------------
+# ccq stat
+# ---------------------------------------------------------------------------
+
+
+def test_stat_lists_non_terminal_jobs(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    add_job(conn, name="queued-one", state="queued")
+    add_job(conn, name="running-one", state="running", started_at=PAST)
+    add_job(conn, name="done-one", state="done", finished_at=PAST)
+
+    result = run(runner, home, "stat")
+
+    assert result.exit_code == 0, result.output
+    assert "queued-one" in result.output
+    assert "running-one" in result.output
+    assert "done-one" not in result.output
+    assert "window: closed" in result.output
+    assert "30d sessions: 0" in result.output
+
+
+def test_stat_all_includes_recent_terminal_but_not_old(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    add_job(conn, name="recent-done", state="done", finished_at=PAST)
+    add_job(conn, name="old-done", state="done", finished_at=OLD)
+
+    result = run(runner, home, "stat", "-a")
+
+    assert result.exit_code == 0, result.output
+    assert "recent-done" in result.output
+    assert "old-done" not in result.output
+
+
+def test_stat_without_all_excludes_terminal_entirely(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    add_job(conn, name="recent-done", state="done", finished_at=PAST)
+
+    result = run(runner, home, "stat")
+
+    assert "recent-done" not in result.output
+
+
+# ---------------------------------------------------------------------------
+# ccq show
+# ---------------------------------------------------------------------------
+
+
+def test_show_reports_directives_argv_and_no_delta(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="showme", state="queued")
+
+    result = run(runner, home, "show", str(job_id))
+
+    assert result.exit_code == 0, result.output
+    assert f"id: {job_id}" in result.output
+    assert "name: showme" in result.output
+    assert "state: queued" in result.output
+    assert "delta%: n/a" in result.output
+    assert "argv:" in result.output
+    assert "--model claude-opus-4-8" in result.output
+
+
+def test_show_computes_delta_from_last_run(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="showme", state="done", finished_at=PAST)
+    db.insert_run(
+        conn, job_id=job_id, started_at=PAST, finished_at=NOW, pct_before=10, pct_after=25
+    )
+
+    result = run(runner, home, "show", str(job_id))
+
+    assert result.exit_code == 0, result.output
+    assert "delta%: 15" in result.output
+
+
+def test_show_unknown_id_errors(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    make_db(home)
+
+    result = run(runner, home, "show", "999")
+
+    assert result.exit_code != 0
+    assert "no job" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# ccq log
+# ---------------------------------------------------------------------------
+
+
+def test_log_prints_existing_transcript(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="logme", state="done", finished_at=PAST)
+
+    from ccq import runner as runner_mod
+
+    dir_ = runner_mod.job_dir(home / ".ccq", job_id, "logme")
+    dir_.mkdir(parents=True)
+    (dir_ / "stream.jsonl").write_text('{"type": "system"}\n')
+
+    result = run(runner, home, "log", str(job_id))
+
+    assert result.exit_code == 0, result.output
+    assert '{"type": "system"}' in result.output
+
+
+def test_log_follow_drains_new_content_and_stops_when_job_finishes(
+    tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="followme", state="running", started_at=PAST, pid=999999)
+
+    from ccq import runner as runner_mod
+
+    dir_ = runner_mod.job_dir(home / ".ccq", job_id, "followme")
+    dir_.mkdir(parents=True)
+    stream_path = dir_ / "stream.jsonl"
+    stream_path.write_text('{"line": 1}\n')
+
+    calls: list[float] = []
+
+    def fake_sleep(seconds: float) -> None:
+        calls.append(seconds)
+        # Simulate the job finishing mid-follow: more output appears, and
+        # the job flips to a terminal state, so the follow loop must stop.
+        with stream_path.open("a") as f:
+            f.write('{"line": 2}\n')
+        db.update_job(conn, job_id, state="done", finished_at=NOW)
+
+    monkeypatch.setattr(cli, "_sleep", fake_sleep)
+
+    result = run(runner, home, "log", str(job_id), "-f")
+
+    assert result.exit_code == 0, result.output
+    assert '{"line": 1}' in result.output
+    assert '{"line": 2}' in result.output
+    assert len(calls) == 1  # loop stopped as soon as the job went terminal
+
+
+def test_log_unknown_id_errors(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    make_db(home)
+
+    result = run(runner, home, "log", "999")
+
+    assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# ccq del
+# ---------------------------------------------------------------------------
+
+
+def test_del_cancels_queued_job(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="cancelme", state="queued")
+
+    result = run(runner, home, "del", str(job_id))
+
+    assert result.exit_code == 0, result.output
+    job = db.get_job(conn, job_id)
+    assert job["state"] == "cancelled"
+    assert job["finished_at"] == NOW
+
+
+def test_del_sigterms_process_group_when_running(
+    tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="killme", state="running", started_at=PAST, pid=424242)
+
+    terminated: list[int] = []
+    monkeypatch.setattr(cli, "_terminate", lambda pid: terminated.append(pid))
+
+    result = run(runner, home, "del", str(job_id))
+
+    assert result.exit_code == 0, result.output
+    assert terminated == [424242]
+    job = db.get_job(conn, job_id)
+    assert job["state"] == "cancelled"
+
+
+def test_del_already_terminal_is_a_noop(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="donejob", state="done", finished_at=PAST)
+
+    result = run(runner, home, "del", str(job_id))
+
+    assert result.exit_code == 0, result.output
+    assert "already done" in result.output
+    job = db.get_job(conn, job_id)
+    assert job["finished_at"] == PAST  # untouched
+
+
+# ---------------------------------------------------------------------------
+# ccq hold / ccq release
+# ---------------------------------------------------------------------------
+
+
+def test_hold_then_release_round_trips(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="holdme", state="queued")
+
+    hold_result = run(runner, home, "hold", str(job_id))
+    assert hold_result.exit_code == 0, hold_result.output
+    assert db.get_job(conn, job_id)["state"] == "held"
+
+    release_result = run(runner, home, "release", str(job_id))
+    assert release_result.exit_code == 0, release_result.output
+    assert db.get_job(conn, job_id)["state"] == "queued"
+
+
+def test_hold_running_job_errors(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="running-one", state="running", started_at=PAST, pid=1)
+
+    result = run(runner, home, "hold", str(job_id))
+
+    assert result.exit_code != 0
+    assert db.get_job(conn, job_id)["state"] == "running"
+
+
+def test_release_non_held_job_errors(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="queued-one", state="queued")
+
+    result = run(runner, home, "release", str(job_id))
+
+    assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# ccq resume
+# ---------------------------------------------------------------------------
+
+
+def test_resume_execs_claude_resume_in_job_cwd(
+    tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(
+        conn,
+        name="resumeme",
+        state="done",
+        finished_at=PAST,
+        cwd="/tmp/somewhere",
+        conversation_id="conv-abc123",
+    )
+
+    calls: list[tuple[list[str], str]] = []
+    monkeypatch.setattr(cli, "_exec", lambda argv, cwd: calls.append((argv, cwd)))
+
+    result = run(runner, home, "resume", str(job_id))
+
+    assert result.exit_code == 0, result.output
+    assert calls == [(["claude", "--resume", "conv-abc123"], "/tmp/somewhere")]
+
+
+def test_resume_without_conversation_id_errors(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="noresume", state="failed", finished_at=PAST)
+
+    result = run(runner, home, "resume", str(job_id))
+
+    assert result.exit_code != 0
+    assert "no conversation" in result.output.lower()
+
+
+# ---------------------------------------------------------------------------
+# ccq tick
+# ---------------------------------------------------------------------------
+
+
+def test_tick_dispatches_due_job_via_injected_spawn(
+    tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="ticked", state="queued", at_time=None)
+
+    spawned: list[int] = []
+    monkeypatch.setattr(cli, "_spawn_run", lambda jid: spawned.append(jid))
+
+    result = run(runner, home, "tick")
+
+    assert result.exit_code == 0, result.output
+    assert spawned == [job_id]
+    assert db.get_job(conn, job_id)["state"] == "running"
+    assert "dispatched=1" in result.output
+
+
+def test_tick_leaves_not_yet_due_job_alone(
+    tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="notyet", state="queued", at_time=FUTURE)
+
+    spawned: list[int] = []
+    monkeypatch.setattr(cli, "_spawn_run", lambda jid: spawned.append(jid))
+
+    result = run(runner, home, "tick")
+
+    assert result.exit_code == 0, result.output
+    assert spawned == []
+    assert db.get_job(conn, job_id)["state"] == "queued"
+
+
+def test_tick_default_spawn_run_is_schedulers_default(tmp_path: Path) -> None:
+    # Guards the seam wiring itself: cli._spawn_run must be the same
+    # production default scheduler.tick would otherwise fall back to, so
+    # `ccq tick` really does chain-dispatch `ccq run <id>` when nothing
+    # has monkeypatched it away.
+    assert cli._spawn_run is scheduler._default_spawn_run
+
+
+# ---------------------------------------------------------------------------
+# unknown / ambiguous identifiers, generically
+# ---------------------------------------------------------------------------
+
+
+def test_ambiguous_name_errors(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    add_job(conn, name="dup", state="queued")
+    add_job(conn, name="dup", state="queued")
+
+    result = run(runner, home, "hold", "dup")
+
+    assert result.exit_code != 0
