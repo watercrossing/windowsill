@@ -10,6 +10,8 @@ monkeypatched exactly like the sibling modules' injectable keywords.
 
 from __future__ import annotations
 
+import json
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -17,11 +19,37 @@ import pytest
 from click.testing import CliRunner
 
 from ccq import cli, db, scheduler
+from ccq import runner as runner_mod
 
 NOW = "2026-07-22T09:00:00+00:00"
 PAST = "2026-07-21T09:00:00+00:00"
 FUTURE = "2026-07-23T09:00:00+00:00"
 OLD = "2026-07-01T09:00:00+00:00"  # well over 7 / 30 days before NOW
+
+# A tiny stand-in for `claude`: reads the body on stdin and emits a canned
+# stream-json transcript (a `system` init then a `result`), so `ccq run`'s
+# real runner.run_job is exercised end to end without the real binary. Same
+# pattern as tests/test_runner.py's fake-claude scripts.
+FAKE_CLAUDE_SCRIPT = """
+import json, sys
+body = sys.stdin.read()
+print(json.dumps({"type": "system", "subtype": "init"}))
+print(json.dumps({
+    "type": "result", "subtype": "success", "is_error": False,
+    "duration_ms": 537, "num_turns": 3, "result": "ok: " + body.strip(),
+    "session_id": "fake-session-123",
+}))
+"""
+
+
+def _fake_claude_cmd(tmp_path: Path) -> list[str]:
+    path = tmp_path / "fake_claude.py"
+    path.write_text(FAKE_CLAUDE_SCRIPT)
+    return [sys.executable, str(path)]
+
+
+def _noop_sleep(_seconds: float) -> None:
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -529,3 +557,79 @@ def test_ambiguous_name_errors(tmp_path: Path, runner: CliRunner) -> None:
     result = run(runner, home, "hold", "dup")
 
     assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# ccq run
+# ---------------------------------------------------------------------------
+
+
+def test_run_executes_job_to_terminal_via_fake_claude(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    work = tmp_path / "work"
+    work.mkdir()
+    conn = make_db(home)
+    job_id = add_job(conn, name="runme", state="running", started_at=PAST, cwd=str(work))
+
+    # Fake `claude` via the module-level _claude_cmd seam -- no real binary.
+    claude_cmd = _fake_claude_cmd(tmp_path)
+    monkeypatch.setattr(cli, "_claude_cmd", claude_cmd)
+
+    # Drive the real runner.run_job through the _run_job seam, but neutralise
+    # its detached on-complete chain so no real `ccq tick` process is spawned,
+    # and capture the wiring `ccq run` handed it.
+    captured: dict[str, Any] = {}
+
+    def fake_run_job(database, jid, *, root, on_complete, claude_cmd):
+        captured["job_id"] = jid
+        captured["root"] = root
+        captured["on_complete"] = list(on_complete)
+        captured["claude_cmd"] = list(claude_cmd)
+        return runner_mod.run_job(
+            database,
+            jid,
+            root=root,
+            on_complete=[sys.executable, "-c", "pass"],
+            claude_cmd=claude_cmd,
+            sleep=_noop_sleep,
+        )
+
+    monkeypatch.setattr(cli, "_run_job", fake_run_job)
+
+    result = run(runner, home, "run", str(job_id))
+
+    assert result.exit_code == 0, result.output
+
+    # `ccq run` wired run_job to the right job, root, chain, and claude seam.
+    assert captured["job_id"] == job_id
+    assert captured["root"] == home / ".ccq"
+    assert captured["on_complete"] == list(scheduler.TICK_ARGV)
+    assert captured["claude_cmd"] == claude_cmd
+
+    # Job reached a terminal state and captured the conversation id (§7).
+    job = db.get_job(conn, job_id)
+    assert job["state"] == "done"
+    assert job["state"] in db.TERMINAL_STATES
+    assert job["conversation_id"] == "fake-session-123"
+
+    # Expected artifacts were produced under <home>/.ccq.
+    dir_ = runner_mod.job_dir(home / ".ccq", job_id, "runme")
+    assert (dir_ / "stream.jsonl").exists()
+    result_json = json.loads((dir_ / "result.json").read_text())
+    assert result_json["session_id"] == "fake-session-123"
+
+
+def test_run_unknown_id_errors(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    make_db(home)
+
+    result = run(runner, home, "run", "999")
+
+    assert result.exit_code != 0
+    assert "no job" in result.output.lower()
+
+
+def test_run_default_seam_is_runners_run_job(tmp_path: Path) -> None:
+    # Guards the seam wiring: cli._run_job must be runner.run_job so an
+    # un-monkeypatched `ccq run` really executes the job via the runner.
+    assert cli._run_job is runner_mod.run_job

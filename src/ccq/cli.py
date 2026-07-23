@@ -87,6 +87,12 @@ _exec = _default_exec
 #: no real process is ever spawned.
 _spawn_run = scheduler._default_spawn_run
 
+#: The per-job run entrypoint ``ccq run`` drives (:func:`ccq.runner.run_job`).
+#: Same module-attribute seam style as ``_spawn_run``/``_exec``: tests
+#: monkeypatch it so a fake ``claude`` (via ``_claude_cmd``) is spawned
+#: instead of the real binary, and no chained ``ccq tick`` is ever Popened.
+_run_job = runner.run_job
+
 
 # ---------------------------------------------------------------------------
 # small helpers
@@ -462,6 +468,28 @@ def resume(ctx: click.Context, identifier: str) -> None:
 
         argv = [*_claude_cmd, "--resume", conversation_id]
         _exec(argv, job["cwd"])
+
+
+# ---------------------------------------------------------------------------
+# ccq run
+# ---------------------------------------------------------------------------
+
+
+@main.command("run")
+@click.argument("job_id", type=int)
+@click.pass_context
+def run_(ctx: click.Context, job_id: int) -> None:
+    """Internal; execute one dispatched job to completion (spawned by tick)."""
+    with _session(ctx.obj["home"]) as (database, _cfg, root):
+        if db.get_job(database, job_id) is None:
+            raise click.ClickException(f"no job with id {job_id}")
+        _run_job(
+            database,
+            job_id,
+            root=root,
+            on_complete=list(scheduler.TICK_ARGV),
+            claude_cmd=_claude_cmd,
+        )
 
 
 # ---------------------------------------------------------------------------
