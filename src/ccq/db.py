@@ -96,9 +96,7 @@ CREATE TABLE IF NOT EXISTS events (    -- audit trail; feeds ccq report
 # terminal set from the DESIGN.md §7 lifecycle exactly -- note "killed" and
 # "timeout" are run *outcomes* (§6 runs.outcome), not job states, so they are
 # not here; a killed/timed-out run leaves a "failed" job.
-TERMINAL_STATES: frozenset[str] = frozenset(
-    {"done", "failed", "expired", "skipped", "cancelled"}
-)
+TERMINAL_STATES: frozenset[str] = frozenset({"done", "failed", "expired", "skipped", "cancelled"})
 
 _JOB_JSON_FIELDS = ("passthrough", "hold_jid")
 
@@ -159,10 +157,7 @@ def connect(
     database.execute("PRAGMA journal_mode = WAL")
     database.execute("PRAGMA foreign_keys = ON")
     database.executescript(SCHEMA_SQL)
-    database.execute(
-        "INSERT OR IGNORE INTO sched (id, blocked_until, blocked_reason) "
-        "VALUES (1, NULL, NULL)"
-    )
+    database.execute("INSERT OR IGNORE INTO sched (id, blocked_until, blocked_reason) VALUES (1, NULL, NULL)")
     return database
 
 
@@ -334,17 +329,11 @@ def resolve_identifier(
         return job_id
 
     name = str(identifier)
-    candidates = [
-        row
-        for row in database["jobs"].rows_where("name = ?", [name], order_by="id desc")
-        if row["state"] not in terminal_states
-    ]
+    candidates = [row for row in database["jobs"].rows_where("name = ?", [name], order_by="id desc") if row["state"] not in terminal_states]
     if not candidates:
         raise UnknownIdentifierError(f"no non-terminal job named {name!r}")
     if len(candidates) > 1:
-        raise AmbiguousIdentifierError(
-            f"{len(candidates)} non-terminal jobs named {name!r}; use the numeric id"
-        )
+        raise AmbiguousIdentifierError(f"{len(candidates)} non-terminal jobs named {name!r}; use the numeric id")
     return candidates[0]["id"]
 
 
@@ -392,9 +381,7 @@ def update_run(database: sqlite_utils.Database, run_id: int, **fields: Any) -> N
     database["runs"].update(run_id, fields)
 
 
-def list_runs(
-    database: sqlite_utils.Database, *, job_id: int | None = None
-) -> list[dict[str, Any]]:
+def list_runs(database: sqlite_utils.Database, *, job_id: int | None = None) -> list[dict[str, Any]]:
     """List runs, in insertion order, optionally filtered to one job."""
     if job_id is None:
         rows = database["runs"].rows_where(order_by="id")
@@ -453,11 +440,7 @@ def current_window(database: sqlite_utils.Database, now: str) -> dict[str, Any] 
     A window with no ``reset_at`` yet (never probed) or an expired one
     doesn't count — no row ⇒ closed (§4.1/§6).
     """
-    rows = list(
-        database["window"].rows_where(
-            "reset_at IS NOT NULL AND reset_at > ?", [now], order_by="id desc", limit=1
-        )
-    )
+    rows = list(database["window"].rows_where("reset_at IS NOT NULL AND reset_at > ?", [now], order_by="id desc", limit=1))
     return rows[0] if rows else None
 
 
@@ -498,9 +481,7 @@ def log_event(
     return database["events"].insert(record).last_pk  # type: ignore[return-value]
 
 
-def list_events(
-    database: sqlite_utils.Database, *, job_id: int | None = None
-) -> list[dict[str, Any]]:
+def list_events(database: sqlite_utils.Database, *, job_id: int | None = None) -> list[dict[str, Any]]:
     """List events, in insertion order, optionally filtered to one job."""
     if job_id is None:
         rows = database["events"].rows_where(order_by="id")

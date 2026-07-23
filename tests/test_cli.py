@@ -266,9 +266,7 @@ def test_show_computes_delta_from_last_run(tmp_path: Path, runner: CliRunner) ->
     home = tmp_path / "home"
     conn = make_db(home)
     job_id = add_job(conn, name="showme", state="done", finished_at=PAST)
-    db.insert_run(
-        conn, job_id=job_id, started_at=PAST, finished_at=NOW, pct_before=10, pct_after=25
-    )
+    db.insert_run(conn, job_id=job_id, started_at=PAST, finished_at=NOW, pct_before=10, pct_after=25)
 
     result = run(runner, home, "show", str(job_id))
 
@@ -308,9 +306,7 @@ def test_log_prints_existing_transcript(tmp_path: Path, runner: CliRunner) -> No
     assert '{"type": "system"}' in result.output
 
 
-def test_log_follow_drains_new_content_and_stops_when_job_finishes(
-    tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_log_follow_drains_new_content_and_stops_when_job_finishes(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
     home = tmp_path / "home"
     conn = make_db(home)
     job_id = add_job(conn, name="followme", state="running", started_at=PAST, pid=999999)
@@ -369,9 +365,7 @@ def test_del_cancels_queued_job(tmp_path: Path, runner: CliRunner) -> None:
     assert job["finished_at"] == NOW
 
 
-def test_del_sigterms_process_group_when_running(
-    tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_del_sigterms_process_group_when_running(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
     home = tmp_path / "home"
     conn = make_db(home)
     job_id = add_job(conn, name="killme", state="running", started_at=PAST, pid=424242)
@@ -445,9 +439,7 @@ def test_release_non_held_job_errors(tmp_path: Path, runner: CliRunner) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_resume_execs_claude_resume_in_job_cwd(
-    tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resume_execs_claude_resume_in_job_cwd(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
     home = tmp_path / "home"
     conn = make_db(home)
     job_id = add_job(
@@ -484,9 +476,7 @@ def test_resume_without_conversation_id_errors(tmp_path: Path, runner: CliRunner
 # ---------------------------------------------------------------------------
 
 
-def test_tick_dispatches_due_job_via_injected_spawn(
-    tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_tick_dispatches_due_job_via_injected_spawn(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
     home = tmp_path / "home"
     conn = make_db(home)
     job_id = add_job(conn, name="ticked", state="queued", at_time=None)
@@ -502,9 +492,7 @@ def test_tick_dispatches_due_job_via_injected_spawn(
     assert "dispatched=1" in result.output
 
 
-def test_tick_leaves_not_yet_due_job_alone(
-    tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_tick_leaves_not_yet_due_job_alone(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
     home = tmp_path / "home"
     conn = make_db(home)
     job_id = add_job(conn, name="notyet", state="queued", at_time=FUTURE)

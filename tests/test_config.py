@@ -12,7 +12,6 @@ import pytest
 
 from ccq.config import DEFAULTS, Config, load_config
 
-
 # ---------------------------------------------------------------------------
 # Defaults, no file present
 # ---------------------------------------------------------------------------

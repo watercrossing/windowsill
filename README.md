@@ -4,18 +4,14 @@ A local batch queue for Claude Code.
 
 ## The problem
 
-The binding constraint on a Claude Code subscription usually isn't the weekly
-cap — it's the 5-hour usage **window**. A window starts on your first message
-and lasts 5 hours; whatever's left when you stop working is gone, not banked.
+The binding constraint on a Claude Code subscription usually isn't the weekly cap — it's the 5-hour usage **window**.
+A window starts on your first message and lasts 5 hours; whatever's left when you stop working is gone, not banked.
 Most of that headroom evaporates overnight while you sleep.
 
-`ccq` is a cron-driven queue that submits Markdown job files — prompt bodies
-with a small directive header — and dispatches them into windows you'd
-otherwise waste, up to a monthly ceiling you configure. You write jobs before
-bed; you run `ccq resume <id>` in the morning to pick a conversation back up.
+`ccq` is a cron-driven queue that submits Markdown job files — prompt bodies with a small directive header — and dispatches them into windows you'd otherwise waste, up to a monthly ceiling you configure.
+You write jobs before bed; you run `ccq resume <id>` in the morning to pick a conversation back up.
 
-A quick note on words this project is careful about, since Claude Code
-overloads "session":
+A quick note on words this project is careful about, since Claude Code overloads "session":
 
 | Concept | Called | Where you meet it |
 |---|---|---|
@@ -37,8 +33,7 @@ uvx --from . ccq
 
 ## The job file
 
-A job is a UTF-8 text file: an optional shebang, a header of `#$` directives,
-a blank line, then the prompt body — verbatim, no templating, any length.
+A job is a UTF-8 text file: an optional shebang, a header of `#$` directives, a blank line, then the prompt body — verbatim, no templating, any length.
 
 ```
 #!/usr/bin/env ccq
@@ -63,25 +58,19 @@ need to `BLOCKED.md`, then continue with the next call site.
 
 Parsing rules that matter:
 
-- The `#!` line, if present, is ignored — job files can be `chmod +x` and
-  self-submitted.
-- Directives are lines matching `^#\$\s+(.*)$`, and must appear before the
-  first non-directive, non-blank, non-shebang line. Once prose starts, the
-  header is closed — a `#$` line can't resume later in the file.
-- The first blank line after the header ends the header. Everything after
-  it, to EOF, is the body: verbatim, unmodified.
+- The `#!` line, if present, is ignored — job files can be `chmod +x` and self-submitted.
+- Directives are lines matching `^#\$\s+(.*)$`, and must appear before the first non-directive, non-blank, non-shebang line.
+  Once prose starts, the header is closed — a `#$` line can't resume later in the file.
+- The first blank line after the header ends the header.
+  Everything after it, to EOF, is the body: verbatim, unmodified.
 - Bare `#` lines and `#$ #...` inside the header are comments.
 - A trailing `\` continues a directive onto the next line.
-- Directive arguments are tokenised with shell-like quoting rules (so
-  `--name "has spaces"` works as you'd expect).
+- Directive arguments are tokenised with shell-like quoting rules (so `--name "has spaces"` works as you'd expect).
 
-**Two kinds of directive.** `ccq` recognises a fixed set of *scheduler*
-directives (below); everything else is passed through verbatim, in order, to
-`claude` as argv. `#$ --model claude-opus-4-8` becomes `claude --model
-claude-opus-4-8`. This means a new `claude` flag works the day it ships, with
-no change to `ccq` — and `ccq` never validates or rejects a directive it
-doesn't recognise; unknown ones flow straight through and `claude` complains
-if they're wrong.
+**Two kinds of directive.**
+`ccq` recognises a fixed set of *scheduler* directives (below); everything else is passed through verbatim, in order, to `claude` as argv.
+`#$ --model claude-opus-4-8` becomes `claude --model claude-opus-4-8`.
+This means a new `claude` flag works the day it ships, with no change to `ccq` — and `ccq` never validates or rejects a directive it doesn't recognise; unknown ones flow straight through and `claude` complains if they're wrong.
 
 ### Scheduler directives
 
@@ -105,26 +94,22 @@ if they're wrong.
 | `--timeout <dur>` | `4h` | Wall-clock kill |
 | `--no-resume-on-limit` | false | On rate-limit requeue, restart from the original body instead of resuming |
 
-`--resume` and `--resume-from` are mutually exclusive; both end up as
-`claude --resume <id>` at dispatch. `--resume` is the one case where a
-scheduler directive shadows a real `claude` flag.
+`--resume` and `--resume-from` are mutually exclusive; both end up as `claude --resume <id>` at dispatch.
+`--resume` is the one case where a scheduler directive shadows a real `claude` flag.
 
-This README describes the full job-file format as designed. Everything above
-is parsed today; how much of it is actually *acted on* at dispatch time
-depends on what's landed so far in this milestone — see below for the
-commands that currently work end to end.
+This README describes the full job-file format as designed.
+Everything above is parsed today; how much of it is actually *acted on* at dispatch time depends on what's landed so far in this milestone — see below for the commands that currently work end to end.
 
 ## Commands
 
 Three commands you'll use constantly:
 
-- **`ccq sub <file>`** — submit a job. Use `-` to read from stdin. Prints the
-  job id.
-- **`ccq stat`** — see what's queued, running, held, or recently finished:
-  id, name, state, model, when, cwd, elapsed.
-- **`ccq resume <id>`** — the morning-after command. `exec`s into `claude
-  --resume <conversation_id>` in the job's working directory, so you drop
-  straight back into last night's conversation.
+- **`ccq sub <file>`** — submit a job.
+  Use `-` to read from stdin.
+  Prints the job id.
+- **`ccq stat`** — see what's queued, running, held, or recently finished: id, name, state, model, when, cwd, elapsed.
+- **`ccq resume <id>`** — the morning-after command.
+  `exec`s into `claude --resume <conversation_id>` in the job's working directory, so you drop straight back into last night's conversation.
 
 Working today (milestone M1):
 
@@ -150,11 +135,7 @@ Designed but not implemented yet — do not rely on these:
 | `ccq gc [--older-than 30d]` | Remove terminal job dirs and worktrees |
 | `ccq doctor` | Environment/config sanity check |
 
-Correspondingly, anything that depends on those — window accounting against
-a monthly ceiling, anchor-job scheduling, retry-on-failure, and
-email/ntfy notifications — is part of the design but not yet functional.
-Treat directives like `--retry`, `--notify`, and `--anchor` as accepted and
-stored, not yet enforced.
+Correspondingly, anything that depends on those — window accounting against a monthly ceiling, anchor-job scheduling, retry-on-failure, and email/ntfy notifications — is part of the design but not yet functional.
+Treat directives like `--retry`, `--notify`, and `--anchor` as accepted and stored, not yet enforced.
 
-See `DESIGN.md` for the full design, including the execution model, window
-accounting, and SQLite schema.
+See `DESIGN.md` for the full design, including the execution model, window accounting, and SQLite schema.

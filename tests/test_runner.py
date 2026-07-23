@@ -19,10 +19,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 from ccq import db, runner
-
 
 # ---------------------------------------------------------------------------
 # helpers: fake "claude" scripts (never the real claude, never a network call)
@@ -175,17 +172,28 @@ def test_job_dir_does_not_create_directory(tmp_path: Path) -> None:
 def test_build_argv_default_shape() -> None:
     argv = runner.build_argv(["--model", "claude-opus-4-8"])
     assert argv == [
-        "claude", "-p", "--output-format", "stream-json", "--verbose",
-        "--model", "claude-opus-4-8",
+        "claude",
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--model",
+        "claude-opus-4-8",
     ]
 
 
 def test_build_argv_includes_resume_when_given() -> None:
     argv = runner.build_argv(["--max-turns", "60"], resume="conv-abc")
     assert argv == [
-        "claude", "-p", "--output-format", "stream-json", "--verbose",
-        "--resume", "conv-abc",
-        "--max-turns", "60",
+        "claude",
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--resume",
+        "conv-abc",
+        "--max-turns",
+        "60",
     ]
 
 
@@ -209,9 +217,7 @@ def test_build_argv_claude_cmd_is_injectable() -> None:
 def test_write_cmd_json_round_trips(tmp_path: Path) -> None:
     dir_ = tmp_path / "job"
     dir_.mkdir()
-    path = runner.write_cmd_json(
-        dir_, argv=["claude", "-p"], cwd="/home/user/app", env={"FOO": "bar"}
-    )
+    path = runner.write_cmd_json(dir_, argv=["claude", "-p"], cwd="/home/user/app", env={"FOO": "bar"})
     assert path == dir_ / "cmd.json"
     data = json.loads(path.read_text())
     assert data == {"argv": ["claude", "-p"], "cwd": "/home/user/app", "env": {"FOO": "bar"}}
@@ -227,9 +233,7 @@ def test_write_cmd_json_defaults_env_to_empty_dict(tmp_path: Path) -> None:
 def test_write_resume_sh_contents_and_executable(tmp_path: Path) -> None:
     dir_ = tmp_path / "job"
     dir_.mkdir()
-    path = runner.write_resume_sh(
-        dir_, cwd="/home/user/my app", claude_cmd=["claude"], conversation_id="abc-123"
-    )
+    path = runner.write_resume_sh(dir_, cwd="/home/user/my app", claude_cmd=["claude"], conversation_id="abc-123")
     text = path.read_text()
     assert "cd '/home/user/my app'" in text
     assert "claude --resume abc-123" in text
@@ -254,9 +258,12 @@ def test_parse_result_event_empty_file_returns_none(tmp_path: Path) -> None:
 def test_parse_result_event_reads_last_line(tmp_path: Path) -> None:
     path = tmp_path / "stream.jsonl"
     path.write_text(
-        json.dumps({"type": "system", "subtype": "init"}) + "\n"
-        + json.dumps({"type": "assistant", "message": {}}) + "\n"
-        + json.dumps({"type": "result", "subtype": "success", "is_error": False}) + "\n"
+        json.dumps({"type": "system", "subtype": "init"})
+        + "\n"
+        + json.dumps({"type": "assistant", "message": {}})
+        + "\n"
+        + json.dumps({"type": "result", "subtype": "success", "is_error": False})
+        + "\n"
     )
     event = runner.parse_result_event(path)
     assert event == {"type": "result", "subtype": "success", "is_error": False}
@@ -531,8 +538,7 @@ def test_reap_dead_process_derives_result_json_from_stream(tmp_path: Path) -> No
     dir_ = tmp_path / "job"
     dir_.mkdir()
     (dir_ / "stream.jsonl").write_text(
-        json.dumps({"type": "system"}) + "\n"
-        + json.dumps({"type": "result", "is_error": False, "session_id": "s1"}) + "\n"
+        json.dumps({"type": "system"}) + "\n" + json.dumps({"type": "result", "is_error": False, "session_id": "s1"}) + "\n"
     )
     status = runner.reap(dir_, pid=123, alive_check=lambda pid: False)
     assert status.alive is False

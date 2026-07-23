@@ -20,7 +20,6 @@ import sqlite_utils
 
 from ccq import db, runner, scheduler
 
-
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -336,10 +335,7 @@ def test_tick_reaps_dead_running_job_with_result_to_done(tmp_path: Path) -> None
     conn = make_db(tmp_path)
     job_id = add_job(conn, name="finished", state="running", pid=321)
     stream = (
-        json.dumps({"type": "system", "subtype": "init"}) + "\n"
-        + json.dumps(
-            {"type": "result", "is_error": False, "session_id": "sess-xyz"}
-        ) + "\n"
+        json.dumps({"type": "system", "subtype": "init"}) + "\n" + json.dumps({"type": "result", "is_error": False, "session_id": "sess-xyz"}) + "\n"
     )
     _job_dir_with_stream(tmp_path, job_id, "finished", stream)
 
@@ -448,7 +444,7 @@ def test_tick_commits_claim_before_spawning_run(tmp_path: Path) -> None:
     tick's transaction."""
     path = tmp_path / "ccq.db"
     conn = db.connect(path)
-    job_id = add_job(conn, state="ready")
+    add_job(conn, state="ready")
     seen: dict[str, Any] = {}
 
     def spawn_run(jid: int) -> None:

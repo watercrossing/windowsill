@@ -193,9 +193,7 @@ def tick(
             for job in db.list_jobs(database, state=state_name):
                 before_time = job["before_time"]
                 if before_time is not None and before_time <= now_str:
-                    db.update_job(
-                        database, job["id"], state="expired", finished_at=now_str
-                    )
+                    db.update_job(database, job["id"], state="expired", finished_at=now_str)
                     db.log_event(
                         database,
                         ts=now_str,
@@ -217,9 +215,7 @@ def tick(
                 at_time = job["at_time"]
                 if at_time is None or at_time <= now_str:
                     db.update_job(database, job["id"], state="ready")
-                    db.log_event(
-                        database, ts=now_str, job_id=job["id"], kind="ready", detail="due"
-                    )
+                    db.log_event(database, ts=now_str, job_id=job["id"], kind="ready", detail="due")
                     result.promoted.append(job["id"])
 
             # 4. Dispatch: claim up to the free slots' worth of ready jobs

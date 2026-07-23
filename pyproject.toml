@@ -19,6 +19,7 @@ ccq = "ccq.cli:main"
 [dependency-groups]
 dev = [
     "pytest",
+    "ruff",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -26,3 +27,12 @@ packages = ["src/ccq"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 153
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.ruff.format]
+# Formatter reflows to line-length = 153 (see [tool.ruff]).

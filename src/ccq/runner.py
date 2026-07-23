@@ -62,14 +62,10 @@ def job_dir(root: Path, job_id: int, name: str) -> Path:
     return root / "jobs" / f"{job_id:05d}-{name}"
 
 
-def write_cmd_json(
-    dir_: Path, *, argv: Sequence[str], cwd: str, env: dict[str, str] | None
-) -> Path:
+def write_cmd_json(dir_: Path, *, argv: Sequence[str], cwd: str, env: dict[str, str] | None) -> Path:
     """Write ``cmd.json``: the resolved argv + env + cwd, for reproducibility."""
     path = dir_ / "cmd.json"
-    path.write_text(
-        json.dumps({"argv": list(argv), "cwd": cwd, "env": env or {}}, indent=2) + "\n"
-    )
+    path.write_text(json.dumps({"argv": list(argv), "cwd": cwd, "env": env or {}}, indent=2) + "\n")
     return path
 
 
@@ -80,9 +76,7 @@ def write_result_json(dir_: Path, result_event: dict[str, Any]) -> Path:
     return path
 
 
-def write_resume_sh(
-    dir_: Path, *, cwd: str, claude_cmd: Sequence[str], conversation_id: str
-) -> Path:
+def write_resume_sh(dir_: Path, *, cwd: str, claude_cmd: Sequence[str], conversation_id: str) -> Path:
     """Write ``resume.sh``: ``cd <cwd> && claude --resume <id>`` (§6.2)."""
     path = dir_ / "resume.sh"
     cmd = " ".join(shlex.quote(part) for part in claude_cmd)

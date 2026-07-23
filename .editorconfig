@@ -1,0 +1,21 @@
+# EditorConfig — https://editorconfig.org
+# Text policy: no line-length limit by default — Markdown, plain-text, and
+# config files use semantic line breaks (one sentence per line) and rely on
+# the editor to soft-wrap. Python is the exception: it reflows to a 153-char
+# max width.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+max_line_length = off
+
+[*.py]
+indent_style = space
+indent_size = 4
+max_line_length = 153
+
+[*.md]
+trim_trailing_whitespace = false

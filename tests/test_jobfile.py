@@ -189,7 +189,7 @@ def test_quoted_value_with_spaces_stays_one_token() -> None:
 
 
 def test_shlex_handles_backslash_escaped_space_in_unquoted_value() -> None:
-    text = '#$ --name foo\\ bar\n\nbody\n'
+    text = "#$ --name foo\\ bar\n\nbody\n"
     jf = parse_jobfile(text)
 
     assert jf.directives.name == "foo bar"

@@ -15,7 +15,6 @@ import pytest
 
 from ccq import db
 
-
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
@@ -51,12 +50,7 @@ def insert_bare_job(
 
 def test_connect_creates_all_five_tables(tmp_path: Path) -> None:
     conn = make_db(tmp_path)
-    tables = {
-        row[0]
-        for row in conn.conn.execute(
-            "SELECT name FROM sqlite_master WHERE type = 'table'"
-        ).fetchall()
-    }
+    tables = {row[0] for row in conn.conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
     assert {"jobs", "runs", "window", "sched", "events"} <= tables
 
 
@@ -64,12 +58,34 @@ def test_jobs_table_has_expected_columns(tmp_path: Path) -> None:
     conn = make_db(tmp_path)
     cols = {row[1] for row in conn.conn.execute("PRAGMA table_info(jobs)").fetchall()}
     expected = {
-        "id", "name", "state", "is_anchor", "submitted_at", "started_at",
-        "finished_at", "cwd", "model", "body", "passthrough", "at_time",
-        "before_time", "window_policy", "resume_id", "resume_from",
-        "hold_jid", "retry_max", "retry_count", "priority", "isolate",
-        "allow_dirty", "notify", "timeout", "no_resume_on_limit",
-        "conversation_id", "pid", "exit_code",
+        "id",
+        "name",
+        "state",
+        "is_anchor",
+        "submitted_at",
+        "started_at",
+        "finished_at",
+        "cwd",
+        "model",
+        "body",
+        "passthrough",
+        "at_time",
+        "before_time",
+        "window_policy",
+        "resume_id",
+        "resume_from",
+        "hold_jid",
+        "retry_max",
+        "retry_count",
+        "priority",
+        "isolate",
+        "allow_dirty",
+        "notify",
+        "timeout",
+        "no_resume_on_limit",
+        "conversation_id",
+        "pid",
+        "exit_code",
     }
     assert expected <= cols
 
@@ -192,17 +208,13 @@ def test_connect_does_not_duplicate_sched_row_on_reopen(tmp_path: Path) -> None:
 def test_sched_rejects_second_row_id(tmp_path: Path) -> None:
     conn = make_db(tmp_path)
     with pytest.raises(sqlite3.IntegrityError):
-        conn.conn.execute(
-            "INSERT INTO sched (id, blocked_until, blocked_reason) VALUES (2, NULL, NULL)"
-        )
+        conn.conn.execute("INSERT INTO sched (id, blocked_until, blocked_reason) VALUES (2, NULL, NULL)")
 
 
 def test_sched_rejects_duplicate_row_with_id_one(tmp_path: Path) -> None:
     conn = make_db(tmp_path)
     with pytest.raises(sqlite3.IntegrityError):
-        conn.conn.execute(
-            "INSERT INTO sched (id, blocked_until, blocked_reason) VALUES (1, NULL, NULL)"
-        )
+        conn.conn.execute("INSERT INTO sched (id, blocked_until, blocked_reason) VALUES (1, NULL, NULL)")
 
 
 def test_get_and_update_sched(tmp_path: Path) -> None:
@@ -463,9 +475,7 @@ def test_resolve_name_picks_most_recent_non_terminal_ignoring_terminal(
     conn = make_db(tmp_path)
     insert_bare_job(conn, name="nightly-lint", state="done", submitted_at="2026-07-17T00:00:00Z")
     insert_bare_job(conn, name="nightly-lint", state="failed", submitted_at="2026-07-16T00:00:00Z")
-    live_id = insert_bare_job(
-        conn, name="nightly-lint", state="queued", submitted_at="2026-07-18T00:00:00Z"
-    )
+    live_id = insert_bare_job(conn, name="nightly-lint", state="queued", submitted_at="2026-07-18T00:00:00Z")
 
     assert db.resolve_identifier(conn, "nightly-lint") == live_id
 

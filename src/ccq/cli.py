@@ -263,12 +263,7 @@ def stat(ctx: click.Context, show_all: bool) -> None:
 
         if show_all:
             cutoff = _cutoff(now_str, days=7)
-            jobs = [
-                job
-                for job in jobs
-                if job["state"] not in db.TERMINAL_STATES
-                or (job.get("finished_at") or job.get("submitted_at") or "") >= cutoff
-            ]
+            jobs = [job for job in jobs if job["state"] not in db.TERMINAL_STATES or (job.get("finished_at") or job.get("submitted_at") or "") >= cutoff]
         else:
             jobs = [job for job in jobs if job["state"] not in db.TERMINAL_STATES]
 
