@@ -107,9 +107,10 @@ def _session(home: Path | None) -> Iterator[tuple[sqlite_utils.Database, config.
     ``None`` means the real ``Path.home()``, mirroring how
     :mod:`ccq.config` / :mod:`ccq.db` resolve it themselves.
     """
+    root = (home if home is not None else Path.home()) / ".ccq"
+    root.mkdir(parents=True, exist_ok=True)
     cfg = config.load_config(home=home)
     database = db.connect(home=home)
-    root = (home if home is not None else Path.home()) / ".ccq"
     try:
         yield database, cfg, root
     finally:

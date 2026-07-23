@@ -633,3 +633,32 @@ def test_run_default_seam_is_runners_run_job(tmp_path: Path) -> None:
     # Guards the seam wiring: cli._run_job must be runner.run_job so an
     # un-monkeypatched `ccq run` really executes the job via the runner.
     assert cli._run_job is runner_mod.run_job
+
+
+# ---------------------------------------------------------------------------
+# ~/.ccq is created for a fresh install (both --home and the default home)
+# ---------------------------------------------------------------------------
+
+
+def test_missing_home_option_dir_is_created(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "does-not-exist-yet"
+    assert not home.exists()
+
+    result = run(runner, home, "stat")
+
+    assert result.exit_code == 0, result.output
+    assert (home / ".ccq").is_dir()
+    assert (home / ".ccq" / "ccq.db").exists()
+
+
+def test_default_home_ccq_dir_is_created(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake_home = tmp_path / "fakehome"
+    assert not fake_home.exists()
+    monkeypatch.setenv("HOME", str(fake_home))
+
+    # No --home: resolves against the (patched) default Path.home().
+    result = runner.invoke(cli.main, ["stat"])
+
+    assert result.exit_code == 0, result.output
+    assert (fake_home / ".ccq").is_dir()
+    assert (fake_home / ".ccq" / "ccq.db").exists()
