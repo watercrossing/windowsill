@@ -501,13 +501,10 @@ def run_(ctx: click.Context, job_id: int) -> None:
 @main.command()
 @click.pass_context
 def tick(ctx: click.Context) -> None:
-    """Internal; cron and chain entry point (§3.1)."""
+    """Internal; run one scheduler pass -- promote due jobs and dispatch ready ones (used by cron and the run chain)."""
     with _session(ctx.obj["home"]) as (database, cfg, root):
         result = scheduler.tick(database, root=root, config=cfg, now=_iso_now, spawn_run=_spawn_run)
-        click.echo(
-            f"reaped={len(result.reaped)} expired={len(result.expired)} "
-            f"promoted={len(result.promoted)} dispatched={len(result.dispatched)}"
-        )
+        click.echo(f"reaped={len(result.reaped)} expired={len(result.expired)} promoted={len(result.promoted)} dispatched={len(result.dispatched)}")
 
 
 if __name__ == "__main__":  # pragma: no cover
