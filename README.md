@@ -146,4 +146,4 @@ Designed but not implemented yet — do not rely on these:
 Correspondingly, anything that depends on those — window accounting against a monthly ceiling, anchor-job scheduling, retry-on-failure, and email/ntfy notifications — is part of the design but not yet functional.
 Treat directives like `--retry`, `--notify`, and `--anchor` as accepted and stored, not yet enforced.
 
-See `DESIGN.md` for the full design, including the execution model, window accounting, and SQLite schema.
+See `design/index.md` for the full design, including the execution model, window accounting, and SQLite schema.

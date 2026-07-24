@@ -1,6 +1,6 @@
 """Tests for ccq.jobfile — directive parsing and pass-through split.
 
-Covers DESIGN.md §2 exactly: §2.1's parsing rules (shebang, comments,
+Covers design/02-job-file.md §2 exactly: §2.1's parsing rules (shebang, comments,
 trailing-``\\`` continuation, ``shlex`` tokenisation, header-terminated-
 by-prose, verbatim body), and §2.2's central design rule — scheduler
 directives are consumed, everything else passes through untouched, in

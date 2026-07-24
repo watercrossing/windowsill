@@ -1,4 +1,4 @@
-"""Tests for ccq.cli -- the M1 command set (DESIGN.md §8.1).
+"""Tests for ccq.cli -- the M1 command set (design/08-interface.md §8.1).
 
 These tests spawn NO real `claude`, touch NO network, block on NO real
 clock, and spawn NO real subprocess: every command is driven through

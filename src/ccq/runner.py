@@ -1,6 +1,6 @@
 """ccq run execution: invocation, detached spawn, reap, timeout.
 
-Implements DESIGN.md §3.2 (the invocation), §3.3 (safety for unattended
+Implements design/03-execution-model.md §3.2 (the invocation), §3.3 (safety for unattended
 runs), and the parts of §6.2 (the job-directory filesystem layout) that a
 run touches: ``cmd.json``, ``stream.jsonl``, ``result.json``, ``resume.sh``.
 (``job.md`` is the verbatim submission and is written at submit time, not

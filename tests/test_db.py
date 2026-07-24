@@ -1,4 +1,4 @@
-"""Tests for ccq.db — the SQLite state layer (DESIGN.md §6).
+"""Tests for ccq.db — the SQLite state layer (design/06-state.md §6).
 
 These tests never touch the real ~/.ccq: every DB is opened at a path
 under pytest's tmp_path fixture. No network, no clock — timestamps are

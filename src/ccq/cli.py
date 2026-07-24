@@ -1,4 +1,4 @@
-"""ccq command line interface (DESIGN.md §8.1).
+"""ccq command line interface (design/08-interface.md §8.1).
 
 Thin glue over the already-built sibling modules -- this module owns no
 parsing, execution, or scheduling logic of its own:
@@ -20,7 +20,7 @@ them directly. This mirrors the injectable-keyword seams
 invoked through ``CliRunner`` can't pass extra Python kwargs, so a
 module-level attribute is the equivalent seam here.
 
-Only the M1 command set (DESIGN.md §8.1) is implemented: ``sub``, ``stat``,
+Only the M1 command set (design/08-interface.md §8.1) is implemented: ``sub``, ``stat``,
 ``show``, ``log``, ``del``, ``hold``, ``release``, ``resume``, ``tick``.
 ``report``, ``usage``, ``gc``, ``doctor``, and ``sub -e`` are later
 milestones and are intentionally absent.

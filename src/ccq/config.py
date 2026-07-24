@@ -2,10 +2,10 @@
 
 Loads the user's config file with :mod:`tomllib` and fills in anything
 missing — at any nesting level — with the defaults documented in
-DESIGN.md §8.3. If the file doesn't exist at all, the defaults are used
+design/08-interface.md §8.3. If the file doesn't exist at all, the defaults are used
 as-is.
 
-``peak_band`` (see DESIGN.md §8.3) is Anthropic pricing/rate-limit policy
+``peak_band`` (see design/08-interface.md §8.3) is Anthropic pricing/rate-limit policy
 that changes over time, so it is loaded here purely as data — a plain
 nested mapping under ``window.peak_band`` — and no code in this module
 interprets or hardcodes it.
@@ -25,7 +25,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-# The exact defaults shown in the DESIGN.md §8.3 config example.
+# The exact defaults shown in the design/08-interface.md §8.3 config example.
 DEFAULTS: dict[str, Any] = {
     "queue": {
         "max_parallel": 1,

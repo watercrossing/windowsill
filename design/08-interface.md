@@ -1,0 +1,81 @@
+# 8. Interface
+
+## 8.1 CLI
+
+| Command | Behaviour |
+|---|---|
+| `ccq sub <file>` | Submit. `-` reads stdin. Prints job id. `--now` bypasses `--at` |
+| `ccq sub -e` | `$EDITOR` on a template header; submit on save |
+| `ccq stat` | id, name, state, model, when, cwd, elapsed. Plus window state and 30d count |
+| `ccq stat -a` | Include terminal jobs from the last 7 days |
+| `ccq show <id>` | Directives, resolved argv, state, conversation id, Δ%, transcript tail |
+| `ccq log <id> [-f]` | Stream the transcript; `-f` follows a running job |
+| `ccq del <id>` | Cancel; SIGTERM the process group if running |
+| `ccq hold <id>` / `ccq release <id>` | Toggle held |
+| `ccq resume <id>` | `exec` into `claude --resume <conversation_id>` in the job's cwd. **The morning-after path. Make it the smoothest thing in the tool.** |
+| `ccq report [--since 24h]` | Digest: what ran, Δ%, duration, state, branch created, one line each |
+| `ccq usage` | Cached window state. `--probe` forces a fresh read |
+| `ccq tick` | Internal; cron and chain entry point |
+| `ccq gc [--older-than 30d]` | Remove terminal job dirs and worktrees. Never automatic |
+| `ccq doctor` | [§8.2](08-interface.md) |
+
+`ccq report` is the actual product at 08:00. Readable in five seconds; every line links to `ccq resume <id>`.
+
+## 8.2 `ccq doctor`
+
+In rough order of how likely each is to be the thing that's broken:
+
+1. `claude` on PATH, authenticated, and working under `env -i HOME=$HOME PATH=$PATH` (verified 2026-07-17 via `at`; re-check, because credential handling is exactly what an update changes).
+2. Cron entry installed and firing (check `logs/ccq.log` recency).
+3. `/usage` parses against live output; every `USAGE_PATTERNS` regex matches — **including the closed state** ([§4.1](04-usage-oracle.md)).
+4. Probes are still free ([§4.2](04-usage-oracle.md)): two probes into a closed window; warn loudly if the second reports a live one.
+5. Rate-limit patterns still plausible.
+6. Window state sane (no `reset_at` in the past marked live; no orphaned pids).
+7. ≤1 non-terminal anchor job queued.
+8. 30d window count vs `max_sessions_per_month`.
+9. Notification channel reachable (ntfy POST, `sendmail` present and executable).
+
+## 8.3 Config
+
+`~/.ccq/config.toml`:
+
+```toml
+[queue]
+max_parallel            = 1
+default_model           = "claude-opus-4-8"
+default_timeout         = "4h"
+max_sessions_per_month  = 60      # §5.3; benchmark is 50, this is deliberately near it
+
+[window]
+length    = "5h"
+peak_band = { days = "mon-fri", start = "13:00", end = "19:00", tz = "Europe/London" }
+
+[anchor]
+enabled = true
+time    = "07:00"
+model   = "claude-haiku-4-5"
+body    = "Reply with the single word: ok"
+
+[safety]
+allowed_tools   = ["Read", "Edit", "Write", "Grep", "Glob", "Bash"]
+default_isolate = "worktree"
+allow_dirty     = false
+
+[notify]
+default = "email"
+
+[notify.ntfy]
+url   = "https://ntfy.sh"
+topic = "..."
+
+[notify.email]
+to       = "you@example.org"
+from     = "noreply@example.org"
+sendmail = "/usr/sbin/sendmail"
+```
+
+`peak_band` is config, not code: it is Anthropic policy and has already changed more than once.
+
+## 8.4 Notifications
+
+**ntfy** (POST to `url/topic`; title = job name + state; body = one-line result, Δ%, and `ccq resume <id>`) and **email** via `sendmail -t` from the configured noreply address. Nothing else. A failed notification is logged and never fails the job.

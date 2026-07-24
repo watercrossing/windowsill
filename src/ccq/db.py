@@ -1,4 +1,4 @@
-"""ccq state layer: ``~/.ccq/ccq.db`` (see DESIGN.md §6).
+"""ccq state layer: ``~/.ccq/ccq.db`` (see design/06-state.md §6).
 
 One SQLite database holds all mutable state: ``jobs``, ``runs``,
 ``window``, ``sched``, ``events``. It doubles as the scheduler's lock —
@@ -30,7 +30,7 @@ from typing import Any, Iterator
 import sqlite_utils
 
 # ---------------------------------------------------------------------------
-# schema (DESIGN.md §6, verbatim)
+# schema (design/06-state.md §6, verbatim)
 # ---------------------------------------------------------------------------
 
 SCHEMA_SQL = """
@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS events (    -- audit trail; feeds ccq report
 """
 
 # Job states treated as "finished" for §6.1 name resolution. This is the
-# terminal set from the DESIGN.md §7 lifecycle exactly -- note "killed" and
+# terminal set from the design/07-lifecycle.md §7 lifecycle exactly -- note "killed" and
 # "timeout" are run *outcomes* (§6 runs.outcome), not job states, so they are
 # not here; a killed/timed-out run leaves a "failed" job.
 TERMINAL_STATES: frozenset[str] = frozenset({"done", "failed", "expired", "skipped", "cancelled"})

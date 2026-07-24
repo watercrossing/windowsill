@@ -1,4 +1,4 @@
-"""ccq dispatch scheduler: the ``ccq tick`` step (DESIGN.md §3.1) and the
+"""ccq dispatch scheduler: the ``ccq tick`` step (design/03-execution-model.md §3.1) and the
 slice of the §7 job-lifecycle state machine that M1 needs.
 
 ``tick`` is chain-driven and cron-floored (§3.1). One tick:

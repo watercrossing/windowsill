@@ -1,6 +1,6 @@
 """ccq job files: directive parsing and the pass-through split.
 
-Implements DESIGN.md §2 exactly. A job file is a UTF-8 text file: a
+Implements design/02-job-file.md §2 exactly. A job file is a UTF-8 text file: a
 directive header, a blank line, then the prompt body (verbatim, no
 templating, no substitution).
 
@@ -67,7 +67,7 @@ _COMMA_LIST_DIRECTIVES = {"--hold-jid"}
 
 @dataclass
 class Directives:
-    """The scheduler directives enumerated in DESIGN.md §2.3.
+    """The scheduler directives enumerated in design/02-job-file.md §2.3.
 
     Fields left at their dataclass default mean "absent from the job
     file" — for defaults that depend on context this module doesn't
@@ -156,7 +156,7 @@ def _mirrored_model(passthrough: list[str]) -> str | None:
 def parse_jobfile(text: str) -> JobFile:
     """Parse job-file text into directives, pass-through argv, and body.
 
-    See module docstring and DESIGN.md §2 for the exact rules. Pure:
+    See module docstring and design/02-job-file.md §2 for the exact rules. Pure:
     no I/O, no clock — ``text`` is the entire job file's contents.
     """
     raw_lines = text.splitlines(keepends=True)
