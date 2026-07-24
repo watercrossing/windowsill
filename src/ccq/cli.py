@@ -499,12 +499,14 @@ def run_(ctx: click.Context, job_id: int) -> None:
 
 
 @main.command()
+@click.option("-q", "--quiet", is_flag=True, help="Suppress the summary line (for cron, which mails any output).")
 @click.pass_context
-def tick(ctx: click.Context) -> None:
+def tick(ctx: click.Context, quiet: bool) -> None:
     """Internal; run one scheduler pass -- promote due jobs and dispatch ready ones (used by cron and the run chain)."""
     with _session(ctx.obj["home"]) as (database, cfg, root):
         result = scheduler.tick(database, root=root, config=cfg, now=_iso_now, spawn_run=_spawn_run)
-        click.echo(f"reaped={len(result.reaped)} expired={len(result.expired)} promoted={len(result.promoted)} dispatched={len(result.dispatched)}")
+        if not quiet:
+            click.echo(f"reaped={len(result.reaped)} expired={len(result.expired)} promoted={len(result.promoted)} dispatched={len(result.dispatched)}")
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -535,6 +535,35 @@ def test_tick_leaves_not_yet_due_job_alone(tmp_path: Path, runner: CliRunner, mo
     assert db.get_job(conn, job_id)["state"] == "queued"
 
 
+def test_tick_quiet_suppresses_summary_but_still_dispatches(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    # -q is for cron, which mails any output: the tick must do its work but
+    # print nothing, whereas the bare `ccq tick` still prints the summary.
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="quietly", state="queued", at_time=None)
+
+    spawned: list[int] = []
+    monkeypatch.setattr(cli, "_spawn_run", lambda jid: spawned.append(jid))
+
+    result = run(runner, home, "tick", "-q")
+
+    assert result.exit_code == 0, result.output
+    assert result.output == ""
+    assert spawned == [job_id]
+    assert db.get_job(conn, job_id)["state"] == "running"
+
+
+def test_tick_without_quiet_prints_summary(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    make_db(home)
+    monkeypatch.setattr(cli, "_spawn_run", lambda jid: None)
+
+    result = run(runner, home, "tick")
+
+    assert result.exit_code == 0, result.output
+    assert "reaped=0 expired=0 promoted=0 dispatched=0" in result.output
+
+
 def test_tick_default_spawn_run_is_schedulers_default(tmp_path: Path) -> None:
     # Guards the seam wiring itself: cli._spawn_run must be the same
     # production default scheduler.tick would otherwise fall back to, so
