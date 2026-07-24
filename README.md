@@ -21,15 +21,23 @@ A quick note on words this project is careful about, since Claude Code overloads
 
 ## Install
 
+Install it on your PATH as a tool:
+
 ```
 uv tool install .
 ```
 
-Or try it without installing:
+Or, from a checkout of this repo, run it straight from the project environment:
 
 ```
-uvx --from . ccq
+uv run ccq
 ```
+
+`uv run` uses the project's own venv with `ccq` installed editable,
+so your source edits take effect immediately — prefer it while working in the repo.
+`uvx --from . ccq` runs it too, but builds `ccq` into a separate, ephemeral tool
+environment each time and runs that snapshot rather than your live source:
+handy for a one-off try, redundant once the code is already local.
 
 ## The job file
 
