@@ -11,7 +11,9 @@ monkeypatched exactly like the sibling modules' injectable keywords.
 from __future__ import annotations
 
 import json
+import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -104,6 +106,30 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
+@pytest.fixture()
+def pin_tz():
+    """Pin the process-local timezone for a test, restoring it afterwards.
+
+    ``--at`` normalization (cli._normalize_at) resolves a naïve wall-clock in
+    the *system local* zone, so any test asserting an exact stored UTC value
+    must fix that zone rather than depend on the CI machine's. Sets ``TZ`` and
+    calls ``time.tzset()`` (POSIX only), then undoes both on teardown.
+    """
+    saved = os.environ.get("TZ")
+
+    def _set(tz: str) -> None:
+        os.environ["TZ"] = tz
+        time.tzset()
+
+    yield _set
+
+    if saved is None:
+        os.environ.pop("TZ", None)
+    else:
+        os.environ["TZ"] = saved
+    time.tzset()
+
+
 BASIC_JOB = """\
 #$ --name refactor-auth
 #$ --at 2026-07-18T02:00
@@ -121,11 +147,12 @@ Do the thing.
 # ---------------------------------------------------------------------------
 
 
-def test_sub_from_file_parses_directives_and_prints_id(tmp_path: Path, runner: CliRunner) -> None:
+def test_sub_from_file_parses_directives_and_prints_id(tmp_path: Path, runner: CliRunner, pin_tz) -> None:
     home = tmp_path / "home"
     job_file = tmp_path / "refactor-auth.md"
     job_file.write_text(BASIC_JOB)
 
+    pin_tz("Etc/GMT-1")  # fixed UTC+1, so the naïve "--at" has a knowable UTC value
     result = run(runner, home, "sub", str(job_file))
 
     assert result.exit_code == 0, result.output
@@ -135,7 +162,9 @@ def test_sub_from_file_parses_directives_and_prints_id(tmp_path: Path, runner: C
     job = db.get_job(conn, job_id)
     assert job["name"] == "refactor-auth"
     assert job["state"] == "queued"
-    assert job["at_time"] == "2026-07-18T02:00"
+    # naïve "--at 2026-07-18T02:00" local (UTC+1) is stored normalized to UTC,
+    # in _iso_now's exact "...+00:00" representation.
+    assert job["at_time"] == "2026-07-18T01:00:00+00:00"
     assert job["cwd"] == str(Path("~/code/myapp").expanduser())
     assert job["window_policy"] == "fresh"
     assert job["retry_max"] == 2
@@ -222,6 +251,92 @@ def test_sub_mirrors_model_from_passthrough(tmp_path: Path, runner: CliRunner) -
 
     assert job["model"] == "claude-opus-4-8"
     assert job["passthrough"] == ["--model", "claude-opus-4-8"]
+
+
+# ---------------------------------------------------------------------------
+# ccq sub: --at is normalized to UTC at store time (the naïve-local bug)
+# ---------------------------------------------------------------------------
+
+
+def test_sub_naive_at_stored_as_utc_isoformat(tmp_path: Path, runner: CliRunner, pin_tz) -> None:
+    # A naïve local wall-clock "--at" must be stored in _iso_now's exact
+    # "...+00:00" UTC representation, not verbatim -- so the scheduler's
+    # lexicographic at_time <= now compare is a correct chronological one.
+    home = tmp_path / "home"
+    job_file = tmp_path / "j.md"
+    job_file.write_text("#$ --cwd /tmp/work\n#$ --at 2026-07-23T09:54\n\nbody\n")
+
+    pin_tz("Etc/GMT-1")  # UTC+1, matching the bug report's Europe/London BST
+    result = run(runner, home, "sub", str(job_file))
+
+    assert result.exit_code == 0, result.output
+    job = db.get_job(make_db(home), int(result.output.strip()))
+    at_time = job["at_time"]
+    # Shares _iso_now's representation: UTC offset, and 09:54 local (UTC+1) = 08:54 UTC.
+    assert at_time.endswith("+00:00")
+    assert at_time == "2026-07-23T08:54:00+00:00"
+
+
+def test_sub_at_with_offset_is_respected_not_double_attached(tmp_path: Path, runner: CliRunner, pin_tz) -> None:
+    # An "--at" that already carries an offset is converted to UTC as-is; the
+    # local zone must NOT be attached on top of it.
+    home = tmp_path / "home"
+    job_file = tmp_path / "j.md"
+    job_file.write_text("#$ --cwd /tmp/work\n#$ --at 2026-07-23T09:54+02:00\n\nbody\n")
+
+    pin_tz("Etc/GMT-1")  # different from the input's +02:00 on purpose
+    result = run(runner, home, "sub", str(job_file))
+
+    assert result.exit_code == 0, result.output
+    job = db.get_job(make_db(home), int(result.output.strip()))
+    assert job["at_time"] == "2026-07-23T07:54:00+00:00"  # 09:54+02:00 = 07:54 UTC
+
+
+def test_tick_dispatches_job_whose_local_at_just_passed(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, pin_tz) -> None:
+    # Regression for the reported symptom: on a UTC+1 machine a job whose --at
+    # has just passed in local time never dispatched (naïve "09:54" sorted after
+    # the UTC "08:54:55+00:00" now). With store-time normalization it promotes
+    # and dispatches. NOW (via _fixed_clock) is 09:00Z == 10:00 local; --at is
+    # 09:54 local == 08:54Z, just past.
+    home = tmp_path / "home"
+    job_file = tmp_path / "j.md"
+    job_file.write_text("#$ --cwd /tmp/work\n#$ --at 2026-07-22T09:54\n\nbody\n")
+
+    pin_tz("Etc/GMT-1")
+    spawned: list[int] = []
+    monkeypatch.setattr(cli, "_spawn_run", lambda jid: spawned.append(jid))
+
+    sub_result = run(runner, home, "sub", str(job_file))
+    assert sub_result.exit_code == 0, sub_result.output
+    job_id = int(sub_result.output.strip())
+
+    tick_result = run(runner, home, "tick")
+
+    assert tick_result.exit_code == 0, tick_result.output
+    assert spawned == [job_id]
+    assert db.get_job(make_db(home), job_id)["state"] == "running"
+
+
+def test_tick_leaves_job_whose_local_at_is_future_queued(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, pin_tz) -> None:
+    # The mirror case: a still-future --at (11:00 local == 10:00Z > 09:00Z now)
+    # must not promote or dispatch.
+    home = tmp_path / "home"
+    job_file = tmp_path / "j.md"
+    job_file.write_text("#$ --cwd /tmp/work\n#$ --at 2026-07-22T11:00\n\nbody\n")
+
+    pin_tz("Etc/GMT-1")
+    spawned: list[int] = []
+    monkeypatch.setattr(cli, "_spawn_run", lambda jid: spawned.append(jid))
+
+    sub_result = run(runner, home, "sub", str(job_file))
+    assert sub_result.exit_code == 0, sub_result.output
+    job_id = int(sub_result.output.strip())
+
+    tick_result = run(runner, home, "tick")
+
+    assert tick_result.exit_code == 0, tick_result.output
+    assert spawned == []
+    assert db.get_job(make_db(home), job_id)["state"] == "queued"
 
 
 # ---------------------------------------------------------------------------

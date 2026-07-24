@@ -136,6 +136,27 @@ def _parse_iso(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
+def _normalize_at(value: str) -> str:
+    """Normalize an ``--at`` value into the same UTC ISO form as :func:`_iso_now`.
+
+    ``--at`` is accepted in any ISO-8601 form -- most often a naïve local
+    wall-clock like ``2026-07-23T09:54`` (no offset). Stored verbatim it does
+    not share ``_iso_now``'s ``...+00:00`` representation, and the scheduler's
+    ``at_time <= now`` promotion test is a *lexicographic* string compare: on a
+    machine at UTC+1, naïve local ``2026-07-23T09:54`` sorts *after* the UTC
+    ``2026-07-23T08:54:55+00:00`` it actually precedes, so a due job never
+    promotes. Normalizing here puts both sides in one representation, making
+    that string compare a correct chronological one (the compare itself is
+    left untouched -- see :mod:`ccq.scheduler`).
+
+    A naïve value is interpreted in the system local zone (``.astimezone``
+    presumes local for a naïve datetime); an offset-bearing one is respected.
+    Either way the result is converted to UTC and serialized with
+    ``.isoformat()``.
+    """
+    return _parse_iso(value).astimezone(timezone.utc).isoformat()
+
+
 def _cutoff(now_str: str, *, days: int) -> str:
     """``now_str`` minus ``days``, formatted so plain string comparison
     against other timestamps in this codebase stays valid (all of them
@@ -222,7 +243,7 @@ def sub(ctx: click.Context, file, run_now: bool) -> None:
         cwd = str(Path(d.cwd).expanduser()) if d.cwd else str(Path.cwd())
         isolate = d.isolate or cfg["safety"]["default_isolate"]
         notify = d.notify or cfg["notify"]["default"]
-        at_time = None if run_now else d.at
+        at_time = None if run_now or d.at is None else _normalize_at(d.at)
         state = "held" if d.hold else "queued"
         submitted_at = _iso_now()
 
