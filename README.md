@@ -39,6 +39,36 @@ so your source edits take effect immediately — prefer it while working in the 
 environment each time and runs that snapshot rather than your live source:
 handy for a one-off try, redundant once the code is already local.
 
+## Running on a schedule (cron)
+
+`ccq` dispatches jobs two ways (see [`design/03-execution-model.md`](design/03-execution-model.md)).
+The fast path is the *chain*: when a job finishes it kicks the next tick itself, so back-to-back jobs in one open window start seconds apart.
+Cron is the *liveness floor* underneath that — it catches a broken chain, an `--at` coming due, and a rate-limit `blocked_until` expiring.
+Fifteen minutes is fine precisely because it is never the latency path.
+
+Add one line to your crontab (`crontab -e`):
+
+```cron
+PATH=/home/you/.local/bin:/usr/bin:/bin
+*/15 * * * * ccq tick -q
+```
+
+- **`-q`** suppresses `tick`'s one-line summary, so cron has no output to mail you every 15 minutes.
+- **`PATH`** matters because cron runs with a nearly empty environment.
+  Both `ccq` *and* `claude` have to be findable on it — a tick with a due job spawns `ccq run`, which spawns `claude`.
+  `uv tool install .` puts `ccq` in `~/.local/bin`, where `claude` usually already lives; confirm with `command -v ccq claude` and set the `PATH=` line to match.
+  (If you run from a checkout instead of installing, use `uv run --project /path/to/ccq ccq tick -q` and make sure `uv` is on that `PATH` too.)
+- **`HOME`** is set by cron automatically, which is all `claude` needs to find its credentials — a non-interactive job with no TTY authenticates fine (verified in [`design/09-findings.md`](design/09-findings.md)).
+
+To keep a heartbeat and capture any errors, redirect to a log instead:
+
+```cron
+*/15 * * * * ccq tick >> "$HOME/.ccq/logs/ccq.log" 2>&1
+```
+
+Drop the `-q` when you redirect — the summary line becomes a useful "it's alive" trace in the log rather than mail in your inbox.
+`ccq` creates `~/.ccq/logs/` for you on first run.
+
 ## The job file
 
 A job is a UTF-8 text file: an optional shebang, a header of `#$` directives, a blank line, then the prompt body — verbatim, no templating, any length.

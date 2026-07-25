@@ -109,6 +109,7 @@ def _session(home: Path | None) -> Iterator[tuple[sqlite_utils.Database, config.
     """
     root = (home if home is not None else Path.home()) / ".ccq"
     root.mkdir(parents=True, exist_ok=True)
+    (root / "logs").mkdir(exist_ok=True)  # cron redirects tick output here (README)
     cfg = config.load_config(home=home)
     database = db.connect(home=home)
     try:
