@@ -52,7 +52,7 @@ from typing import Any, Callable, Mapping
 
 import sqlite_utils
 
-from ccq import db, runner
+from ccq import db, runner, transcript
 
 # ---------------------------------------------------------------------------
 # the `ccq run` / `ccq tick` entrypoint contract (cli.py implements these)
@@ -171,6 +171,7 @@ def tick(
             # runner._JOB_STATE_FOR_OUTCOME.
             job_state = "done" if status.outcome == "done" else "failed"
             conversation_id = status.result.get("session_id") if status.result else None
+            transcript.write_transcript(dir_, prompt=job["body"])
             db.update_job(
                 database,
                 job["id"],

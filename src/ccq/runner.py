@@ -47,7 +47,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from ccq import db
+from ccq import db, transcript
 
 # ---------------------------------------------------------------------------
 # job directory layout (§6.2)
@@ -450,6 +450,10 @@ def run_job(
     result_event = parse_result_event(dir_ / "stream.jsonl")
     if result_event is not None:
         write_result_json(dir_, result_event)
+
+    # Render the human-readable transcript (§6.2) from whatever the run left
+    # behind -- even a killed/partial stream is worth reading back.
+    transcript.write_transcript(dir_, prompt=job["body"])
 
     outcome = outcome_from_result(result_event, timed_out=timed_out)
     finished_at = now()

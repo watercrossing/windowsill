@@ -333,7 +333,10 @@ def show(ctx: click.Context, identifier: str) -> None:
             delta = last_run["pct_after"] - last_run["pct_before"]
 
         dir_ = runner.job_dir(root, job_id, job["name"])
-        tail = _tail(dir_ / "stream.jsonl")
+        # Prefer the rendered, human-readable transcript (§6.2); fall back to
+        # the raw stream for a run that hasn't produced one yet.
+        transcript_path = dir_ / "transcript.md"
+        tail = _tail(transcript_path if transcript_path.exists() else dir_ / "stream.jsonl")
 
         click.echo(f"id: {job['id']}")
         click.echo(f"name: {job['name']}")
@@ -356,6 +359,8 @@ def show(ctx: click.Context, identifier: str) -> None:
         click.echo(f"  timeout: {job['timeout']}")
         click.echo(f"  no_resume_on_limit: {bool(job['no_resume_on_limit'])}")
         click.echo(f"argv: {' '.join(argv)}")
+        if transcript_path.exists():
+            click.echo(f"transcript: {transcript_path}")
         click.echo("transcript tail:")
         for line in tail:
             click.echo(line)
