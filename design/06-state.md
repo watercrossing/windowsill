@@ -36,7 +36,9 @@ CREATE TABLE runs (                   -- one row per execution attempt
   outcome       TEXT,                 -- done | failed | rate_limited | timeout | killed
   pct_before    INTEGER, pct_after INTEGER,   -- §4.3
   num_turns     INTEGER, duration_ms INTEGER,
-  conversation_id TEXT
+  conversation_id TEXT,
+  permission_denials INTEGER            -- §9 2026-07-28: length of the envelope's permission_denials.
+                                        -- A run refused every write still reports success; this is the only trace
 );
 
 CREATE TABLE window (                 -- one row per window we opened; the §5.3 ledger

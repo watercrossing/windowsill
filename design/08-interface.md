@@ -8,12 +8,12 @@
 | `ccq sub -e` | `$EDITOR` on a template header; submit on save |
 | `ccq stat` | id, name, state, model, when, cwd, elapsed. Plus window state and 30d count |
 | `ccq stat -a` | Include terminal jobs from the last 7 days |
-| `ccq show <id>` | Directives, resolved argv, state, conversation id, Δ%, transcript tail |
+| `ccq show <id>` | Directives, resolved argv, state, conversation id, Δ%, permission denials on the last run, transcript tail |
 | `ccq log <id> [-f]` | Stream the transcript; `-f` follows a running job |
 | `ccq del <id>` | Cancel; SIGTERM the process group if running |
 | `ccq hold <id>` / `ccq release <id>` | Toggle held |
 | `ccq resume <id>` | `exec` into `claude --resume <conversation_id>` in the job's cwd. **The morning-after path. Make it the smoothest thing in the tool.** |
-| `ccq report [--since 24h]` | Digest: what ran, Δ%, duration, state, branch created, one line each |
+| `ccq report [--since 24h]` | Digest: what ran, Δ%, duration, state, branch created, one line each. `denied=N` appended when a run was refused a permission |
 | `ccq usage` | Cached window state. `--probe` forces a fresh read |
 | `ccq tick` | Internal; cron and chain entry point |
 | `ccq gc [--older-than 30d]` | Remove terminal job dirs and worktrees. Never automatic |
