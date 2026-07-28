@@ -1,4 +1,4 @@
-"""Tests for ccq.window -- dispatch policies and window accounting (§5).
+"""Tests for windowsill.window -- dispatch policies and window accounting (§5).
 
 No real clock: every predicate takes an explicit ``now``. The peak-band
 tests build ``now`` already in the band's own zone so the UTC↔local
@@ -14,14 +14,14 @@ from zoneinfo import ZoneInfo
 
 import sqlite_utils
 
-from ccq import db, window
+from windowsill import db, window
 
 LONDON = ZoneInfo("Europe/London")
 PEAK = {"days": "mon-fri", "start": "13:00", "end": "19:00", "tz": "Europe/London"}
 
 
 def make_db(tmp_path: Path) -> sqlite_utils.Database:
-    return db.connect(tmp_path / "ccq.db")
+    return db.connect(tmp_path / "windowsill.db")
 
 
 # ---------------------------------------------------------------------------

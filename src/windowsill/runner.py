@@ -21,7 +21,7 @@ default:
   enforcement is tested without depending on real wall-clock time.
 - ``now`` -- default produces a real UTC ISO-8601 timestamp; tests pass a
   fixed/deterministic callable.
-- ``root`` -- the job-directory root (normally ``~/.ccq``); always passed
+- ``root`` -- the job-directory root (normally ``~/.windowsill``); always passed
   explicitly by callers, so tests point it at a ``tmp_path``.
 - ``on_complete`` -- the argv of the next detached process to spawn once a
   run finishes (chain dispatch, wired up by a later module). This module
@@ -47,7 +47,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from ccq import db, notify, transcript, usage, window
+from windowsill import db, notify, transcript, usage, window
 
 # ---------------------------------------------------------------------------
 # job directory layout (§6.2)
@@ -69,7 +69,7 @@ def log_destination(log_path: str | None, *, job_id: int, name: str, cwd: str) -
     A value ending in a path separator, or naming a directory that already
     exists, means "in there", under the same ``<5-digit id>-<name>`` naming
     the job dir uses (§6.2); anything else is taken as the file itself. A
-    relative path resolves against the *job's* ``cwd``, not ccq's: the job
+    relative path resolves against the *job's* ``cwd``, not windowsill's: the job
     file is written from the project's point of view, while ``ccq tick``
     runs from wherever cron left it.
     """
@@ -170,7 +170,7 @@ def parse_timeout_seconds(value: str | None) -> float | None:
 def is_alive(pid: int) -> bool:
     """Whether ``pid`` is a live process, via ``kill(pid, 0)``.
 
-    This is how a *different* ccq invocation than the one that spawned the
+    This is how a *different* windowsill invocation than the one that spawned the
     run (e.g. a later ``ccq tick``) checks on it -- it isn't the parent in
     the ``wait()`` sense, so signal-0 liveness is the only portable check.
     """
@@ -543,7 +543,7 @@ def _notify_job(
     Only terminal states notify -- a requeued job hasn't finished. The result
     is written to ``events`` whether it succeeded or not: §8.4's contract is
     that a failed notification is *logged* and never fails the job, and
-    :func:`ccq.notify.notify` already guarantees the second half.
+    :func:`windowsill.notify.notify` already guarantees the second half.
     """
     title, body = notify.compose(
         job_id=job["id"],
@@ -594,8 +594,8 @@ def run_job(
 
     Every non-DB dependency (which command to exec, how to spawn it, the
     clock, the on-complete command) is an injectable keyword argument;
-    ``database`` is a plain :mod:`ccq.db`-opened handle so tests point it
-    at a ``tmp_path`` DB, never the real ``~/.ccq/ccq.db``.
+    ``database`` is a plain :mod:`windowsill.db`-opened handle so tests point it
+    at a ``tmp_path`` DB, never the real ``~/.windowsill/windowsill.db``.
     """
     job = db.get_job(database, job_id)
     if job is None:

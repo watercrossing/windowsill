@@ -1,6 +1,6 @@
-"""Tests for ccq.config — loading and defaulting ~/.ccq/config.toml.
+"""Tests for windowsill.config — loading and defaulting ~/.windowsill/config.toml.
 
-These tests never touch the real ~/.ccq: every call to load_config()
+These tests never touch the real ~/.windowsill: every call to load_config()
 below points at a path under pytest's tmp_path fixture.
 """
 
@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from ccq.config import DEFAULTS, Config, load_config
+from windowsill.config import DEFAULTS, Config, load_config, state_dir
 
 # ---------------------------------------------------------------------------
 # Defaults, no file present
@@ -244,12 +244,12 @@ def test_full_example_config_round_trips(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Path / home overrides — must never touch the real ~/.ccq
+# Path / home overrides — must never touch the real ~/.windowsill
 # ---------------------------------------------------------------------------
 
 
-def test_home_override_resolves_to_dot_ccq_config_toml(tmp_path: Path) -> None:
-    ccq_dir = tmp_path / ".ccq"
+def test_home_override_resolves_to_dot_windowsill_config_toml(tmp_path: Path) -> None:
+    ccq_dir = tmp_path / ".windowsill"
     ccq_dir.mkdir()
     (ccq_dir / "config.toml").write_text(
         """
@@ -267,13 +267,38 @@ def test_home_override_resolves_to_dot_ccq_config_toml(tmp_path: Path) -> None:
 def test_home_override_with_missing_file_gives_defaults(tmp_path: Path) -> None:
     cfg = load_config(home=tmp_path)
     assert cfg["queue"]["max_parallel"] == 1
-    assert cfg.path == tmp_path / ".ccq" / "config.toml"
+    assert cfg.path == tmp_path / ".windowsill" / "config.toml"
+
+
+# ---------------------------------------------------------------------------
+# state_dir — the rename must not strand a pre-rename ~/.ccq
+# ---------------------------------------------------------------------------
+
+
+def test_state_dir_is_dot_windowsill_on_a_fresh_home(tmp_path: Path) -> None:
+    assert state_dir(tmp_path) == tmp_path / ".windowsill"
+
+
+def test_state_dir_falls_back_to_a_pre_rename_dot_ccq(tmp_path: Path) -> None:
+    # The queue, the ledger, and any in-flight job dirs live in here.
+    (tmp_path / ".ccq").mkdir()
+
+    assert state_dir(tmp_path) == tmp_path / ".ccq"
+
+
+def test_state_dir_prefers_dot_windowsill_when_both_exist(tmp_path: Path) -> None:
+    # Once the user has moved (or started) a .windowsill, the old directory
+    # stops being consulted — otherwise the fallback would be permanent.
+    (tmp_path / ".ccq").mkdir()
+    (tmp_path / ".windowsill").mkdir()
+
+    assert state_dir(tmp_path) == tmp_path / ".windowsill"
 
 
 def test_explicit_config_path_wins_over_home(tmp_path: Path) -> None:
     home_dir = tmp_path / "home"
-    (home_dir / ".ccq").mkdir(parents=True)
-    (home_dir / ".ccq" / "config.toml").write_text("[queue]\nmax_parallel = 2\n")
+    (home_dir / ".windowsill").mkdir(parents=True)
+    (home_dir / ".windowsill" / "config.toml").write_text("[queue]\nmax_parallel = 2\n")
 
     explicit_file = tmp_path / "explicit-config.toml"
     explicit_file.write_text("[queue]\nmax_parallel = 3\n")

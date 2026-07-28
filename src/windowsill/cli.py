@@ -1,13 +1,13 @@
-"""ccq command line interface (design/08-interface.md §8.1).
+"""windowsill command line interface (design/08-interface.md §8.1).
 
 Thin glue over the already-built sibling modules -- this module owns no
 parsing, execution, or scheduling logic of its own:
 
-- :mod:`ccq.config` -- ``~/.ccq/config.toml``.
-- :mod:`ccq.db` -- the SQLite state layer and identifier resolution.
-- :mod:`ccq.jobfile` -- job-file directive parsing.
-- :mod:`ccq.runner` -- argv building and the job-directory layout.
-- :mod:`ccq.scheduler` -- the ``ccq tick`` dispatch step.
+- :mod:`windowsill.config` -- ``~/.windowsill/config.toml``.
+- :mod:`windowsill.db` -- the SQLite state layer and identifier resolution.
+- :mod:`windowsill.jobfile` -- job-file directive parsing.
+- :mod:`windowsill.runner` -- argv building and the job-directory layout.
+- :mod:`windowsill.scheduler` -- the ``ccq tick`` dispatch step.
 
 Every side-effecting dependency a test would otherwise have to fake for
 real (the clock, sleeping while following a log, sending a signal,
@@ -16,7 +16,7 @@ module-level seam -- ``_iso_now``, ``_sleep``, ``_terminate``, ``_exec``,
 ``_spawn_run`` -- referenced by name from inside each command body (never
 bound as a default parameter value), so tests can ``monkeypatch.setattr``
 them directly. This mirrors the injectable-keyword seams
-:mod:`ccq.runner` and :mod:`ccq.scheduler` already use; Click commands
+:mod:`windowsill.runner` and :mod:`windowsill.scheduler` already use; Click commands
 invoked through ``CliRunner`` can't pass extra Python kwargs, so a
 module-level attribute is the equivalent seam here.
 
@@ -44,7 +44,7 @@ from typing import Iterator
 import click
 import sqlite_utils
 
-from ccq import config, db, jobfile, runner, scheduler, window
+from windowsill import config, db, jobfile, runner, scheduler, window
 
 # ---------------------------------------------------------------------------
 # injectable seams -- see module docstring. Production defaults here;
@@ -73,7 +73,7 @@ def _default_terminate(pid: int) -> None:
 _terminate = _default_terminate
 
 #: The claude invocation prefix ``ccq resume`` execs into. Same seam name
-#: as ``ccq.runner``'s ``claude_cmd``.
+#: as ``windowsill.runner``'s ``claude_cmd``.
 _claude_cmd: tuple[str, ...] = ("claude",)
 
 
@@ -87,18 +87,18 @@ def _default_exec(argv: list[str], cwd: str) -> None:
 
 _exec = _default_exec
 
-#: Production ``spawn_run`` handed to :func:`ccq.scheduler.tick` -- Popens
+#: Production ``spawn_run`` handed to :func:`windowsill.scheduler.tick` -- Popens
 #: ``ccq run <id>`` detached. Tests replace this wholesale with a spy so
 #: no real process is ever spawned.
 _spawn_run = scheduler._default_spawn_run
 
-#: The per-job run entrypoint ``ccq run`` drives (:func:`ccq.runner.run_job`).
+#: The per-job run entrypoint ``ccq run`` drives (:func:`windowsill.runner.run_job`).
 #: Same module-attribute seam style as ``_spawn_run``/``_exec``: tests
 #: monkeypatch it so a fake ``claude`` (via ``_claude_cmd``) is spawned
 #: instead of the real binary, and no chained ``ccq tick`` is ever Popened.
 _run_job = runner.run_job
 
-#: The ``/usage`` oracle handed to :func:`ccq.scheduler.tick` (§4). Same seam
+#: The ``/usage`` oracle handed to :func:`windowsill.scheduler.tick` (§4). Same seam
 #: style again: tests replace it so no real ``claude`` is ever probed.
 _probe = runner._default_probe
 
@@ -108,15 +108,44 @@ _probe = runner._default_probe
 # ---------------------------------------------------------------------------
 
 
+_HOME_HELP = "Override the windowsill home directory (parent of .windowsill/); mainly for tests."
+
+
+def home_option(f):
+    """Give a command its own ``--home``.
+
+    The four short verbs are console scripts in their own right
+    (``ccsub``, ``ccstat``, ``ccdel``, ``ccresume`` -- design/08-interface.md §8.1), so
+    the ``main`` group's callback never runs for them and ``ctx.obj`` is
+    ``None``. Carrying the option on the command is what makes
+    ``ccsub --home /tmp/scratch job.md`` work at all, and pointing at a
+    throwaway home is the only safe way to exercise a queue that may be
+    running the very job you are typing into.
+    """
+    return click.option("--home", type=click.Path(path_type=Path), default=None, help=_HOME_HELP)(f)
+
+
+def _home(ctx: click.Context, home: Path | None = None) -> Path | None:
+    """The home this invocation should use.
+
+    A command's own ``--home`` wins over the group's, so both
+    ``ccq --home X stat`` and ``ccstat --home X`` land on the same queue.
+    ``ctx.obj`` is ``None`` when a command was invoked as its own script.
+    """
+    if home is not None:
+        return home
+    return (ctx.obj or {}).get("home")
+
+
 @contextmanager
 def _session(home: Path | None) -> Iterator[tuple[sqlite_utils.Database, config.Config, Path]]:
     """Open the DB + config for one command, and the job-directory root.
 
-    ``home`` overrides ``~/.ccq``'s parent (the ``--home`` group option);
+    ``home`` overrides ``~/.windowsill``'s parent (the ``--home`` option);
     ``None`` means the real ``Path.home()``, mirroring how
-    :mod:`ccq.config` / :mod:`ccq.db` resolve it themselves.
+    :mod:`windowsill.config` / :mod:`windowsill.db` resolve it themselves.
     """
-    root = (home if home is not None else Path.home()) / ".ccq"
+    root = config.state_dir(home)
     root.mkdir(parents=True, exist_ok=True)
     (root / "logs").mkdir(exist_ok=True)  # cron redirects tick output here (README)
     cfg = config.load_config(home=home)
@@ -171,7 +200,7 @@ def _normalize_at(value: str) -> str:
     ``2026-07-23T08:54:55+00:00`` it actually precedes, so a due job never
     promotes. Normalizing here puts both sides in one representation, making
     that string compare a correct chronological one (the compare itself is
-    left untouched -- see :mod:`ccq.scheduler`).
+    left untouched -- see :mod:`windowsill.scheduler`).
 
     A naïve value is interpreted in the system local zone (``.astimezone``
     presumes local for a naïve datetime); an offset-bearing one is respected.
@@ -213,7 +242,7 @@ def _local(value: str | None, *, with_timezone: bool = False) -> str:
 def _cutoff(now_str: str, *, days: int) -> str:
     """``now_str`` minus ``days``, formatted so plain string comparison
     against other timestamps in this codebase stays valid (all of them
-    are lexicographically-ordered ISO-8601, per :mod:`ccq.scheduler`)."""
+    are lexicographically-ordered ISO-8601, per :mod:`windowsill.scheduler`)."""
     return (_parse_iso(now_str) - timedelta(days=days)).isoformat()
 
 
@@ -267,11 +296,11 @@ def _read_new_bytes(path: Path, pos: int) -> tuple[int, bytes]:
     "--home",
     type=click.Path(path_type=Path),
     default=None,
-    help="Override the ccq home directory (parent of .ccq/); mainly for tests.",
+    help=_HOME_HELP,
 )
 @click.pass_context
 def main(ctx: click.Context, home: Path | None) -> None:
-    """ccq -- a local batch queue for Claude Code."""
+    """windowsill -- a local batch queue for Claude Code."""
     ctx.ensure_object(dict)
     ctx.obj["home"] = home
 
@@ -284,10 +313,11 @@ def main(ctx: click.Context, home: Path | None) -> None:
 @main.command()
 @click.argument("file", type=click.File("r"))
 @click.option("--now", "run_now", is_flag=True, help="Bypass --at; eligible as soon as a tick runs.")
+@home_option
 @click.pass_context
-def sub(ctx: click.Context, file, run_now: bool) -> None:
+def sub(ctx: click.Context, file, run_now: bool, home: Path | None) -> None:
     """Submit a job file. ``-`` reads stdin. Prints the new job id."""
-    with _session(ctx.obj["home"]) as (database, cfg, root):
+    with _session(_home(ctx, home)) as (database, cfg, root):
         text = file.read()
         jf = jobfile.parse_jobfile(text)
         d = jf.directives
@@ -352,10 +382,11 @@ def sub(ctx: click.Context, file, run_now: bool) -> None:
 @main.command()
 @click.option("-a", "--all", "show_all", is_flag=True, help="Include terminal jobs from the last 7 days.")
 @click.option("--with-timezone", is_flag=True, help="Show times with their UTC offset instead of bare system local time.")
+@home_option
 @click.pass_context
-def stat(ctx: click.Context, show_all: bool, with_timezone: bool) -> None:
+def stat(ctx: click.Context, show_all: bool, with_timezone: bool, home: Path | None) -> None:
     """id, name, state, model, when, cwd, elapsed. Plus window state and 30d count."""
-    with _session(ctx.obj["home"]) as (database, _cfg, _root):
+    with _session(_home(ctx, home)) as (database, _cfg, _root):
         now_str = _iso_now()
         jobs = db.list_jobs(database)
 
@@ -397,7 +428,7 @@ PROBE_MIN_INTERVAL_SECONDS = 10
 @click.pass_context
 def usage_(ctx: click.Context, force_probe: bool, with_timezone: bool) -> None:
     """Cached window state. ``--probe`` forces a fresh read."""
-    with _session(ctx.obj["home"]) as (database, cfg, _root):
+    with _session(_home(ctx)) as (database, cfg, _root):
         now_str = _iso_now()
         window_row = db.current_window(database, now_str)
 
@@ -472,7 +503,7 @@ def _permission_denials(database: sqlite_utils.Database, job_id: int) -> int | N
 @click.pass_context
 def report(ctx: click.Context, since: str, with_timezone: bool) -> None:
     """Digest: what ran, delta%, duration, state -- one line each."""
-    with _session(ctx.obj["home"]) as (database, _cfg, _root):
+    with _session(_home(ctx)) as (database, _cfg, _root):
         now_str = _iso_now()
         cutoff = _since_cutoff(now_str, since)
 
@@ -515,7 +546,7 @@ def report(ctx: click.Context, since: str, with_timezone: bool) -> None:
 @click.pass_context
 def show(ctx: click.Context, identifier: str) -> None:
     """Directives, resolved argv, state, conversation id, delta%, transcript tail."""
-    with _session(ctx.obj["home"]) as (database, _cfg, root):
+    with _session(_home(ctx)) as (database, _cfg, root):
         job_id = _resolve(database, identifier)
         job = db.get_job(database, job_id)
         argv = runner.build_argv(job["passthrough"], resume=job.get("resume_id"))
@@ -574,7 +605,7 @@ def show(ctx: click.Context, identifier: str) -> None:
 @click.pass_context
 def log(ctx: click.Context, identifier: str, follow: bool) -> None:
     """Stream the transcript; -f follows a running job."""
-    with _session(ctx.obj["home"]) as (database, _cfg, root):
+    with _session(_home(ctx)) as (database, _cfg, root):
         job_id = _resolve(database, identifier)
         job = db.get_job(database, job_id)
         path = runner.job_dir(root, job_id, job["name"]) / "stream.jsonl"
@@ -609,10 +640,11 @@ def log(ctx: click.Context, identifier: str, follow: bool) -> None:
 
 @main.command("del")
 @click.argument("identifier")
+@home_option
 @click.pass_context
-def del_(ctx: click.Context, identifier: str) -> None:
+def del_(ctx: click.Context, identifier: str, home: Path | None) -> None:
     """Cancel; SIGTERM the process group if running."""
-    with _session(ctx.obj["home"]) as (database, _cfg, _root):
+    with _session(_home(ctx, home)) as (database, _cfg, _root):
         job_id = _resolve(database, identifier)
         job = db.get_job(database, job_id)
 
@@ -639,7 +671,7 @@ def del_(ctx: click.Context, identifier: str) -> None:
 @click.pass_context
 def hold(ctx: click.Context, identifier: str) -> None:
     """Hold a queued/ready job; needs ``ccq release``."""
-    with _session(ctx.obj["home"]) as (database, _cfg, _root):
+    with _session(_home(ctx)) as (database, _cfg, _root):
         job_id = _resolve(database, identifier)
         job = db.get_job(database, job_id)
 
@@ -660,7 +692,7 @@ def hold(ctx: click.Context, identifier: str) -> None:
 @click.pass_context
 def release(ctx: click.Context, identifier: str) -> None:
     """Release a held job back to ``queued``."""
-    with _session(ctx.obj["home"]) as (database, _cfg, _root):
+    with _session(_home(ctx)) as (database, _cfg, _root):
         job_id = _resolve(database, identifier)
         job = db.get_job(database, job_id)
 
@@ -680,10 +712,11 @@ def release(ctx: click.Context, identifier: str) -> None:
 
 @main.command()
 @click.argument("identifier")
+@home_option
 @click.pass_context
-def resume(ctx: click.Context, identifier: str) -> None:
+def resume(ctx: click.Context, identifier: str, home: Path | None) -> None:
     """exec into ``claude --resume <conversation_id>`` in the job's cwd."""
-    with _session(ctx.obj["home"]) as (database, _cfg, _root):
+    with _session(_home(ctx, home)) as (database, _cfg, _root):
         job_id = _resolve(database, identifier)
         job = db.get_job(database, job_id)
 
@@ -705,14 +738,14 @@ def resume(ctx: click.Context, identifier: str) -> None:
 @click.pass_context
 def run_(ctx: click.Context, job_id: int) -> None:
     """Internal; execute one dispatched job to completion (spawned by tick)."""
-    with _session(ctx.obj["home"]) as (database, cfg, root):
+    with _session(_home(ctx)) as (database, cfg, root):
         if db.get_job(database, job_id) is None:
             raise click.ClickException(f"no job with id {job_id}")
         _run_job(
             database,
             job_id,
             root=root,
-            on_complete=scheduler.tick_argv(home=ctx.obj["home"]),
+            on_complete=scheduler.tick_argv(home=_home(ctx)),
             claude_cmd=_claude_cmd,
             config=cfg,
         )
@@ -728,10 +761,10 @@ def run_(ctx: click.Context, job_id: int) -> None:
 @click.pass_context
 def tick(ctx: click.Context, quiet: bool) -> None:
     """Internal; run one scheduler pass -- promote due jobs and dispatch ready ones (used by cron and the run chain)."""
-    home = ctx.obj["home"]
+    home = _home(ctx)
     with _session(home) as (database, cfg, root):
         # Bind --home into the dispatch: the detached `ccq run` must come back
-        # to *this* queue, not to whichever job holds that id in ~/.ccq.
+        # to *this* queue, not to whichever job holds that id in ~/.windowsill.
         result = scheduler.tick(
             database,
             root=root,

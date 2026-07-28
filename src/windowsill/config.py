@@ -1,4 +1,4 @@
-"""ccq configuration: ``~/.ccq/config.toml``.
+"""windowsill configuration: ``~/.windowsill/config.toml``.
 
 Loads the user's config file with :mod:`tomllib` and fills in anything
 missing — at any nesting level — with the defaults documented in
@@ -15,7 +15,7 @@ which returns a :class:`Config` — an ordinary ``dict`` of the merged
 settings, plus the path it was read from (or would have been read from).
 Both the config file path and the "home" directory it's resolved under
 can be overridden, so callers (and tests) never need to touch the real
-``~/.ccq``.
+``~/.windowsill``.
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ DEFAULTS: dict[str, Any] = {
 
 
 class Config(dict):
-    """The fully-resolved ccq configuration.
+    """The fully-resolved windowsill configuration.
 
     A plain ``dict`` of the merged settings (defaults overridden by
     whatever was in the TOML file), so callers use it the obvious way,
@@ -99,24 +99,51 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return merged
 
 
+#: Where state lives under the home directory. ``.ccq`` is what every
+#: install before the rename used.
+STATE_DIR_NAME = ".windowsill"
+LEGACY_STATE_DIR_NAME = ".ccq"
+
+
+def state_dir(home: Path | None = None) -> Path:
+    """Return the directory holding the DB, config, logs, and job dirs.
+
+    ``<home>/.windowsill``, except when that does not exist and a
+    ``<home>/.ccq`` from before the rename does — then the old one is used
+    unchanged.
+
+    A rename must not stand between the user and their queue. That
+    directory holds queued jobs, the run ledger, and the job dirs of runs
+    still in flight; silently resolving to a fresh empty ``.windowsill``
+    would leave a cron ``ccq tick`` dispatching from an empty queue while
+    the real one sat untouched next to it. Moving it is the user's call,
+    and nothing breaks if they never make it.
+    """
+    base = home if home is not None else Path.home()
+    current = base / STATE_DIR_NAME
+    legacy = base / LEGACY_STATE_DIR_NAME
+    if not current.exists() and legacy.exists():
+        return legacy
+    return current
+
+
 def default_config_path(home: Path | None = None) -> Path:
-    """Return ``<home>/.ccq/config.toml``.
+    """Return ``<home>/.windowsill/config.toml`` (see :func:`state_dir`).
 
     Uses the real ``Path.home()`` when ``home`` is not given — callers
     that must not touch the real filesystem (e.g. tests) should always
     pass ``home`` explicitly.
     """
-    base = home if home is not None else Path.home()
-    return base / ".ccq" / "config.toml"
+    return state_dir(home) / "config.toml"
 
 
 def load_config(config_path: Path | None = None, *, home: Path | None = None) -> Config:
-    """Load ccq's configuration, defaults filled in.
+    """Load windowsill's configuration, defaults filled in.
 
     Resolution of the file to read:
 
     - ``config_path``, if given, is used verbatim.
-    - otherwise ``<home>/.ccq/config.toml`` — using the real home
+    - otherwise ``<home>/.windowsill/config.toml`` — using the real home
       directory unless ``home`` is given.
 
     If the resolved file doesn't exist, the returned :class:`Config` is

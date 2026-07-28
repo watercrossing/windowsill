@@ -1,4 +1,4 @@
-"""Tests for ccq.jobfile — directive parsing and pass-through split.
+"""Tests for windowsill.jobfile — directive parsing and pass-through split.
 
 Covers design/02-job-file.md §2 exactly: §2.1's parsing rules (shebang, comments,
 trailing-``\\`` continuation, ``shlex`` tokenisation, header-terminated-
@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ccq.jobfile import Directives, JobFile, parse_jobfile
+from windowsill.jobfile import Directives, JobFile, parse_jobfile
 
 FIXTURES_DIR = Path(__file__).parent / "fixtures" / "jobs"
 

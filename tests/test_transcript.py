@@ -1,4 +1,4 @@
-"""Tests for ccq.transcript -- rendering a run's stream.jsonl to Markdown.
+"""Tests for windowsill.transcript -- rendering a run's stream.jsonl to Markdown.
 
 Fixture-first (design/00-instructions.md §0.3): the renderer is a parser of
 the ``--output-format stream-json --verbose`` event stream, so it is pinned
@@ -14,7 +14,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from ccq import transcript
+from windowsill import transcript
 
 FIXTURES = Path(__file__).parent / "fixtures" / "stream"
 

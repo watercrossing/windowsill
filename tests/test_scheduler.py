@@ -1,10 +1,10 @@
-"""Tests for ccq.scheduler -- the `ccq tick` dispatch step (§3.1) and the
+"""Tests for windowsill.scheduler -- the `ccq tick` dispatch step (§3.1) and the
 M1 slice of the §7 job-lifecycle state machine.
 
 These tests spawn NO real process and read NO real clock: `tick`'s `now`,
 `spawn_run`, and `alive_check` are all injectable, so every "detached run"
 is a recording fake and every timestamp is a fixed string. The DB is always
-opened at a tmp_path, never ~/.ccq. Concurrent-tick serialisation is
+opened at a tmp_path, never ~/.windowsill. Concurrent-tick serialisation is
 verified against the *real* `db.dispatch_lock` (a BEGIN IMMEDIATE).
 """
 
@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 import sqlite_utils
 
-from ccq import db, runner, scheduler, usage
+from windowsill import db, runner, scheduler, usage
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -30,7 +30,7 @@ PAST = "2026-07-21T02:00:00Z"
 FUTURE = "2026-07-21T22:00:00Z"
 
 
-def make_db(tmp_path: Path, name: str = "ccq.db") -> sqlite_utils.Database:
+def make_db(tmp_path: Path, name: str = "windowsill.db") -> sqlite_utils.Database:
     return db.connect(tmp_path / name)
 
 
@@ -479,7 +479,7 @@ def test_tick_commits_claim_before_spawning_run(tmp_path: Path) -> None:
     connection opened inside it already sees the job as `running`. This is
     what lets the detached `run_job` proceed without contending on the
     tick's transaction."""
-    path = tmp_path / "ccq.db"
+    path = tmp_path / "windowsill.db"
     conn = db.connect(path)
     add_job(conn, state="ready")
     seen: dict[str, Any] = {}
@@ -497,7 +497,7 @@ def test_two_ticks_serialise_on_the_real_dispatch_lock(tmp_path: Path) -> None:
     """Two ticks, one temp DB, the real BEGIN IMMEDIATE dispatch lock: the
     first claims the single slot; the second sees the winner's claim
     committed and no-ops (§3.1 concurrent-tick serialisation)."""
-    path = tmp_path / "ccq.db"
+    path = tmp_path / "windowsill.db"
     conn1 = db.connect(path)
     conn2 = db.connect(path)
     job_id = add_job(conn1, state="ready")
@@ -520,7 +520,7 @@ def test_dispatch_lock_is_actually_held_across_the_tick(tmp_path: Path) -> None:
     """While one tick holds the dispatch lock, a second connection cannot
     acquire BEGIN IMMEDIATE -- proving the tick's evaluation is serialised
     for real (not merely by claim-visibility)."""
-    path = tmp_path / "ccq.db"
+    path = tmp_path / "windowsill.db"
     conn1 = db.connect(path)
     add_job(conn1, state="ready")
 

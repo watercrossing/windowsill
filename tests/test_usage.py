@@ -1,4 +1,4 @@
-"""Tests for ccq.usage -- the /usage window oracle (design/04-usage-oracle.md §4).
+"""Tests for windowsill.usage -- the /usage window oracle (design/04-usage-oracle.md §4).
 
 Fixture-first and clock-injected (design/00-instructions.md §0.3): the parser
 is pinned to the verbatim §4 fixtures -- **both** the open and closed forms,
@@ -15,7 +15,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ccq import usage
+from windowsill import usage
 
 FIXTURES = Path(__file__).parent / "fixtures"
 OPEN_TEXT = (FIXTURES / "usage_open.txt").read_text()

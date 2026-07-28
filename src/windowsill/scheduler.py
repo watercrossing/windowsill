@@ -3,10 +3,10 @@ and the §7 job-lifecycle state machine.
 
 ``tick`` is chain-driven and cron-floored (§3.1). One tick:
 
-1. acquires the dispatch lock (:func:`ccq.db.dispatch_lock`, a
+1. acquires the dispatch lock (:func:`windowsill.db.dispatch_lock`, a
    ``BEGIN IMMEDIATE``);
 2. **reaps** ``running`` jobs whose process died *without recording a
-   terminal state* -- the :func:`ccq.runner.reap` safety net for a machine
+   terminal state* -- the :func:`windowsill.runner.reap` safety net for a machine
    reboot or a run wrapper that was itself killed;
 3. **evaluates** the queue: expire past-deadline jobs, then promote due
    ``queued`` jobs whose ``--hold-jid`` / ``--resume-from`` dependencies
@@ -17,7 +17,7 @@ and the §7 job-lifecycle state machine.
    ceiling (§5.3); and
 5. commits and exits, **never blocking on a running job**.
 
-``tick`` must never call :func:`ccq.runner.run_job` inline -- ``run_job``
+``tick`` must never call :func:`windowsill.runner.run_job` inline -- ``run_job``
 *blocks* (it spawns the ``claude`` child and waits out its ``--timeout``).
 Instead each dispatch is handed to a *detached* process via the injectable
 ``spawn_run(job_id)``.
@@ -43,7 +43,7 @@ suite spawns no process.
 
 Everything a test must fake -- ``now``, ``spawn_run``, ``alive_check``,
 ``config`` -- is an injectable keyword with a real default, so the suite
-reads no real clock and touches no real ``~/.ccq``.
+reads no real clock and touches no real ``~/.windowsill``.
 """
 
 from __future__ import annotations
@@ -56,8 +56,8 @@ from typing import Any, Callable, Mapping
 
 import sqlite_utils
 
-from ccq import config as config_mod
-from ccq import db, runner, transcript, usage, window
+from windowsill import config as config_mod
+from windowsill import db, runner, transcript, usage, window
 
 # ---------------------------------------------------------------------------
 # the `ccq run` / `ccq tick` entrypoint contract (cli.py implements these)
@@ -65,7 +65,7 @@ from ccq import db, runner, transcript, usage, window
 
 #: argv prefix of the detached per-job run entrypoint. ``spawn_run``'s
 #: default Popens ``[*RUN_ARGV, str(job_id)]`` -- i.e. ``ccq run <id>`` --
-#: which cli.py must wire to :func:`ccq.runner.run_job`.
+#: which cli.py must wire to :func:`windowsill.runner.run_job`.
 RUN_ARGV: tuple[str, ...] = ("ccq", "run")
 
 #: argv of the next-tick chain command. ``ccq run <id>`` must pass this to
@@ -79,7 +79,7 @@ def _with_home(argv: tuple[str, ...], home: Path | None) -> list[str]:
     ``--home`` has to survive every hop of the chain. It doesn't just select a
     directory: a tick that dispatches against one home and a run that wakes up
     against another are operating on *different queues*, and the one the run
-    picks is the real ``~/.ccq``. That mis-hop dispatches whichever job holds
+    picks is the real ``~/.windowsill``. That mis-hop dispatches whichever job holds
     the same id there.
     """
     head, *tail = argv
@@ -127,7 +127,7 @@ def _resolve_now(now: "str | Callable[[], str]") -> str:
 
 
 def _setting(config: Mapping[str, Any] | None, table: str, key: str) -> Any:
-    """One ``[table].key`` from the config, falling back to :data:`ccq.config.DEFAULTS`.
+    """One ``[table].key`` from the config, falling back to :data:`windowsill.config.DEFAULTS`.
 
     ``tick``'s ``config`` is optional and may be a bare dict in tests, so every
     read goes through here rather than assuming a fully-populated mapping.
@@ -146,7 +146,7 @@ def _max_parallel(config: Mapping[str, Any] | None) -> int:
 def _parse_dt(value: str) -> datetime:
     """A stored ISO-8601 timestamp as a UTC-aware datetime.
 
-    Everything in the DB is written UTC-aware (see :mod:`ccq.cli`), but a
+    Everything in the DB is written UTC-aware (see :mod:`windowsill.cli`), but a
     hand-inserted or legacy naïve value must not silently become local time
     in a window-policy comparison, so it is read as UTC.
     """
@@ -274,7 +274,7 @@ def tick(
     comparisons are lexicographic ISO string comparisons, as elsewhere in
     the codebase). ``spawn_run(job_id)`` launches the detached run for a
     claimed job; ``alive_check`` is the pid-liveness predicate passed to
-    :func:`ccq.runner.reap`; ``probe`` is the ``/usage`` oracle (§4), called
+    :func:`windowsill.runner.reap`; ``probe`` is the ``/usage`` oracle (§4), called
     at most once per tick and only when a candidate's ``--window`` policy or
     ``--anchor`` status makes window state part of the decision (§4.2).
     ``config`` supplies ``[queue].max_parallel``, ``[queue].max_sessions_per_month``

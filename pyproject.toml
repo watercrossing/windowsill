@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ccq"
+name = "windowsill"
 version = "0.1.0"
 description = "A local batch queue for Claude Code — SGE-style job files that run prompts unattended in 5-hour windows."
 readme = "README.md"
@@ -14,7 +14,14 @@ dependencies = [
 ]
 
 [project.scripts]
-ccq = "ccq.cli:main"
+# The SGE-shaped short verbs are the daily interface; `ccq` stays as the
+# dispatcher so `--help` lists everything in one place and cron keeps
+# calling `ccq tick` (design/08-interface.md §8.1).
+ccsub = "windowsill.cli:sub"
+ccstat = "windowsill.cli:stat"
+ccdel = "windowsill.cli:del_"
+ccresume = "windowsill.cli:resume"
+ccq = "windowsill.cli:main"
 
 [dependency-groups]
 dev = [
@@ -23,7 +30,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/ccq"]
+packages = ["src/windowsill"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

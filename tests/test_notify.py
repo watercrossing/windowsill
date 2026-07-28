@@ -1,4 +1,4 @@
-"""Tests for ccq.notify -- ntfy + sendmail (design/08-interface.md §8.4).
+"""Tests for windowsill.notify -- ntfy + sendmail (design/08-interface.md §8.4).
 
 No network and no sendmail: the HTTP POST and the sendmail invocation are
 both injectable seams the tests replace with spies. The load-bearing contract
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from ccq import notify
+from windowsill import notify
 
 CONFIG: dict[str, Any] = {
     "notify": {

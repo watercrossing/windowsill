@@ -1,4 +1,4 @@
-"""Tests for ccq.cli -- the M1 command set (design/08-interface.md §8.1).
+"""Tests for windowsill.cli -- the M1 command set (design/08-interface.md §8.1).
 
 These tests spawn NO real `claude`, touch NO network, block on NO real
 clock, and spawn NO real subprocess: every command is driven through
@@ -21,8 +21,8 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
-from ccq import cli, db, scheduler, usage
-from ccq import runner as runner_mod
+from windowsill import cli, db, scheduler, usage
+from windowsill import runner as runner_mod
 
 NOW = "2026-07-22T09:00:00+00:00"
 PAST = "2026-07-21T09:00:00+00:00"
@@ -299,7 +299,7 @@ def test_sub_writes_job_md_verbatim(tmp_path: Path, runner: CliRunner) -> None:
     result = run(runner, home, "sub", str(job_file))
     job_id = int(result.output.strip())
 
-    dir_ = runner_mod.job_dir(home / ".ccq", job_id, "refactor-auth")
+    dir_ = runner_mod.job_dir(home / ".windowsill", job_id, "refactor-auth")
     assert (dir_ / "job.md").read_text() == BASIC_JOB
 
 
@@ -562,9 +562,9 @@ def test_log_prints_existing_transcript(tmp_path: Path, runner: CliRunner) -> No
     conn = make_db(home)
     job_id = add_job(conn, name="logme", state="done", finished_at=PAST)
 
-    from ccq import runner as runner_mod
+    from windowsill import runner as runner_mod
 
-    dir_ = runner_mod.job_dir(home / ".ccq", job_id, "logme")
+    dir_ = runner_mod.job_dir(home / ".windowsill", job_id, "logme")
     dir_.mkdir(parents=True)
     (dir_ / "stream.jsonl").write_text('{"type": "system"}\n')
 
@@ -579,9 +579,9 @@ def test_log_follow_drains_new_content_and_stops_when_job_finishes(tmp_path: Pat
     conn = make_db(home)
     job_id = add_job(conn, name="followme", state="running", started_at=PAST, pid=999999)
 
-    from ccq import runner as runner_mod
+    from windowsill import runner as runner_mod
 
-    dir_ = runner_mod.job_dir(home / ".ccq", job_id, "followme")
+    dir_ = runner_mod.job_dir(home / ".windowsill", job_id, "followme")
     dir_.mkdir(parents=True)
     stream_path = dir_ / "stream.jsonl"
     stream_path.write_text('{"line": 1}\n')
@@ -898,7 +898,7 @@ def test_run_executes_job_to_terminal_via_fake_claude(tmp_path: Path, runner: Cl
 
     # `ccq run` wired run_job to the right job, root, chain, and claude seam.
     assert captured["job_id"] == job_id
-    assert captured["root"] == home / ".ccq"
+    assert captured["root"] == home / ".windowsill"
     # --home survives the chain: the next tick must come back to this queue.
     assert captured["on_complete"] == ["ccq", "--home", str(home), "tick"]
     assert captured["claude_cmd"] == claude_cmd
@@ -909,8 +909,8 @@ def test_run_executes_job_to_terminal_via_fake_claude(tmp_path: Path, runner: Cl
     assert job["state"] in db.TERMINAL_STATES
     assert job["conversation_id"] == "fake-session-123"
 
-    # Expected artifacts were produced under <home>/.ccq.
-    dir_ = runner_mod.job_dir(home / ".ccq", job_id, "runme")
+    # Expected artifacts were produced under <home>/.windowsill.
+    dir_ = runner_mod.job_dir(home / ".windowsill", job_id, "runme")
     assert (dir_ / "stream.jsonl").exists()
     result_json = json.loads((dir_ / "result.json").read_text())
     assert result_json["session_id"] == "fake-session-123"
@@ -933,7 +933,7 @@ def test_run_default_seam_is_runners_run_job(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ~/.ccq is created for a fresh install (both --home and the default home)
+# ~/.windowsill is created for a fresh install (both --home and the default home)
 # ---------------------------------------------------------------------------
 
 
@@ -944,11 +944,11 @@ def test_missing_home_option_dir_is_created(tmp_path: Path, runner: CliRunner) -
     result = run(runner, home, "stat")
 
     assert result.exit_code == 0, result.output
-    assert (home / ".ccq").is_dir()
-    assert (home / ".ccq" / "ccq.db").exists()
+    assert (home / ".windowsill").is_dir()
+    assert (home / ".windowsill" / "windowsill.db").exists()
 
 
-def test_default_home_ccq_dir_is_created(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_default_home_state_dir_is_created(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
     fake_home = tmp_path / "fakehome"
     assert not fake_home.exists()
     monkeypatch.setenv("HOME", str(fake_home))
@@ -957,8 +957,8 @@ def test_default_home_ccq_dir_is_created(tmp_path: Path, runner: CliRunner, monk
     result = runner.invoke(cli.main, ["stat"])
 
     assert result.exit_code == 0, result.output
-    assert (fake_home / ".ccq").is_dir()
-    assert (fake_home / ".ccq" / "ccq.db").exists()
+    assert (fake_home / ".windowsill").is_dir()
+    assert (fake_home / ".windowsill" / "windowsill.db").exists()
 
 
 # ---------------------------------------------------------------------------
@@ -1120,7 +1120,7 @@ def test_report_rejects_an_unparseable_since(tmp_path: Path, runner: CliRunner) 
 
 def test_tick_dispatch_carries_home_into_the_detached_run(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
     """Without this, `ccq --home X tick` dispatches `ccq run <id>` with no
-    --home -- and the run wakes up against the real ~/.ccq, where that id is
+    --home -- and the run wakes up against the real ~/.windowsill, where that id is
     somebody else's job entirely."""
     home = tmp_path / "home"
     conn = make_db(home)
@@ -1142,3 +1142,85 @@ def test_tick_dispatch_carries_home_into_the_detached_run(tmp_path: Path, runner
 def test_argv_builders_omit_home_when_it_is_the_default(tmp_path: Path) -> None:
     assert scheduler.run_argv(7) == ["ccq", "run", "7"]
     assert scheduler.tick_argv() == ["ccq", "tick"]
+
+
+# ---------------------------------------------------------------------------
+# the short verbs as standalone console scripts (design/08-interface.md §8.1)
+# ---------------------------------------------------------------------------
+
+
+def test_stat_runs_as_its_own_script(tmp_path: Path, runner: CliRunner) -> None:
+    """`ccstat` invokes the command directly, so the `main` group's callback
+    never runs and ctx.obj is None. Reading the home off ctx.obj alone would
+    make every short verb crash on startup."""
+    home = tmp_path / "home"
+    add_job(make_db(home), name="standalone")
+
+    result = runner.invoke(cli.stat, ["--home", str(home)])
+
+    assert result.exit_code == 0, result.output
+    assert "standalone" in result.output
+
+
+def test_sub_runs_as_its_own_script(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    job_file = tmp_path / "job.md"
+    job_file.write_text("#$ --name from-ccsub\n\ndo the thing\n")
+
+    result = runner.invoke(cli.sub, ["--home", str(home), str(job_file)])
+
+    assert result.exit_code == 0, result.output
+    assert db.get_job(make_db(home), int(result.output.strip()))["name"] == "from-ccsub"
+
+
+def test_del_runs_as_its_own_script(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="doomed")
+
+    result = runner.invoke(cli.del_, ["--home", str(home), str(job_id)])
+
+    assert result.exit_code == 0, result.output
+    assert db.get_job(conn, job_id)["state"] == "cancelled"
+
+
+def test_resume_runs_as_its_own_script(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    home = tmp_path / "home"
+    job_id = add_job(make_db(home), name="finished", state="done", conversation_id="conv-42", cwd="/tmp/work")
+    execed: dict[str, Any] = {}
+    monkeypatch.setattr(cli, "_exec", lambda argv, cwd: execed.update(argv=argv, cwd=cwd))
+
+    result = runner.invoke(cli.resume, ["--home", str(home), str(job_id)])
+
+    assert result.exit_code == 0, result.output
+    assert execed == {"argv": ["claude", "--resume", "conv-42"], "cwd": "/tmp/work"}
+
+
+def test_a_commands_own_home_wins_over_the_groups(tmp_path: Path, runner: CliRunner) -> None:
+    """`ccq --home A stat --home B` must read B, so that the two spellings of
+    the same command can never disagree about which queue they are on."""
+    group_home = tmp_path / "group"
+    command_home = tmp_path / "command"
+    add_job(make_db(group_home), name="in-group-home")
+    add_job(make_db(command_home), name="in-command-home")
+
+    result = runner.invoke(cli.main, ["--home", str(group_home), "stat", "--home", str(command_home)])
+
+    assert result.exit_code == 0, result.output
+    assert "in-command-home" in result.output
+    assert "in-group-home" not in result.output
+
+
+def test_declared_console_scripts_all_resolve(tmp_path: Path) -> None:
+    """Guards the pyproject entry points against drift: every `windowsill.cli:X`
+    must name an object that actually exists and is invocable."""
+    import tomllib
+
+    with (Path(__file__).parent.parent / "pyproject.toml").open("rb") as f:
+        scripts = tomllib.load(f)["project"]["scripts"]
+
+    assert set(scripts) == {"ccsub", "ccstat", "ccdel", "ccresume", "ccq"}
+    for target in scripts.values():
+        module, _, attribute = target.partition(":")
+        assert module == "windowsill.cli"
+        assert callable(getattr(cli, attribute))

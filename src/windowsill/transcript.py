@@ -151,7 +151,7 @@ def iter_events(stream_path: Path) -> Iterable[dict[str, Any]]:
     """Yield the well-formed JSON objects in a ``stream.jsonl``.
 
     Blank and malformed lines are skipped, so a run killed mid-write still
-    yields everything up to the truncation. Shared with :mod:`ccq.runner`,
+    yields everything up to the truncation. Shared with :mod:`windowsill.runner`,
     which reads the same stream looking for rate-limit signals (§5.4).
     """
     with stream_path.open("r", encoding="utf-8") as f:

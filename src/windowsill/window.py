@@ -30,7 +30,7 @@ from zoneinfo import ZoneInfo
 
 import sqlite_utils
 
-from ccq import db, usage
+from windowsill import db, usage
 
 _WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
@@ -150,7 +150,7 @@ def record_probe(
        probe is the first read that does, so complete that row in place.
     3. Otherwise insert. A window we merely observed -- opened from a phone,
        say -- still counts: the ceiling measures windows on the account, not
-       windows ccq is proud of.
+       windows this tool is proud of.
     """
     if not parsed.is_open:
         return None

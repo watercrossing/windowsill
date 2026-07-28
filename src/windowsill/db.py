@@ -1,4 +1,4 @@
-"""ccq state layer: ``~/.ccq/ccq.db`` (see design/06-state.md §6).
+"""windowsill state layer: ``~/.windowsill/windowsill.db`` (see design/06-state.md §6).
 
 One SQLite database holds all mutable state: ``jobs``, ``runs``,
 ``window``, ``sched``, ``events``. It doubles as the scheduler's lock —
@@ -15,8 +15,8 @@ query builder, no ORM. Callers get back plain dicts (JSON columns like
 whenever a helper doesn't cover what they need.
 
 The DB path is always explicit or derived from an explicit ``home`` —
-mirroring :mod:`ccq.config` — so tests (and any caller that cares) never
-touch the real ``~/.ccq``.
+mirroring :mod:`windowsill.config` — so tests (and any caller that cares) never
+touch the real ``~/.windowsill``.
 """
 
 from __future__ import annotations
@@ -28,6 +28,8 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import sqlite_utils
+
+from windowsill import config
 
 # ---------------------------------------------------------------------------
 # schema (design/06-state.md §6, verbatim)
@@ -105,7 +107,7 @@ _JOB_JSON_FIELDS = ("passthrough", "hold_jid")
 #: Columns added to the §6 schema after a database may already exist on
 #: disk. ``CREATE TABLE IF NOT EXISTS`` leaves an existing table's shape
 #: alone, so :func:`connect` ALTERs these in explicitly — the schema above
-#: stays the single description of the table, and an old ``~/.ccq/ccq.db``
+#: stays the single description of the table, and an old ``~/.windowsill/windowsill.db``
 #: keeps its jobs instead of needing a rebuild.
 ADDED_COLUMNS: dict[str, dict[str, str]] = {
     "jobs": {"log_path": "TEXT"},
@@ -136,14 +138,20 @@ class AmbiguousIdentifierError(IdentifierError):
 
 
 def default_db_path(home: Path | None = None) -> Path:
-    """Return ``<home>/.ccq/ccq.db``.
+    """Return ``<home>/.windowsill/windowsill.db``.
+
+    The filename follows the directory: a pre-rename ``~/.ccq`` holds a
+    ``ccq.db``, and that is the file with the queue in it
+    (:func:`windowsill.config.state_dir`). Creating a fresh
+    ``windowsill.db`` beside it would silently start an empty queue.
 
     Uses the real ``Path.home()`` when ``home`` is not given — callers
     that must not touch the real filesystem (e.g. tests) should always
     pass ``home`` explicitly.
     """
-    base = home if home is not None else Path.home()
-    return base / ".ccq" / "ccq.db"
+    directory = config.state_dir(home)
+    name = "ccq.db" if directory.name == config.LEGACY_STATE_DIR_NAME else "windowsill.db"
+    return directory / name
 
 
 def connect(
@@ -154,8 +162,8 @@ def connect(
 ) -> sqlite_utils.Database:
     """Open (creating if needed) the ccq state DB with the §6 schema.
 
-    Resolution of the file to open mirrors :func:`ccq.config.load_config`:
-    ``db_path`` if given, otherwise ``<home>/.ccq/ccq.db``.
+    Resolution of the file to open mirrors :func:`windowsill.config.load_config`:
+    ``db_path`` if given, otherwise ``<home>/.windowsill/windowsill.db``.
 
     Enables WAL and foreign-key enforcement, creates any of the five §6
     tables that don't already exist (safe to call repeatedly against the

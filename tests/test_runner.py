@@ -1,11 +1,11 @@
-"""Tests for ccq.runner — invocation, detached spawn, reap, timeout (§3.2, §3.3, §6.2).
+"""Tests for windowsill.runner — invocation, detached spawn, reap, timeout (§3.2, §3.3, §6.2).
 
 These tests never spawn a real `claude`, never touch the network, and never
 depend on the real wall clock for correctness: every clock/sleep the runner
 consumes is an injectable parameter, and every "child process" is either a
 plain fake object or a tiny local Python script standing in for `claude`
 (never the real thing). The job-directory root is always a tmp_path, never
-~/.ccq, and the DB (where used) is always opened at a tmp_path too.
+~/.windowsill, and the DB (where used) is always opened at a tmp_path too.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ccq import db, notify, runner, usage
+from windowsill import db, notify, runner, usage
 
 # ---------------------------------------------------------------------------
 # helpers: fake "claude" scripts (never the real claude, never a network call)
@@ -645,7 +645,7 @@ def _make_job(conn, tmp_path: Path, *, timeout: str | None = None, log_path: str
 
 
 def test_run_job_success_updates_db_and_writes_artifacts(tmp_path: Path) -> None:
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path)
 
     claude_cmd = _write_script(tmp_path, "claude_ok.py", SUCCESS_SCRIPT)
@@ -696,7 +696,7 @@ def test_run_job_success_updates_db_and_writes_artifacts(tmp_path: Path) -> None
 def test_run_job_copies_transcript_to_log_destination(tmp_path: Path) -> None:
     """§2.3 --log: the rendered transcript is written to the requested path
     *as well as* the canonical job-dir copy (§6.2), parents created."""
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path, log_path="logs/nightly/")
     claude_cmd = _write_script(tmp_path, "claude_ok.py", SUCCESS_SCRIPT)
 
@@ -719,7 +719,7 @@ def test_run_job_copies_transcript_to_log_destination(tmp_path: Path) -> None:
 def test_run_job_unwritable_log_destination_does_not_fail_the_run(tmp_path: Path) -> None:
     """The run already happened -- an unusable --log path must not cost us the
     job dir's transcript or the job's terminal state."""
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     blocker = tmp_path / "blocker"
     blocker.write_text("i am a file, not a directory")
     job_id = _make_job(conn, tmp_path, log_path=str(blocker / "run.md"))
@@ -740,7 +740,7 @@ def test_run_job_unwritable_log_destination_does_not_fail_the_run(tmp_path: Path
 
 
 def test_run_job_failure_marks_job_failed(tmp_path: Path) -> None:
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path)
     claude_cmd = _write_script(tmp_path, "claude_err.py", ERROR_SCRIPT)
 
@@ -765,7 +765,7 @@ def test_run_job_counts_permission_denials_even_when_envelope_reads_success(tmp_
     anything must not just read "done" -- the denial count has to land
     somewhere. The run outcome itself is untouched: still whatever the
     envelope says, "done" here, no new job state invented."""
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path)
     claude_cmd = _write_script(tmp_path, "claude_denied.py", PERMISSION_DENIED_SCRIPT)
 
@@ -788,7 +788,7 @@ def test_run_job_counts_permission_denials_even_when_envelope_reads_success(tmp_
 
 
 def test_run_job_permission_denials_is_zero_when_envelope_list_is_empty(tmp_path: Path) -> None:
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path)
     claude_cmd = _write_script(tmp_path, "claude_ok.py", SUCCESS_SCRIPT)
 
@@ -809,7 +809,7 @@ def test_run_job_permission_denials_is_none_without_a_result_event(tmp_path: Pat
     """A run killed before ever emitting a result event has no envelope to
     read a denial count from -- ``None``, not ``0``, mirrors how num_turns
     and duration_ms already behave for this case."""
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path)
     claude_cmd = _write_script(tmp_path, "claude_noresult.py", NO_RESULT_SCRIPT)
 
@@ -828,7 +828,7 @@ def test_run_job_permission_denials_is_none_without_a_result_event(tmp_path: Pat
 
 
 def test_run_job_timeout_marks_job_failed_with_timeout_outcome(tmp_path: Path) -> None:
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path, timeout="0s")
     claude_cmd = _write_script(tmp_path, "claude_hang.py", HANG_IGNORES_SIGTERM_SCRIPT)
 
@@ -855,7 +855,7 @@ def test_run_job_killed_midrun_marks_job_failed_not_killed(tmp_path: Path) -> No
     """A run that dies mid-flight without a result event (kill -9 / OOM) has
     run outcome "killed" (§6) but must leave a *failed* job -- "killed" is not
     a §7 job state -- with a readable partial transcript (§11 acceptance #10)."""
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path)
     claude_cmd = _write_script(tmp_path, "claude_noresult.py", NO_RESULT_SCRIPT)
 
@@ -884,7 +884,7 @@ def test_run_job_spawns_on_complete_detached_via_popen_argv(tmp_path: Path) -> N
     """The on-complete command must be handed to Popen as an argv list and
     never awaited in-process -- verified here with a fake popen spy so no
     real process is involved at all."""
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path)
     claude_cmd = _write_script(tmp_path, "claude_ok.py", SUCCESS_SCRIPT)
 
@@ -917,7 +917,7 @@ def test_run_job_spawns_on_complete_detached_via_popen_argv(tmp_path: Path) -> N
 
 
 def test_run_job_uses_resume_id_from_job_row(tmp_path: Path) -> None:
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = db.insert_job(
         conn,
         name="continue-work",
@@ -947,12 +947,12 @@ def test_run_job_uses_resume_id_from_job_row(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# job-directory root is injectable (never ~/.ccq)
+# job-directory root is injectable (never ~/.windowsill)
 # ---------------------------------------------------------------------------
 
 
 def test_run_job_writes_under_injected_root_only(tmp_path: Path) -> None:
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path)
     claude_cmd = _write_script(tmp_path, "claude_ok.py", SUCCESS_SCRIPT)
     custom_root = tmp_path / "custom-root"
@@ -1019,7 +1019,7 @@ def _run(conn, job_id, tmp_path, script=SUCCESS_SCRIPT, **kwargs):
 
 
 def test_probes_before_and_after_record_the_delta(tmp_path: Path) -> None:
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path)
     probe = FakeProbe(_reading(10, "2026-07-21T07:00:00+00:00"), _reading(25, "2026-07-21T07:00:00+00:00"))
 
@@ -1033,7 +1033,7 @@ def test_probes_before_and_after_record_the_delta(tmp_path: Path) -> None:
 
 
 def test_a_failing_probe_does_not_fail_the_run(tmp_path: Path) -> None:
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path)
 
     def broken_probe():
@@ -1049,7 +1049,7 @@ def test_a_failing_probe_does_not_fail_the_run(tmp_path: Path) -> None:
 def test_pre_run_probe_completes_the_ledger_row_the_tick_opened(tmp_path: Path) -> None:
     """§5.3: the tick opens a window row with no reset_at (it can't know one);
     the run's own pre-probe is the first read that does."""
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path)
     db.insert_window(conn, opened_at="2026-07-21T01:59:00+00:00", opened_by=job_id)
     probe = FakeProbe(_reading(10, "2026-07-21T07:00:00+00:00"))
@@ -1063,7 +1063,7 @@ def test_pre_run_probe_completes_the_ledger_row_the_tick_opened(tmp_path: Path) 
 
 
 def test_rate_limited_run_requeues_and_blocks_the_scheduler(tmp_path: Path) -> None:
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path)
     probe = FakeProbe(_reading(99, None), _reading(99, "2026-07-21T07:00:00+00:00"))
 
@@ -1087,7 +1087,7 @@ def test_rate_limited_run_requeues_and_blocks_the_scheduler(tmp_path: Path) -> N
 
 
 def test_rate_limit_falls_back_to_the_signals_own_reset(tmp_path: Path) -> None:
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path)
     probe = FakeProbe(_reading(99, None))  # probe reports closed, so it can't help
 
@@ -1098,7 +1098,7 @@ def test_rate_limit_falls_back_to_the_signals_own_reset(tmp_path: Path) -> None:
 
 
 def test_rate_limit_falls_back_to_now_plus_the_window_length(tmp_path: Path) -> None:
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path)
     script = RATE_LIMITED_SCRIPT.replace(', "resetsAt": 1785200000', "").replace(" reached", " reached (no time given)")
 
@@ -1109,7 +1109,7 @@ def test_rate_limit_falls_back_to_now_plus_the_window_length(tmp_path: Path) -> 
 
 
 def test_no_resume_on_limit_keeps_the_original_body(tmp_path: Path) -> None:
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = db.insert_job(
         conn,
         name="nightly-lint",
@@ -1130,7 +1130,7 @@ def test_no_resume_on_limit_keeps_the_original_body(tmp_path: Path) -> None:
 
 
 def test_failed_run_with_retries_left_requeues(tmp_path: Path) -> None:
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = db.insert_job(
         conn,
         name="nightly-lint",
@@ -1152,7 +1152,7 @@ def test_failed_run_with_retries_left_requeues(tmp_path: Path) -> None:
 
 
 def test_failed_run_with_retries_exhausted_fails(tmp_path: Path) -> None:
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = db.insert_job(
         conn,
         name="nightly-lint",
@@ -1173,7 +1173,7 @@ def test_failed_run_with_retries_exhausted_fails(tmp_path: Path) -> None:
 
 
 def test_successful_run_notifies_on_the_jobs_channel(tmp_path: Path) -> None:
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = db.insert_job(
         conn,
         name="nightly-lint",
@@ -1204,7 +1204,7 @@ def test_successful_run_notifies_on_the_jobs_channel(tmp_path: Path) -> None:
 def test_notification_flags_nonzero_permission_denials(tmp_path: Path) -> None:
     """§8.4/§9: the completion notification is exactly where an unattended
     "done" that wrote nothing must be caught before the morning after."""
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = db.insert_job(
         conn,
         name="nightly-lint",
@@ -1230,7 +1230,7 @@ def test_notification_flags_nonzero_permission_denials(tmp_path: Path) -> None:
 
 def test_requeued_run_does_not_notify(tmp_path: Path) -> None:
     """A job that will run again hasn't finished -- no 03:00 phone buzz."""
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = db.insert_job(
         conn,
         name="nightly-lint",
@@ -1256,7 +1256,7 @@ def test_requeued_run_does_not_notify(tmp_path: Path) -> None:
 
 
 def test_failed_notification_is_logged_and_never_fails_the_job(tmp_path: Path) -> None:
-    conn = db.connect(tmp_path / "ccq.db")
+    conn = db.connect(tmp_path / "windowsill.db")
     job_id = db.insert_job(
         conn,
         name="nightly-lint",

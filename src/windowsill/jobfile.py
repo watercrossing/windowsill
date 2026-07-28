@@ -1,4 +1,4 @@
-"""ccq job files: directive parsing and the pass-through split.
+"""windowsill job files: directive parsing and the pass-through split.
 
 Implements design/02-job-file.md §2 exactly. A job file is a UTF-8 text file: a
 directive header, a blank line, then the prompt body (verbatim, no

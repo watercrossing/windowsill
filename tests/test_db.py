@@ -1,6 +1,6 @@
-"""Tests for ccq.db — the SQLite state layer (design/06-state.md §6).
+"""Tests for windowsill.db — the SQLite state layer (design/06-state.md §6).
 
-These tests never touch the real ~/.ccq: every DB is opened at a path
+These tests never touch the real ~/.windowsill: every DB is opened at a path
 under pytest's tmp_path fixture. No network, no clock — timestamps are
 always passed in explicitly by the test, never read from the system.
 """
@@ -13,14 +13,14 @@ from pathlib import Path
 
 import pytest
 
-from ccq import db
+from windowsill import db
 
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
 
 
-def make_db(tmp_path: Path, name: str = "ccq.db") -> "db.sqlite_utils.Database":
+def make_db(tmp_path: Path, name: str = "windowsill.db") -> "db.sqlite_utils.Database":
     return db.connect(tmp_path / name)
 
 
@@ -142,7 +142,7 @@ def test_migrate_is_a_noop_on_an_up_to_date_database(tmp_path: Path) -> None:
 
 def test_connect_is_idempotent(tmp_path: Path) -> None:
     """Reopening an existing DB must not error or wipe data."""
-    path = tmp_path / "ccq.db"
+    path = tmp_path / "windowsill.db"
     conn1 = db.connect(path)
     job_id = insert_bare_job(conn1, name="foo", state="queued")
 
@@ -151,10 +151,41 @@ def test_connect_is_idempotent(tmp_path: Path) -> None:
 
 
 def test_connect_creates_parent_directory(tmp_path: Path) -> None:
-    path = tmp_path / "nested" / "dir" / "ccq.db"
+    path = tmp_path / "nested" / "dir" / "windowsill.db"
     conn = db.connect(path)
     assert path.exists()
     insert_bare_job(conn, name="foo", state="queued")
+
+
+# ---------------------------------------------------------------------------
+# default_db_path — the filename follows the directory
+# ---------------------------------------------------------------------------
+
+
+def test_default_db_path_on_a_fresh_home(tmp_path: Path) -> None:
+    assert db.default_db_path(tmp_path) == tmp_path / ".windowsill" / "windowsill.db"
+
+
+def test_default_db_path_keeps_ccq_db_in_a_pre_rename_home(tmp_path: Path) -> None:
+    """The pre-rename directory holds ccq.db, and that is the queue.
+
+    Resolving to a windowsill.db beside it would open an empty database and
+    quietly drop every queued job on the floor.
+    """
+    legacy = tmp_path / ".ccq"
+    legacy.mkdir()
+
+    assert db.default_db_path(tmp_path) == legacy / "ccq.db"
+
+
+def test_connect_on_a_pre_rename_home_finds_the_existing_jobs(tmp_path: Path) -> None:
+    legacy = tmp_path / ".ccq"
+    legacy.mkdir()
+    job_id = insert_bare_job(db.connect(legacy / "ccq.db"), name="from-before-the-rename", state="queued")
+
+    conn = db.connect(home=tmp_path)
+
+    assert db.get_job(conn, job_id)["name"] == "from-before-the-rename"
 
 
 # ---------------------------------------------------------------------------
@@ -196,7 +227,7 @@ def test_dispatch_lock_serializes_two_connections(tmp_path: Path) -> None:
     """A second connection must not be able to acquire the dispatch lock
     while the first one holds it — this is the whole point of BEGIN
     IMMEDIATE as the scheduler's mutex."""
-    path = tmp_path / "ccq.db"
+    path = tmp_path / "windowsill.db"
     conn1 = db.connect(path)
 
     # Short busy_timeout so the test doesn't hang for seconds.
@@ -222,7 +253,7 @@ def test_dispatch_lock_serializes_two_connections(tmp_path: Path) -> None:
 def test_dispatch_lock_second_connection_succeeds_after_first_releases(
     tmp_path: Path,
 ) -> None:
-    path = tmp_path / "ccq.db"
+    path = tmp_path / "windowsill.db"
     conn1 = db.connect(path)
     with db.dispatch_lock(conn1):
         insert_bare_job(conn1, name="foo", state="queued")
@@ -247,7 +278,7 @@ def test_connect_seeds_single_sched_row(tmp_path: Path) -> None:
 
 
 def test_connect_does_not_duplicate_sched_row_on_reopen(tmp_path: Path) -> None:
-    path = tmp_path / "ccq.db"
+    path = tmp_path / "windowsill.db"
     db.connect(path)
     db.connect(path)
     conn = db.connect(path)
