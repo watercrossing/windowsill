@@ -39,7 +39,7 @@ from typing import Iterator
 import click
 import sqlite_utils
 
-from ccq import config, db, jobfile, runner, scheduler
+from ccq import config, db, jobfile, runner, scheduler, window
 
 # ---------------------------------------------------------------------------
 # injectable seams -- see module docstring. Production defaults here;
@@ -376,6 +376,110 @@ def stat(ctx: click.Context, show_all: bool, with_timezone: bool) -> None:
             reset_at = _local(window.get("reset_at"), with_timezone=with_timezone)
             click.echo(f"window: open (pct_used={window.get('pct_used')}, resets {reset_at})")
         click.echo(f"30d sessions: {_window_count_30d(database, now_str)}")
+
+
+# ---------------------------------------------------------------------------
+# ccq usage
+# ---------------------------------------------------------------------------
+
+#: §4.2: "Rate-limit to 1 probe per 10s". A probe is free but not polite.
+PROBE_MIN_INTERVAL_SECONDS = 10
+
+
+@main.command("usage")
+@click.option("--probe", "force_probe", is_flag=True, help="Read /usage now instead of the cached window state.")
+@click.option("--with-timezone", is_flag=True, help="Show times with their UTC offset instead of bare system local time.")
+@click.pass_context
+def usage_(ctx: click.Context, force_probe: bool, with_timezone: bool) -> None:
+    """Cached window state. ``--probe`` forces a fresh read."""
+    with _session(ctx.obj["home"]) as (database, cfg, _root):
+        now_str = _iso_now()
+        window_row = db.current_window(database, now_str)
+
+        if force_probe:
+            # §4.2: cheap, but not free of manners -- refuse to hammer it.
+            last = (window_row or {}).get("probed_at")
+            if last and (_parse_iso(now_str) - _parse_iso(last)).total_seconds() < PROBE_MIN_INTERVAL_SECONDS:
+                raise click.ClickException(f"probed less than {PROBE_MIN_INTERVAL_SECONDS}s ago; showing cache is `ccq usage`")
+            parsed = _probe()
+            window.record_probe(database, parsed, now_str=now_str)
+            window_row = db.current_window(database, now_str)
+
+        if window_row is None:
+            click.echo("window: closed")
+        else:
+            pct = window_row.get("pct_used")
+            resets = _local(window_row.get("reset_at"), with_timezone=with_timezone)
+            click.echo(f"window: open · {pct if pct is not None else '?'}% used · resets {resets}")
+            if window_row.get("weekly_pct") is not None:
+                weekly_reset = _local(window_row.get("weekly_reset_at"), with_timezone=with_timezone)
+                click.echo(f"week (all models): {window_row['weekly_pct']}% · resets {weekly_reset}")
+            if window_row.get("extra_bucket"):
+                click.echo(f"week ({window_row['extra_bucket']}): {window_row['extra_pct']}%")
+            click.echo(f"last probe: {_local(window_row.get('probed_at'), with_timezone=with_timezone)}")
+
+        ceiling = cfg["queue"]["max_sessions_per_month"]
+        click.echo(f"30d windows: {_window_count_30d(database, now_str)} / {ceiling}")
+
+        blocked_until = db.get_sched(database).get("blocked_until")
+        if blocked_until and blocked_until > now_str:
+            click.echo(f"blocked until {_local(blocked_until, with_timezone=with_timezone)}")
+
+
+# ---------------------------------------------------------------------------
+# ccq report
+# ---------------------------------------------------------------------------
+
+
+def _since_cutoff(now_str: str, since: str) -> str:
+    """``--since 24h`` as an absolute timestamp comparable with the DB's."""
+    seconds = runner.parse_timeout_seconds(since)
+    if seconds is None:
+        raise click.ClickException(f"unparseable --since: {since!r}")
+    return (_parse_iso(now_str) - timedelta(seconds=seconds)).isoformat()
+
+
+def _delta_pct(database: sqlite_utils.Database, job_id: int) -> int | None:
+    """Δ window % of a job's last run (§4.3), when both probes landed."""
+    runs = db.list_runs(database, job_id=job_id)
+    if not runs:
+        return None
+    last = runs[-1]
+    if last.get("pct_before") is None or last.get("pct_after") is None:
+        return None
+    return last["pct_after"] - last["pct_before"]
+
+
+@main.command()
+@click.option("--since", default="24h", show_default=True, help="How far back to report (e.g. 24h, 7d, 90m).")
+@click.option("--with-timezone", is_flag=True, help="Show times with their UTC offset instead of bare system local time.")
+@click.pass_context
+def report(ctx: click.Context, since: str, with_timezone: bool) -> None:
+    """Digest: what ran, delta%, duration, state -- one line each."""
+    with _session(ctx.obj["home"]) as (database, _cfg, _root):
+        now_str = _iso_now()
+        cutoff = _since_cutoff(now_str, since)
+
+        jobs = [job for job in db.list_jobs(database) if max(job.get("started_at") or "", job.get("finished_at") or "") >= cutoff]
+
+        click.echo(f"since {_local(cutoff, with_timezone=with_timezone)} ({since})")
+        click.echo("")
+
+        total_delta = 0
+        for job in jobs:
+            delta = _delta_pct(database, job["id"])
+            if delta is not None:
+                total_delta += delta
+            delta_text = f"Δ {delta}%" if delta is not None else "Δ -"
+            click.echo(f"{job['id']:<5} {job['name']:<24} {job['state']:<10} {_elapsed(job, now_str):<9} {delta_text:<7} ccq resume {job['id']}")
+
+        if not jobs:
+            click.echo("(nothing ran)")
+
+        click.echo("")
+        window_row = db.current_window(database, now_str)
+        window_text = "closed" if window_row is None else f"open until {_local(window_row.get('reset_at'), with_timezone=with_timezone)}"
+        click.echo(f"{len(jobs)} jobs · Δ {total_delta}% · window: {window_text} · {_window_count_30d(database, now_str)} windows in 30d")
 
 
 # ---------------------------------------------------------------------------

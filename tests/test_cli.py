@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -932,3 +933,127 @@ def test_default_home_ccq_dir_is_created(tmp_path: Path, runner: CliRunner, monk
     assert result.exit_code == 0, result.output
     assert (fake_home / ".ccq").is_dir()
     assert (fake_home / ".ccq" / "ccq.db").exists()
+
+
+# ---------------------------------------------------------------------------
+# ccq usage (§8.1, §4.2)
+# ---------------------------------------------------------------------------
+
+
+def test_usage_reads_the_cache_and_never_probes(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, pin_tz) -> None:
+    # §4.2: "ccq stat reads cache and never probes; ccq usage --probe is the
+    # explicit override."
+    home = tmp_path / "home"
+    conn = make_db(home)
+    db.insert_window(conn, opened_at=PAST, reset_at=FUTURE, probed_at=PAST, pct_used=15, weekly_pct=1, extra_bucket="Fable", extra_pct=0)
+    monkeypatch.setattr(cli, "_probe", lambda: pytest.fail("ccq usage probed without --probe"))
+
+    pin_tz("Etc/GMT-1")
+    result = run(runner, home, "usage")
+
+    assert result.exit_code == 0, result.output
+    assert "window: open · 15% used · resets 2026-07-23 10:00" in result.output
+    assert "week (all models): 1%" in result.output
+    assert "week (Fable): 0%" in result.output
+    assert "30d windows: 1 / 60" in result.output
+
+
+def test_usage_closed_window(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    make_db(home)
+
+    result = run(runner, home, "usage")
+
+    assert "window: closed" in result.output
+    assert "30d windows: 0 / 60" in result.output
+
+
+def test_usage_probe_refreshes_the_cache(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, pin_tz) -> None:
+    home = tmp_path / "home"
+    make_db(home)
+    reading = usage.ParsedUsage(pct_used=42, reset_at=datetime.fromisoformat(FUTURE))
+    monkeypatch.setattr(cli, "_probe", lambda: reading)
+
+    pin_tz("Etc/GMT-1")
+    result = run(runner, home, "usage", "--probe")
+
+    assert result.exit_code == 0, result.output
+    assert "window: open · 42% used" in result.output
+    # ...and it is cached, so the next read needs no probe (§4.2).
+    assert db.current_window(make_db(home), NOW)["pct_used"] == 42
+
+
+def test_usage_probe_is_rate_limited(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    """§4.2: 1 probe per 10s. Free is not the same as polite."""
+    home = tmp_path / "home"
+    conn = make_db(home)
+    db.insert_window(conn, opened_at=PAST, reset_at=FUTURE, probed_at=NOW, pct_used=15)
+    monkeypatch.setattr(cli, "_probe", lambda: pytest.fail("probed again within the interval"))
+
+    result = run(runner, home, "usage", "--probe")
+
+    assert result.exit_code != 0
+    assert "less than 10s ago" in result.output
+
+
+def test_usage_shows_a_live_block(tmp_path: Path, runner: CliRunner, pin_tz) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    db.update_sched(conn, blocked_until=FUTURE, blocked_reason="rate limit")
+
+    pin_tz("Etc/GMT-1")
+    result = run(runner, home, "usage")
+
+    assert "blocked until 2026-07-23 10:00" in result.output
+
+
+# ---------------------------------------------------------------------------
+# ccq report (§8.1: the actual product at 08:00)
+# ---------------------------------------------------------------------------
+
+
+def test_report_lists_what_ran_with_delta_and_resume_line(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="nightly-lint", state="done", started_at=PAST, finished_at=NOW)
+    run_id = db.insert_run(conn, job_id=job_id, started_at=PAST)
+    db.update_run(conn, run_id, finished_at=NOW, outcome="done", pct_before=10, pct_after=22)
+
+    result = run(runner, home, "report", "--since", "48h")
+
+    assert result.exit_code == 0, result.output
+    assert "nightly-lint" in result.output
+    assert "Δ 12%" in result.output
+    assert f"ccq resume {job_id}" in result.output
+    assert "1 jobs · Δ 12%" in result.output
+
+
+def test_report_excludes_jobs_older_than_since(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    add_job(conn, name="last-week", state="done", started_at=OLD, finished_at=OLD)
+
+    result = run(runner, home, "report", "--since", "24h")
+
+    assert "last-week" not in result.output
+    assert "(nothing ran)" in result.output
+
+
+def test_report_includes_a_job_with_no_delta(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    add_job(conn, name="killed-one", state="failed", started_at=PAST, finished_at=PAST)
+
+    result = run(runner, home, "report")
+
+    assert "killed-one" in result.output
+    assert "Δ -" in result.output
+
+
+def test_report_rejects_an_unparseable_since(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    make_db(home)
+
+    result = run(runner, home, "report", "--since", "last tuesday")
+
+    assert result.exit_code != 0
