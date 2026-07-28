@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   priority      INTEGER NOT NULL DEFAULT 0,
   isolate       TEXT, allow_dirty INTEGER NOT NULL DEFAULT 0,
   notify        TEXT, timeout TEXT,
+  log_path      TEXT,                 -- §2.3 --log; extra transcript.md destination
   no_resume_on_limit INTEGER NOT NULL DEFAULT 0,
   conversation_id TEXT,               -- opaque; Claude's session_id
   pid           INTEGER, exit_code INTEGER
@@ -99,6 +100,15 @@ CREATE TABLE IF NOT EXISTS events (    -- audit trail; feeds ccq report
 TERMINAL_STATES: frozenset[str] = frozenset({"done", "failed", "expired", "skipped", "cancelled"})
 
 _JOB_JSON_FIELDS = ("passthrough", "hold_jid")
+
+#: Columns added to the §6 schema after a database may already exist on
+#: disk. ``CREATE TABLE IF NOT EXISTS`` leaves an existing table's shape
+#: alone, so :func:`connect` ALTERs these in explicitly — the schema above
+#: stays the single description of the table, and an old ``~/.ccq/ccq.db``
+#: keeps its jobs instead of needing a rebuild.
+ADDED_COLUMNS: dict[str, dict[str, str]] = {
+    "jobs": {"log_path": "TEXT"},
+}
 
 
 # ---------------------------------------------------------------------------
@@ -157,8 +167,27 @@ def connect(
     database.execute("PRAGMA journal_mode = WAL")
     database.execute("PRAGMA foreign_keys = ON")
     database.executescript(SCHEMA_SQL)
+    migrate(database)
     database.execute("INSERT OR IGNORE INTO sched (id, blocked_until, blocked_reason) VALUES (1, NULL, NULL)")
     return database
+
+
+def migrate(database: sqlite_utils.Database) -> list[str]:
+    """Add any :data:`ADDED_COLUMNS` an older database is missing.
+
+    Returns the ``"<table>.<column>"`` names actually added (empty on an
+    up-to-date or brand-new DB). Idempotent, and called by :func:`connect`
+    on every open — the whole migration story is "columns get appended",
+    which SQLite does in place and for free.
+    """
+    added: list[str] = []
+    for table, columns in ADDED_COLUMNS.items():
+        existing = {column.name for column in database[table].columns}
+        for name, declaration in columns.items():
+            if name not in existing:
+                database.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
+                added.append(f"{table}.{name}")
+    return added
 
 
 @contextmanager
@@ -228,6 +257,7 @@ def insert_job(
     allow_dirty: bool | int = 0,
     notify: str | None = None,
     timeout: str | None = None,
+    log_path: str | None = None,
     no_resume_on_limit: bool | int = 0,
     conversation_id: str | None = None,
     pid: int | None = None,
@@ -259,6 +289,7 @@ def insert_job(
             allow_dirty=int(bool(allow_dirty)),
             notify=notify,
             timeout=timeout,
+            log_path=log_path,
             no_resume_on_limit=int(bool(no_resume_on_limit)),
             conversation_id=conversation_id,
             pid=pid,

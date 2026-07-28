@@ -253,6 +253,44 @@ def test_sub_mirrors_model_from_passthrough(tmp_path: Path, runner: CliRunner) -
     assert job["passthrough"] == ["--model", "claude-opus-4-8"]
 
 
+def test_sub_stores_log_directive_with_tilde_expanded(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    job_file = tmp_path / "j.md"
+    job_file.write_text("#$ --cwd /tmp/work\n#$ --log ~/logs/nightly/\n\nbody\n")
+
+    result = run(runner, home, "sub", str(job_file))
+    job = db.get_job(make_db(home), int(result.output.strip()))
+
+    assert job["log_path"] == str(Path("~/logs/nightly").expanduser()) + "/"
+
+
+def test_sub_leaves_relative_log_directive_relative(tmp_path: Path, runner: CliRunner) -> None:
+    # Resolved against the job's --cwd at write time (runner.log_destination),
+    # not against wherever `ccq sub` happened to be run from.
+    home = tmp_path / "home"
+    job_file = tmp_path / "j.md"
+    job_file.write_text("#$ --cwd /tmp/work\n#$ --log logs/run.md\n\nbody\n")
+
+    result = run(runner, home, "sub", str(job_file))
+    job = db.get_job(make_db(home), int(result.output.strip()))
+
+    assert job["log_path"] == "logs/run.md"
+
+
+def test_sub_writes_job_md_verbatim(tmp_path: Path, runner: CliRunner) -> None:
+    # §6.2: job.md is the verbatim submission, written at submit time -- so it
+    # exists even for a job that never runs.
+    home = tmp_path / "home"
+    job_file = tmp_path / "j.md"
+    job_file.write_text(BASIC_JOB)
+
+    result = run(runner, home, "sub", str(job_file))
+    job_id = int(result.output.strip())
+
+    dir_ = runner_mod.job_dir(home / ".ccq", job_id, "refactor-auth")
+    assert (dir_ / "job.md").read_text() == BASIC_JOB
+
+
 # ---------------------------------------------------------------------------
 # ccq sub: --at is normalized to UTC at store time (the naïve-local bug)
 # ---------------------------------------------------------------------------

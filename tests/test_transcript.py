@@ -132,6 +132,30 @@ def test_write_transcript_missing_stream_returns_none(tmp_path: Path) -> None:
     assert not (tmp_path / "transcript.md").exists()
 
 
+def test_write_transcript_extra_path_gets_the_same_rendering(tmp_path: Path) -> None:
+    """§2.3 --log: an addition, never a move -- the job dir keeps its copy."""
+    (tmp_path / "stream.jsonl").write_text(
+        json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "done"}]}}) + "\n"
+    )
+    extra = tmp_path / "elsewhere" / "nested" / "run.md"
+
+    path = transcript.write_transcript(tmp_path, prompt="do it", extra_path=extra)
+
+    assert path == tmp_path / "transcript.md"
+    assert extra.read_text() == path.read_text()
+
+
+def test_write_transcript_unwritable_extra_path_is_swallowed(tmp_path: Path) -> None:
+    (tmp_path / "stream.jsonl").write_text("")
+    blocker = tmp_path / "blocker"
+    blocker.write_text("a file where a directory would have to be")
+
+    path = transcript.write_transcript(tmp_path, prompt="the ask", extra_path=blocker / "run.md")
+
+    assert path is not None
+    assert "the ask" in path.read_text()
+
+
 def test_empty_stream_still_writes_a_transcript(tmp_path: Path) -> None:
     (tmp_path / "stream.jsonl").write_text("")
     path = transcript.write_transcript(tmp_path, prompt="the ask")

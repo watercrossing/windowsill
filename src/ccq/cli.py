@@ -133,6 +133,20 @@ def _default_name(source: str) -> str:
     return Path(source).stem
 
 
+def _expand_log(value: str | None) -> str | None:
+    """Expand ``~`` in a ``--log`` value, keeping any trailing separator.
+
+    The trailing ``/`` is load-bearing (§2.3: it means "a directory", even one
+    that does not exist yet) and :meth:`Path.expanduser` normalises it away.
+    """
+    if not value:
+        return None
+    expanded = str(Path(value).expanduser())
+    if value.endswith(("/", os.sep)) and not expanded.endswith(("/", os.sep)):
+        expanded += os.sep
+    return expanded
+
+
 def _parse_iso(value: str) -> datetime:
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
@@ -235,13 +249,14 @@ def main(ctx: click.Context, home: Path | None) -> None:
 @click.pass_context
 def sub(ctx: click.Context, file, run_now: bool) -> None:
     """Submit a job file. ``-`` reads stdin. Prints the new job id."""
-    with _session(ctx.obj["home"]) as (database, cfg, _root):
+    with _session(ctx.obj["home"]) as (database, cfg, root):
         text = file.read()
         jf = jobfile.parse_jobfile(text)
         d = jf.directives
 
         name = d.name or _default_name(file.name)
         cwd = str(Path(d.cwd).expanduser()) if d.cwd else str(Path.cwd())
+        log_path = _expand_log(d.log)
         isolate = d.isolate or cfg["safety"]["default_isolate"]
         notify = d.notify or cfg["notify"]["default"]
         at_time = None if run_now or d.at is None else _normalize_at(d.at)
@@ -270,8 +285,17 @@ def sub(ctx: click.Context, file, run_now: bool) -> None:
             allow_dirty=d.allow_dirty,
             notify=notify,
             timeout=d.timeout,
+            log_path=log_path,
             no_resume_on_limit=d.no_resume_on_limit,
         )
+
+        # job.md -- the verbatim submission (§6.2). Written here rather than
+        # at dispatch so the job dir holds what was submitted even for a job
+        # that is cancelled, expires, or never runs at all.
+        dir_ = runner.job_dir(root, job_id, name)
+        dir_.mkdir(parents=True, exist_ok=True)
+        runner.write_job_md(dir_, text)
+
         db.log_event(database, ts=submitted_at, job_id=job_id, kind="submitted", detail=state)
         click.echo(str(job_id))
 
@@ -357,6 +381,7 @@ def show(ctx: click.Context, identifier: str) -> None:
         click.echo(f"  allow_dirty: {bool(job['allow_dirty'])}")
         click.echo(f"  notify: {job['notify'] or '-'}")
         click.echo(f"  timeout: {job['timeout']}")
+        click.echo(f"  log: {job['log_path'] or '-'}")
         click.echo(f"  no_resume_on_limit: {bool(job['no_resume_on_limit'])}")
         click.echo(f"argv: {' '.join(argv)}")
         if transcript_path.exists():

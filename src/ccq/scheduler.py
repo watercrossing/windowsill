@@ -171,7 +171,11 @@ def tick(
             # runner._JOB_STATE_FOR_OUTCOME.
             job_state = "done" if status.outcome == "done" else "failed"
             conversation_id = status.result.get("session_id") if status.result else None
-            transcript.write_transcript(dir_, prompt=job["body"])
+            transcript.write_transcript(
+                dir_,
+                prompt=job["body"],
+                extra_path=runner.log_destination(job.get("log_path"), job_id=job["id"], name=job["name"], cwd=job["cwd"]),
+            )
             db.update_job(
                 database,
                 job["id"],

@@ -47,6 +47,7 @@ VALUE_DIRECTIVES: frozenset[str] = frozenset(
         "--before",
         "--window",
         "--cwd",
+        "--log",
         "--resume",
         "--resume-from",
         "--hold-jid",
@@ -83,6 +84,7 @@ class Directives:
     window: str = "share"
     anchor: bool = False
     cwd: str | None = None
+    log: str | None = None
     resume: str | None = None
     resume_from: str | None = None
     hold_jid: list[str] = field(default_factory=list)

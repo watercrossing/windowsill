@@ -58,6 +58,7 @@ Non-negotiable consequences:
 | `--window <policy>` | `share` | `fresh` \| `share` \| `offpeak` ([§5.1](05-windows.md)) |
 | `--anchor` | false | This is an anchor job ([§5.2](05-windows.md)). Implies `--model claude-haiku-4-5` unless overridden |
 | `--cwd <path>` | submit-time cwd | Working directory. `~` expanded at submit |
+| `--log <path>` | job dir only | Also write the rendered `transcript.md` here. A path ending in `/`, or an existing directory, gets `<id>-<name>.md` inside it; anything else is the file itself. `~` expanded at submit, relative paths resolved against `--cwd` at write time |
 | `--resume <conversation_id>` | — | Continue an explicit conversation |
 | `--resume-from <job>` | — | Continue the conversation produced by a completed job (resolved at dispatch) |
 | `--hold-jid <job>[,<job>]` | — | Wait for those jobs to reach `done` |

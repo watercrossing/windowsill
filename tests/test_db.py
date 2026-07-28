@@ -82,12 +82,36 @@ def test_jobs_table_has_expected_columns(tmp_path: Path) -> None:
         "allow_dirty",
         "notify",
         "timeout",
+        "log_path",
         "no_resume_on_limit",
         "conversation_id",
         "pid",
         "exit_code",
     }
     assert expected <= cols
+
+
+def test_migrate_adds_a_missing_column_to_an_existing_database(tmp_path: Path) -> None:
+    """A DB created before a column existed gets it added in place, keeping
+    its rows -- ``CREATE TABLE IF NOT EXISTS`` alone would leave it behind."""
+    path = tmp_path / "old.db"
+    conn = db.connect(path)
+    job_id = insert_bare_job(conn, name="pre-existing", state="queued")
+    conn.conn.execute("ALTER TABLE jobs DROP COLUMN log_path")  # pretend it predates the column
+    conn.close()
+
+    reopened = db.connect(path)
+
+    cols = {row[1] for row in reopened.conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    assert "log_path" in cols
+    job = db.get_job(reopened, job_id)
+    assert job["name"] == "pre-existing"
+    assert job["log_path"] is None
+
+
+def test_migrate_is_a_noop_on_an_up_to_date_database(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    assert db.migrate(conn) == []
 
 
 def test_connect_is_idempotent(tmp_path: Path) -> None:

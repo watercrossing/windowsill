@@ -62,6 +62,34 @@ def job_dir(root: Path, job_id: int, name: str) -> Path:
     return root / "jobs" / f"{job_id:05d}-{name}"
 
 
+def log_destination(log_path: str | None, *, job_id: int, name: str, cwd: str) -> Path | None:
+    """Resolve a job's ``--log`` (§2.3) into the extra file its rendered
+    transcript is written to, or ``None`` when the job didn't ask for one.
+
+    A value ending in a path separator, or naming a directory that already
+    exists, means "in there", under the same ``<5-digit id>-<name>`` naming
+    the job dir uses (§6.2); anything else is taken as the file itself. A
+    relative path resolves against the *job's* ``cwd``, not ccq's: the job
+    file is written from the project's point of view, while ``ccq tick``
+    runs from wherever cron left it.
+    """
+    if not log_path:
+        return None
+    path = Path(log_path).expanduser()
+    if not path.is_absolute():
+        path = Path(cwd) / path
+    if log_path.endswith(("/", os.sep)) or path.is_dir():
+        path = path / f"{job_id:05d}-{name}.md"
+    return path
+
+
+def write_job_md(dir_: Path, text: str) -> Path:
+    """Write ``job.md``: the verbatim submission (§6.2), at submit time."""
+    path = dir_ / "job.md"
+    path.write_text(text)
+    return path
+
+
 def write_cmd_json(dir_: Path, *, argv: Sequence[str], cwd: str, env: dict[str, str] | None) -> Path:
     """Write ``cmd.json``: the resolved argv + env + cwd, for reproducibility."""
     path = dir_ / "cmd.json"
@@ -452,8 +480,13 @@ def run_job(
         write_result_json(dir_, result_event)
 
     # Render the human-readable transcript (§6.2) from whatever the run left
-    # behind -- even a killed/partial stream is worth reading back.
-    transcript.write_transcript(dir_, prompt=job["body"])
+    # behind -- even a killed/partial stream is worth reading back -- and copy
+    # it to the job's --log destination if it named one (§2.3).
+    transcript.write_transcript(
+        dir_,
+        prompt=job["body"],
+        extra_path=log_destination(job.get("log_path"), job_id=job_id, name=job["name"], cwd=job["cwd"]),
+    )
 
     outcome = outcome_from_result(result_event, timed_out=timed_out)
     finished_at = now()

@@ -23,6 +23,7 @@ CREATE TABLE jobs (
   priority      INTEGER NOT NULL DEFAULT 0,
   isolate       TEXT, allow_dirty INTEGER NOT NULL DEFAULT 0,
   notify        TEXT, timeout TEXT,
+  log_path      TEXT,                 -- §2.3 --log; extra transcript.md destination
   no_resume_on_limit INTEGER NOT NULL DEFAULT 0,
   conversation_id TEXT,               -- opaque; Claude's session_id
   pid           INTEGER, exit_code INTEGER
@@ -93,3 +94,6 @@ Artifacts on disk, state in SQLite.
 ```
 
 Zero-padded `<id>-<name>` so `ls` sorts.
+
+The job dir is always written, whatever else is configured.
+`--log` ([§2.3](02-job-file.md)) adds a *second* destination for `transcript.md` — it never moves the canonical one, because everything else here (`ccq show`, `ccq log`, `ccq gc`) addresses artifacts by job dir.

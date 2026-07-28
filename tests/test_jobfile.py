@@ -273,6 +273,25 @@ def test_scheduler_directives_never_appear_in_passthrough() -> None:
     assert not (scheduler_tokens & set(jf.passthrough))
 
 
+def test_log_is_consumed_as_a_scheduler_directive() -> None:
+    # §2.3 --log: where the rendered transcript is *also* written. Scheduler
+    # directive, so it never reaches claude's argv.
+    jf = parse_jobfile("#$ --log ~/logs/nightly/\n\nbody\n")
+
+    assert jf.directives.log == "~/logs/nightly/"
+    assert jf.passthrough == []
+
+
+def test_log_value_may_be_quoted_with_spaces() -> None:
+    jf = parse_jobfile('#$ --log "~/my logs/run.md"\n\nbody\n')
+
+    assert jf.directives.log == "~/my logs/run.md"
+
+
+def test_log_defaults_to_none() -> None:
+    assert parse_jobfile(_read("basic.md")).directives.log is None
+
+
 def test_resume_and_resume_from_both_present_is_not_rejected() -> None:
     # Pass-through beats validation (§0.4): jobfile.py must not reject
     # this even though §2.3 documents them as mutually exclusive — that

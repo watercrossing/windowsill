@@ -567,11 +567,48 @@ def test_reap_dead_process_no_result_is_killed(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# log_destination: resolving --log (§2.3)
+# ---------------------------------------------------------------------------
+
+
+def test_log_destination_none_when_directive_absent() -> None:
+    assert runner.log_destination(None, job_id=42, name="lint", cwd="/tmp/work") is None
+    assert runner.log_destination("", job_id=42, name="lint", cwd="/tmp/work") is None
+
+
+def test_log_destination_absolute_file_is_used_verbatim() -> None:
+    dest = runner.log_destination("/var/log/lint.md", job_id=42, name="lint", cwd="/tmp/work")
+    assert dest == Path("/var/log/lint.md")
+
+
+def test_log_destination_trailing_slash_means_directory(tmp_path: Path) -> None:
+    # A directory that doesn't exist yet is still a directory if it's spelled
+    # like one -- run_job creates it on the way to writing the file.
+    dest = runner.log_destination(f"{tmp_path}/not-created-yet/", job_id=42, name="lint", cwd="/tmp/work")
+    assert dest == tmp_path / "not-created-yet" / "00042-lint.md"
+
+
+def test_log_destination_existing_directory_gets_job_named_file(tmp_path: Path) -> None:
+    dest = runner.log_destination(str(tmp_path), job_id=7, name="lint", cwd="/tmp/work")
+    assert dest == tmp_path / "00007-lint.md"
+
+
+def test_log_destination_relative_path_resolves_against_job_cwd(tmp_path: Path) -> None:
+    dest = runner.log_destination("logs/run.md", job_id=42, name="lint", cwd=str(tmp_path))
+    assert dest == tmp_path / "logs" / "run.md"
+
+
+def test_log_destination_relative_directory_resolves_against_job_cwd(tmp_path: Path) -> None:
+    dest = runner.log_destination("logs/", job_id=42, name="lint", cwd=str(tmp_path))
+    assert dest == tmp_path / "logs" / "00042-lint.md"
+
+
+# ---------------------------------------------------------------------------
 # run_job: the full detached-run-wrapper integration (§3.1/§3.2/§3.3/§6.2)
 # ---------------------------------------------------------------------------
 
 
-def _make_job(conn, tmp_path: Path, *, timeout: str | None = None) -> int:
+def _make_job(conn, tmp_path: Path, *, timeout: str | None = None, log_path: str | None = None) -> int:
     return db.insert_job(
         conn,
         name="nightly-lint",
@@ -581,6 +618,7 @@ def _make_job(conn, tmp_path: Path, *, timeout: str | None = None) -> int:
         body="please lint the repo",
         passthrough=["--max-turns", "10"],
         timeout=timeout,
+        log_path=log_path,
     )
 
 
@@ -631,6 +669,52 @@ def test_run_job_success_updates_db_and_writes_artifacts(tmp_path: Path) -> None
     assert "--resume fake-session-123" in (dir_ / "resume.sh").read_text()
 
     _wait_for_file(marker)
+
+
+def test_run_job_copies_transcript_to_log_destination(tmp_path: Path) -> None:
+    """§2.3 --log: the rendered transcript is written to the requested path
+    *as well as* the canonical job-dir copy (§6.2), parents created."""
+    conn = db.connect(tmp_path / "ccq.db")
+    job_id = _make_job(conn, tmp_path, log_path="logs/nightly/")
+    claude_cmd = _write_script(tmp_path, "claude_ok.py", SUCCESS_SCRIPT)
+
+    runner.run_job(
+        conn,
+        job_id,
+        root=tmp_path,
+        claude_cmd=claude_cmd,
+        on_complete=[sys.executable, "-c", "pass"],
+        sleep=noop_sleep,
+    )
+
+    exported = tmp_path / "logs" / "nightly" / f"{job_id:05d}-nightly-lint.md"
+    canonical = runner.job_dir(tmp_path, job_id, "nightly-lint") / "transcript.md"
+    assert canonical.exists()
+    assert exported.read_text() == canonical.read_text()
+    assert "please lint the repo" in exported.read_text()
+
+
+def test_run_job_unwritable_log_destination_does_not_fail_the_run(tmp_path: Path) -> None:
+    """The run already happened -- an unusable --log path must not cost us the
+    job dir's transcript or the job's terminal state."""
+    conn = db.connect(tmp_path / "ccq.db")
+    blocker = tmp_path / "blocker"
+    blocker.write_text("i am a file, not a directory")
+    job_id = _make_job(conn, tmp_path, log_path=str(blocker / "run.md"))
+    claude_cmd = _write_script(tmp_path, "claude_ok.py", SUCCESS_SCRIPT)
+
+    outcome = runner.run_job(
+        conn,
+        job_id,
+        root=tmp_path,
+        claude_cmd=claude_cmd,
+        on_complete=[sys.executable, "-c", "pass"],
+        sleep=noop_sleep,
+    )
+
+    assert outcome.outcome == "done"
+    assert db.get_job(conn, job_id)["state"] == "done"
+    assert (runner.job_dir(tmp_path, job_id, "nightly-lint") / "transcript.md").exists()
 
 
 def test_run_job_failure_marks_job_failed(tmp_path: Path) -> None:

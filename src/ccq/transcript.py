@@ -169,17 +169,32 @@ def render_stream(stream_path: Path, *, prompt: str | None = None) -> str:
     return render_events(events, prompt=prompt)
 
 
-def write_transcript(dir_: Path, *, prompt: str | None = None) -> Path | None:
+def write_transcript(dir_: Path, *, prompt: str | None = None, extra_path: Path | None = None) -> Path | None:
     """Render ``<dir_>/stream.jsonl`` to ``<dir_>/transcript.md`` (§6.2).
 
     Returns the written path, or ``None`` if there is no ``stream.jsonl`` to
     render (nothing ran). An empty-but-present stream still writes a
     transcript -- a killed run leaves a file, and the prompt alone is worth
     recording.
+
+    ``extra_path`` is the job's resolved ``--log`` destination (§2.3): the
+    same rendering is written there as well, missing parent directories
+    created. It is an *addition*, never a move -- the job dir stays the
+    canonical location everything else addresses (§6.2). A failure to write
+    it (unwritable directory, a path that is really a directory) is
+    swallowed: the run has already happened, and losing the copy must not
+    lose the transcript.
     """
     stream_path = dir_ / "stream.jsonl"
     if not stream_path.exists():
         return None
+    text = render_stream(stream_path, prompt=prompt)
     out = dir_ / "transcript.md"
-    out.write_text(render_stream(stream_path, prompt=prompt))
+    out.write_text(text)
+    if extra_path is not None:
+        try:
+            extra_path.parent.mkdir(parents=True, exist_ok=True)
+            extra_path.write_text(text)
+        except OSError:
+            pass
     return out
