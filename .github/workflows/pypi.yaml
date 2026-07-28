@@ -1,0 +1,41 @@
+# Publish to PyPI via trusted publishing (OIDC) — no API token stored anywhere.
+#
+# The filename matters: a PyPI pending publisher is registered against
+# owner + repo + *this workflow's filename* + optional environment. Renaming
+# this file, the repo, or the owner invalidates the publisher and the upload
+# is rejected.
+name: pypi
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # mints the OIDC token PyPI trades for an upload
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13" # matches requires-python
+
+      # A PyPI version can never be reused, so publishing 0.1.0 from a v0.2.0
+      # tag burns the number permanently. Cheaper to fail here.
+      - name: Tag matches the version in pyproject.toml
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(python -c 'import tomllib,pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          if [ "$tag" != "$version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match pyproject version $version"
+            exit 1
+          fi
+
+      - run: pip install build && python -m build
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
