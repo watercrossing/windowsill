@@ -21,6 +21,10 @@
 
 `ccq report` is the actual product at 08:00. Readable in five seconds; every line links to `ccq resume <id>`.
 
+**Timestamps are stored UTC and displayed as bare system local time** — `2026-07-28 02:00`, no offset, no zone name.
+This is a single-user tool on one machine: the only clock the reader owns is the one on the wall, and printing `+01:00` after a time only invites arithmetic that has already been done.
+`--with-timezone` on any command that prints a time restores the full offset-bearing ISO form, for when you *are* comparing against another machine's clock.
+
 ## 8.2 `ccq doctor`
 
 In rough order of how likely each is to be the thing that's broken:

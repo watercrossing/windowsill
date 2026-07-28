@@ -422,6 +422,56 @@ def test_stat_without_all_excludes_terminal_entirely(tmp_path: Path, runner: Cli
     assert "recent-done" not in result.output
 
 
+def test_stat_shows_when_in_system_local_time_without_a_zone(tmp_path: Path, runner: CliRunner, pin_tz) -> None:
+    # §8.1: stored UTC, displayed on the reader's own wall clock, no offset.
+    home = tmp_path / "home"
+    conn = make_db(home)
+    add_job(conn, name="nightly", state="queued", at_time="2026-07-28T01:00:00+00:00")
+
+    pin_tz("Etc/GMT-1")  # fixed UTC+1
+    result = run(runner, home, "stat")
+
+    assert result.exit_code == 0, result.output
+    assert "2026-07-28 02:00" in result.output
+    assert "+00:00" not in result.output
+    assert "+01:00" not in result.output
+
+
+def test_stat_with_timezone_shows_the_offset(tmp_path: Path, runner: CliRunner, pin_tz) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    add_job(conn, name="nightly", state="queued", at_time="2026-07-28T01:00:00+00:00")
+
+    pin_tz("Etc/GMT-1")
+    result = run(runner, home, "stat", "--with-timezone")
+
+    assert result.exit_code == 0, result.output
+    assert "2026-07-28T02:00:00+01:00" in result.output
+
+
+def test_stat_window_reset_is_localised_too(tmp_path: Path, runner: CliRunner, pin_tz) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    db.insert_window(conn, opened_at=PAST, reset_at=FUTURE, pct_used=15)
+
+    pin_tz("Etc/GMT-1")
+    result = run(runner, home, "stat")
+
+    assert "window: open (pct_used=15, resets 2026-07-23 10:00)" in result.output
+
+
+def test_stat_when_is_blank_for_a_job_with_no_times(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    db.insert_job(conn, name="bare", state="queued", submitted_at="", cwd="/tmp", body="b", passthrough=[])
+
+    result = run(runner, home, "stat")
+
+    assert result.exit_code == 0, result.output
+    assert "bare" in result.output
+    assert "-" in result.output.splitlines()[1]
+
+
 # ---------------------------------------------------------------------------
 # ccq show
 # ---------------------------------------------------------------------------

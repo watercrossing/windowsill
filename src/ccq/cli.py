@@ -172,6 +172,35 @@ def _normalize_at(value: str) -> str:
     return _parse_iso(value).astimezone(timezone.utc).isoformat()
 
 
+#: Column widths for a displayed timestamp, bare and with the offset shown.
+_WHEN_WIDTH = {False: 16, True: 25}
+
+
+def _local(value: str | None, *, with_timezone: bool = False) -> str:
+    """Render a stored timestamp for a human (§8.1).
+
+    Everything is stored UTC; everything is displayed in the system's own
+    zone, and by default with no offset at all -- on a single-user machine
+    "02:00" means the 02:00 on your wall, and a trailing "+01:00" only invites
+    the reader to do arithmetic that is already done. ``with_timezone``
+    restores the full offset-bearing ISO form, for comparing against a clock
+    that isn't this machine's.
+
+    A value that doesn't parse is passed through untouched rather than hidden
+    behind a placeholder -- if something ever writes a non-ISO timestamp, the
+    display is where it should be visible.
+    """
+    if not value:
+        return "-"
+    try:
+        moment = _parse_iso(value).astimezone()
+    except ValueError:
+        return value
+    if with_timezone:
+        return moment.isoformat(timespec="seconds")
+    return moment.strftime("%Y-%m-%d %H:%M")
+
+
 def _cutoff(now_str: str, *, days: int) -> str:
     """``now_str`` minus ``days``, formatted so plain string comparison
     against other timestamps in this codebase stays valid (all of them
@@ -307,8 +336,9 @@ def sub(ctx: click.Context, file, run_now: bool) -> None:
 
 @main.command()
 @click.option("-a", "--all", "show_all", is_flag=True, help="Include terminal jobs from the last 7 days.")
+@click.option("--with-timezone", is_flag=True, help="Show times with their UTC offset instead of bare system local time.")
 @click.pass_context
-def stat(ctx: click.Context, show_all: bool) -> None:
+def stat(ctx: click.Context, show_all: bool, with_timezone: bool) -> None:
     """id, name, state, model, when, cwd, elapsed. Plus window state and 30d count."""
     with _session(ctx.obj["home"]) as (database, _cfg, _root):
         now_str = _iso_now()
@@ -320,18 +350,21 @@ def stat(ctx: click.Context, show_all: bool) -> None:
         else:
             jobs = [job for job in jobs if job["state"] not in db.TERMINAL_STATES]
 
-        click.echo(f"{'ID':<5} {'NAME':<20} {'STATE':<10} {'MODEL':<20} {'WHEN':<32} {'CWD':<30} ELAPSED")
+        when_width = _WHEN_WIDTH[with_timezone]
+        click.echo(f"{'ID':<5} {'NAME':<20} {'STATE':<10} {'MODEL':<20} {'WHEN':<{when_width}} {'CWD':<30} ELAPSED")
         for job in jobs:
+            when = _local(_when(job), with_timezone=with_timezone)
             click.echo(
                 f"{job['id']:<5} {job['name']:<20} {job['state']:<10} "
-                f"{(job['model'] or '-'):<20} {_when(job):<32} {job['cwd']:<30} {_elapsed(job, now_str)}"
+                f"{(job['model'] or '-'):<20} {when:<{when_width}} {job['cwd']:<30} {_elapsed(job, now_str)}"
             )
 
         window = db.current_window(database, now_str)
         if window is None:
             click.echo("window: closed")
         else:
-            click.echo(f"window: open (pct_used={window.get('pct_used')}, reset_at={window.get('reset_at')})")
+            reset_at = _local(window.get("reset_at"), with_timezone=with_timezone)
+            click.echo(f"window: open (pct_used={window.get('pct_used')}, resets {reset_at})")
         click.echo(f"30d sessions: {_window_count_30d(database, now_str)}")
 
 
