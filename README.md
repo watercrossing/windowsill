@@ -120,6 +120,7 @@ This means a new `claude` flag works the day it ships, with no change to `ccq` �
 | `--window <policy>` | `share` | `fresh` \| `share` \| `offpeak` |
 | `--anchor` | false | This is an anchor job. Implies `--model claude-haiku-4-5` unless overridden |
 | `--cwd <path>` | submit-time cwd | Working directory. `~` expanded at submit |
+| `--log <path>` | job dir only | Also write the rendered transcript here. A trailing `/` (or an existing directory) means "in there", as `<id>-<name>.md`; otherwise it is the file. Relative to `--cwd` |
 | `--resume <conversation_id>` | — | Continue an explicit conversation |
 | `--resume-from <job>` | — | Continue the conversation produced by a completed job (resolved at dispatch) |
 | `--hold-jid <job>[,<job>]` | — | Wait for those jobs to reach `done` |
@@ -135,8 +136,7 @@ This means a new `claude` flag works the day it ships, with no change to `ccq` �
 `--resume` and `--resume-from` are mutually exclusive; both end up as `claude --resume <id>` at dispatch.
 `--resume` is the one case where a scheduler directive shadows a real `claude` flag.
 
-This README describes the full job-file format as designed.
-Everything above is parsed today; how much of it is actually *acted on* at dispatch time depends on what's landed so far in this milestone — see below for the commands that currently work end to end.
+Every directive above is parsed *and* acted on today, with two exceptions: `--isolate worktree` is stored but not yet honoured (runs happen in `--cwd` regardless), and `--allow-dirty` is not yet checked.
 
 ## Commands
 
@@ -149,31 +149,74 @@ Three commands you'll use constantly:
 - **`ccq resume <id>`** — the morning-after command.
   `exec`s into `claude --resume <conversation_id>` in the job's working directory, so you drop straight back into last night's conversation.
 
-Working today (milestone M1):
+Working today (milestones M1 and M2):
 
 | Command | Behaviour |
 |---|---|
 | `ccq sub <file>` | Submit. `-` reads stdin. Prints job id. `--now` bypasses `--at` |
-| `ccq stat` | id, name, state, model, when, cwd, elapsed |
+| `ccq stat` | id, name, state, model, when, cwd, elapsed, plus window state and 30d count |
 | `ccq stat -a` | Include terminal jobs from the last 7 days |
-| `ccq show <id>` | Directives, resolved argv, state, conversation id, transcript tail |
+| `ccq show <id>` | Directives, resolved argv, state, conversation id, Δ%, transcript tail |
 | `ccq log <id> [-f]` | Stream the transcript; `-f` follows a running job |
 | `ccq del <id>` | Cancel; SIGTERM the process group if running |
 | `ccq hold <id>` / `ccq release <id>` | Toggle held |
 | `ccq resume <id>` | `exec` into `claude --resume <conversation_id>` in the job's cwd |
+| `ccq usage [--probe]` | Cached window state; `--probe` reads `/usage` fresh (max once per 10s) |
+| `ccq report [--since 24h]` | Digest of what ran: state, duration, Δ%, and a `ccq resume` line each |
 | `ccq tick` | Internal; cron and chain entry point |
+
+Times are printed in your machine's own local time with no zone attached — `2026-07-28 02:00`.
+Pass `--with-timezone` to any of these for the offset-bearing ISO form instead.
 
 Designed but not implemented yet — do not rely on these:
 
 | Command | Intended behaviour |
 |---|---|
 | `ccq sub -e` | `$EDITOR` on a template header; submit on save |
-| `ccq report [--since 24h]` | Digest of what ran overnight |
-| `ccq usage` | Cached `/usage` window state, `--probe` for a fresh read; also adds window state / 30d count to `ccq stat` |
 | `ccq gc [--older-than 30d]` | Remove terminal job dirs and worktrees |
 | `ccq doctor` | Environment/config sanity check |
 
-Correspondingly, anything that depends on those — window accounting against a monthly ceiling, anchor-job scheduling, retry-on-failure, and email/ntfy notifications — is part of the design but not yet functional.
-Treat directives like `--retry`, `--notify`, and `--anchor` as accepted and stored, not yet enforced.
+Correspondingly, the two things those cover — `--isolate worktree` and the dirty-tree refusal — are part of the design but not yet functional.
+Everything else is live: window policies decide dispatch from a `/usage` probe, rate limits requeue instead of failing, `--retry` retries, and finished jobs notify.
+
+## Similar tools
+
+Running Claude Code unattended is a small, crowded field.
+What separates these tools isn't the queue — it's what *triggers* a dispatch.
+
+- **[`claude-code-queue`](https://pypi.org/project/claude-code-queue/)** — *triggered by hitting a limit.*
+  Runs, gets rate-limited, waits out the reset, retries.
+  Markdown files with YAML frontmatter, priorities, a prompt bank, and a `/queue` skill it installs into Claude Code so the assistant can suggest queueing on its own.
+  The closest neighbour by far; see below.
+- **[`jshchnz/claude-code-scheduler`](https://github.com/jshchnz/claude-code-scheduler)** — *triggered by the wall clock.*
+  A Claude Code plugin rather than a standalone CLI: you install it from the marketplace and schedule in natural language ("every weekday at 9am review yesterday's code").
+  Optional git worktree mode commits to a branch so your working tree stays clean — the pattern `--isolate worktree` follows.
+  The most established of these by some margin.
+- **[`dnvriend/claude-code-scheduler`](https://github.com/dnvriend/claude-code-scheduler)** — *triggered by the wall clock,* plus interval and file-watch.
+  Unrelated to the above despite the identical name.
+  A PyQt6 desktop app with a REST API on :5679, a Job→Task→Run hierarchy, and profiles for AWS Bedrock and Z.AI.
+- **[`gruckion/claude-scheduler`](https://github.com/gruckion/claude-scheduler)** — *triggered by the wall clock,* one-shot.
+  Small, but it captures the conversation id and hands you click-to-resume notifications — the ergonomics `ccq resume` is aiming at.
+- **Claude Code's own scheduling** — *triggered by the wall clock.*
+  `/loop` with the `Cron*` tools schedules within a session; the desktop app's scheduled tasks use a `SKILL.md` with YAML frontmatter, which is Anthropic's own take on a job file and worth reading before changing [`design/02-job-file.md`](design/02-job-file.md).
+
+Every one of these except `claude-code-queue` dispatches on a clock.
+A clock knows what time it is; it doesn't know whether you have a window open.
+
+`claude-code-queue` is the closest neighbour, and the overlap is real: Markdown job files with a directive header, a queue, retries, and an awareness that the 5-hour window is the thing that actually hurts.
+The difference is which direction the tool faces.
+`claude-code-queue` is **reactive** — it exists so that hitting a limit doesn't block you, and it waits a window out.
+`ccq` is **opportunistic** — it exists to spend windows that would otherwise expire unused, and it treats capacity as a budget rather than as free-until-blocked.
+
+Three things follow from that, none of which have a counterpart above:
+
+- **Window state is read, not inferred.**
+  A `/usage` probe ([`design/04-usage-oracle.md`](design/04-usage-oracle.md)) is free and answers *before* dispatch, which is what makes `--window fresh` and `--window offpeak` expressible at all.
+  Learning a window's state by crashing into it can only ever produce retry logic.
+- **Anchors.**
+  An anchor doesn't create capacity, it moves a boundary — and it fires conditionally, no-opping if a window is already open.
+  See [`design/05-windows.md`](design/05-windows.md) §5.2 for why a fixed cron time can't do this.
+- **A ceiling.**
+  30-day rolling window accounting against a configured monthly limit.
 
 See `design/index.md` for the full design, including the execution model, window accounting, and SQLite schema.

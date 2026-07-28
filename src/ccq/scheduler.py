@@ -1,5 +1,5 @@
-"""ccq dispatch scheduler: the ``ccq tick`` step (design/03-execution-model.md §3.1) and the
-slice of the §7 job-lifecycle state machine that M1 needs.
+"""ccq dispatch scheduler: the ``ccq tick`` step (design/03-execution-model.md §3.1)
+and the §7 job-lifecycle state machine.
 
 ``tick`` is chain-driven and cron-floored (§3.1). One tick:
 
@@ -8,9 +8,13 @@ slice of the §7 job-lifecycle state machine that M1 needs.
 2. **reaps** ``running`` jobs whose process died *without recording a
    terminal state* -- the :func:`ccq.runner.reap` safety net for a machine
    reboot or a run wrapper that was itself killed;
-3. **evaluates** the queue (expire past-deadline jobs; promote due
-   ``queued`` jobs to ``ready``);
-4. **dispatches** up to ``max_parallel`` ready jobs; and
+3. **evaluates** the queue: expire past-deadline jobs, then promote due
+   ``queued`` jobs whose ``--hold-jid`` / ``--resume-from`` dependencies
+   are satisfied to ``ready`` (§7);
+4. **dispatches** up to ``max_parallel`` ready jobs, lowest ``--priority``
+   first, subject to each job's ``--window`` policy (§5.1, decided from at
+   most one ``/usage`` probe per tick), the anchor rule (§5.2) and the 30d
+   ceiling (§5.3); and
 5. commits and exits, **never blocking on a running job**.
 
 ``tick`` must never call :func:`ccq.runner.run_job` inline -- ``run_job``
