@@ -796,7 +796,12 @@ def test_tick_prints_ceiling_warnings_even_when_quiet(tmp_path: Path, runner: Cl
 
 
 def test_tick_default_probe_is_the_usage_oracle(tmp_path: Path) -> None:
-    assert cli._probe is usage.probe
+    # The indirection, not usage.probe itself: bound as a default it would be
+    # frozen at import and the suite's no-real-claude guard would miss it.
+    assert cli._probe is runner_mod._default_probe
+    # ...and it defers to usage.probe at call time, which is what makes the
+    # guard (and any monkeypatch) effective.
+    assert runner_mod._default_probe() is usage.probe()
 
 
 def test_tick_default_spawn_run_is_schedulers_default(tmp_path: Path) -> None:
@@ -844,11 +849,12 @@ def test_run_executes_job_to_terminal_via_fake_claude(tmp_path: Path, runner: Cl
     # and capture the wiring `ccq run` handed it.
     captured: dict[str, Any] = {}
 
-    def fake_run_job(database, jid, *, root, on_complete, claude_cmd):
+    def fake_run_job(database, jid, *, root, on_complete, claude_cmd, config=None):
         captured["job_id"] = jid
         captured["root"] = root
         captured["on_complete"] = list(on_complete)
         captured["claude_cmd"] = list(claude_cmd)
+        captured["config"] = config
         return runner_mod.run_job(
             database,
             jid,

@@ -43,11 +43,11 @@ import signal
 import subprocess
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
-from ccq import db, transcript
+from ccq import db, notify, transcript, usage, window
 
 # ---------------------------------------------------------------------------
 # job directory layout (§6.2)
@@ -409,6 +409,16 @@ _JOB_STATE_FOR_OUTCOME = {
 }
 
 
+#: §5.4's last-resort reset time when neither the rate-limit signal nor a
+#: ``/usage`` probe supplies one. Deliberately the config'd window length: it
+#: is a guess, and a guess that is too long merely delays, while one that is
+#: too short walks straight back into the limit.
+_DEFAULT_WINDOW_LENGTH = "5h"
+
+#: §5.4's replacement body for a rate-limit requeue that resumes.
+RESUME_ON_LIMIT_BODY = "Continue where you left off."
+
+
 @dataclass
 class RunOutcome:
     job_id: int
@@ -417,6 +427,134 @@ class RunOutcome:
     exit_code: int | None
     outcome: str
     result: dict[str, Any] | None
+    #: Δ window % (§4.3), when both probes succeeded.
+    delta_pct: int | None = None
+    #: The job state this run left behind: terminal, or ``ready`` when the run
+    #: was requeued for a retry or a rate limit (§5.4).
+    job_state: str = ""
+
+
+def _default_probe() -> "usage.ParsedUsage":
+    """The production ``/usage`` oracle (§4.2).
+
+    Deliberately an indirection rather than ``probe=usage.probe`` as a default
+    argument: a default is bound once, at import, so a test replacing
+    ``usage.probe`` would never be seen. Looking it up per call keeps the
+    "no real ``claude`` in the suite" guard (tests/conftest.py) effective.
+    """
+    return usage.probe()
+
+
+def _safe_probe(probe: Callable[[], "usage.ParsedUsage"]) -> "usage.ParsedUsage | None":
+    """Probe ``/usage``, or return ``None`` if the probe itself failed.
+
+    The probe is instrumentation (§4.3's Δ%) and a fallback source for §5.4's
+    reset time. A `claude` that won't answer a probe must not take the run
+    down with it, so every failure mode collapses to "no reading".
+    """
+    try:
+        return probe()
+    except Exception:  # noqa: BLE001 -- instrumentation must never fail the run
+        return None
+
+
+def _limit_reset_at(
+    signal: "usage.RateLimitSignal",
+    probed: "usage.ParsedUsage | None",
+    *,
+    now_str: str,
+    window_length: str,
+) -> str:
+    """§5.4's reset-time fallback chain, most trustworthy first: a fresh
+    ``/usage`` probe, then the error's own timestamp, then ``now`` plus the
+    configured window length."""
+    if probed is not None and probed.reset_at is not None:
+        return probed.reset_at.isoformat()
+    if signal.reset_at is not None:
+        return signal.reset_at.isoformat()
+    seconds = parse_timeout_seconds(window_length) or parse_timeout_seconds(_DEFAULT_WINDOW_LENGTH)
+    return (datetime.fromisoformat(now_str.replace("Z", "+00:00")) + timedelta(seconds=seconds)).isoformat()
+
+
+def _summary(result_event: dict[str, Any] | None) -> str:
+    """The one-line result a notification carries (§8.4)."""
+    if not result_event:
+        return "no result event"
+    text = str(result_event.get("result") or result_event.get("subtype") or "")
+    first_line = text.strip().splitlines()[0] if text.strip() else str(result_event.get("subtype", ""))
+    return first_line[:200]
+
+
+def _requeue_after_limit(
+    database: "db.sqlite_utils.Database",
+    job: dict[str, Any],
+    signal: "usage.RateLimitSignal",
+    probed: "usage.ParsedUsage | None",
+    *,
+    conversation_id: str | None,
+    finished_at: str,
+    window_length: str,
+) -> str:
+    """§5.4: put a rate-limited job back on the queue and block the scheduler.
+
+    The job returns to ``ready`` with its **retry count untouched** -- it did
+    not fail, it ran out of window -- and ``sched.blocked_until`` holds the
+    whole queue until the window resets, so the next tick doesn't walk the
+    next job straight into the same wall.
+
+    Unless ``--no-resume-on-limit``, the requeued job carries the conversation
+    it got as far as, with §5.4's continuation body. The original submission
+    survives on disk as ``job.md`` (§6.2) either way. Read §5.4's closing
+    paragraph before leaning on this: resuming re-pays for the whole
+    conversation, so it is a safety net for a job that overran, not a plan.
+    """
+    blocked_until = _limit_reset_at(signal, probed, now_str=finished_at, window_length=window_length)
+    db.update_sched(database, blocked_until=blocked_until, blocked_reason=f"rate limit ({signal.source}: {signal.detail})")
+
+    fields: dict[str, Any] = dict(state="ready", pid=None, conversation_id=conversation_id)
+    if conversation_id and not job["no_resume_on_limit"]:
+        fields["resume_id"] = conversation_id
+        fields["body"] = RESUME_ON_LIMIT_BODY
+    db.update_job(database, job["id"], **fields)
+    db.log_event(
+        database,
+        ts=finished_at,
+        job_id=job["id"],
+        kind="rate_limited",
+        detail=f"{signal.source}; blocked until {blocked_until}",
+    )
+    return "ready"
+
+
+def _notify_job(
+    database: "db.sqlite_utils.Database",
+    job: dict[str, Any],
+    job_state: str,
+    *,
+    summary: str,
+    delta_pct: int | None,
+    ts: str,
+    config: Mapping[str, Any] | None,
+    notify_fn: Callable[..., "notify.NotifyResult"],
+) -> None:
+    """Send the job's completion notification and record the attempt (§8.4).
+
+    Only terminal states notify -- a requeued job hasn't finished. The result
+    is written to ``events`` whether it succeeded or not: §8.4's contract is
+    that a failed notification is *logged* and never fails the job, and
+    :func:`ccq.notify.notify` already guarantees the second half.
+    """
+    title, body = notify.compose(job_id=job["id"], name=job["name"], state=job_state, summary=summary, delta_pct=delta_pct)
+    outcome = notify_fn(job["notify"], title, body, config=config or {})
+    if outcome.channel == "none":
+        return
+    db.log_event(
+        database,
+        ts=ts,
+        job_id=job["id"],
+        kind="notified" if outcome.ok else "notify_failed",
+        detail=f"{outcome.channel}{'' if outcome.ok else ': ' + outcome.detail}",
+    )
 
 
 def run_job(
@@ -433,6 +571,9 @@ def run_job(
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep,
     poll_interval: float = 0.05,
+    config: Mapping[str, Any] | None = None,
+    probe: Callable[[], "usage.ParsedUsage"] = _default_probe,
+    notify_fn: Callable[..., "notify.NotifyResult"] = notify.notify,
 ) -> RunOutcome:
     """Run one already-selected job to completion: build its invocation,
     spawn it detached under ``root``'s job directory, block until it
@@ -459,7 +600,16 @@ def run_job(
     write_cmd_json(dir_, argv=argv, cwd=job["cwd"], env=env)
 
     started_at = now()
-    run_id = db.insert_run(database, job_id=job_id, started_at=started_at)
+
+    # §4.3: probe immediately before and after the run; the delta is what the
+    # job cost in the only unit that binds. The "before" reading doubles as the
+    # first read of a window this job's dispatch just opened, so it completes
+    # that ledger row's reset_at (§5.3).
+    before = _safe_probe(probe)
+    if before is not None:
+        window.record_probe(database, before, now_str=started_at, opened_by=job_id)
+
+    run_id = db.insert_run(database, job_id=job_id, started_at=started_at, pct_before=before.pct_used if before else None)
     db.log_event(database, ts=started_at, job_id=job_id, kind="dispatched", detail=f"run_id={run_id}")
 
     process = spawn(argv, job["body"], cwd=job["cwd"], dir_=dir_, env=env, popen=popen)
@@ -488,33 +638,87 @@ def run_job(
         extra_path=log_destination(job.get("log_path"), job_id=job_id, name=job["name"], cwd=job["cwd"]),
     )
 
-    outcome = outcome_from_result(result_event, timed_out=timed_out)
+    # §5.4: "limit reached" is a schedulable event, not a failure, so it is
+    # decided from the stream before the ordinary outcome mapping.
+    events = list(transcript.iter_events(dir_ / "stream.jsonl")) if (dir_ / "stream.jsonl").exists() else []
+    limit = usage.detect_rate_limit(events)
+
+    outcome = "rate_limited" if limit else outcome_from_result(result_event, timed_out=timed_out)
     finished_at = now()
     conversation_id = result_event.get("session_id") if result_event else None
+
+    after = _safe_probe(probe)
+    if after is not None:
+        window.record_probe(database, after, now_str=finished_at)
+    pct_before = before.pct_used if before else None
+    pct_after = after.pct_used if after else None
+    delta_pct = pct_after - pct_before if pct_before is not None and pct_after is not None else None
 
     db.update_run(
         database,
         run_id,
         finished_at=finished_at,
         outcome=outcome,
+        pct_after=pct_after,
         num_turns=(result_event.get("num_turns") if result_event else None),
         duration_ms=(result_event.get("duration_ms") if result_event else None),
         conversation_id=conversation_id,
     )
 
-    job_state = _JOB_STATE_FOR_OUTCOME.get(outcome, "failed")
-    db.update_job(
-        database,
-        job_id,
-        state=job_state,
-        finished_at=finished_at,
-        exit_code=process.returncode,
-        conversation_id=conversation_id,
-    )
-    db.log_event(database, ts=finished_at, job_id=job_id, kind=job_state, detail=outcome)
-
     if conversation_id:
         write_resume_sh(dir_, cwd=job["cwd"], claude_cmd=claude_cmd, conversation_id=conversation_id)
+
+    if limit is not None:
+        job_state = _requeue_after_limit(
+            database,
+            job,
+            limit,
+            after,
+            conversation_id=conversation_id,
+            finished_at=finished_at,
+            window_length=str((config or {}).get("window", {}).get("length", _DEFAULT_WINDOW_LENGTH)),
+        )
+    elif outcome != "done" and job["retry_count"] < job["retry_max"]:
+        # §2.3: retries are for ordinary failure. A rate limit never consumes
+        # one -- it didn't fail, it ran out of window.
+        job_state = "ready"
+        db.update_job(
+            database,
+            job_id,
+            state=job_state,
+            retry_count=job["retry_count"] + 1,
+            pid=None,
+            exit_code=process.returncode,
+            conversation_id=conversation_id,
+        )
+        db.log_event(
+            database,
+            ts=finished_at,
+            job_id=job_id,
+            kind="retry",
+            detail=f"{outcome}; attempt {job['retry_count'] + 1} of {job['retry_max']}",
+        )
+    else:
+        job_state = _JOB_STATE_FOR_OUTCOME.get(outcome, "failed")
+        db.update_job(
+            database,
+            job_id,
+            state=job_state,
+            finished_at=finished_at,
+            exit_code=process.returncode,
+            conversation_id=conversation_id,
+        )
+        db.log_event(database, ts=finished_at, job_id=job_id, kind=job_state, detail=outcome)
+        _notify_job(
+            database,
+            job,
+            job_state,
+            summary=_summary(result_event),
+            delta_pct=delta_pct,
+            ts=finished_at,
+            config=config,
+            notify_fn=notify_fn,
+        )
 
     # Chain dispatch (§3.1): hand off to the next tick detached, never a
     # recursive in-process call, regardless of this run's outcome.
@@ -527,4 +731,6 @@ def run_job(
         exit_code=process.returncode,
         outcome=outcome,
         result=result_event,
+        delta_pct=delta_pct,
+        job_state=job_state,
     )

@@ -34,7 +34,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Callable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 from zoneinfo import ZoneInfo
 
 # ---------------------------------------------------------------------------
@@ -55,6 +55,30 @@ USAGE_PATTERNS: dict[str, re.Pattern[str]] = {
 #: argv appended to ``claude_cmd`` for a probe. ``--output-format json`` gives
 #: the parseable envelope (§3.2); ``/usage`` is the metadata read (§4.2).
 USAGE_ARGV_SUFFIX: tuple[str, ...] = ("-p", "/usage", "--output-format", "json")
+
+# ---------------------------------------------------------------------------
+# rate-limit signals (§5.4) -- one constant, because the shape is still open
+# ---------------------------------------------------------------------------
+
+#: How a run says "limit reached" rather than "failed". §9 lists the shape as
+#: an open question -- exit code, a subtype, or only a human string -- so both
+#: known channels are matched and every pattern lives here, where a future
+#: observation can correct it without touching the detection logic.
+RATE_LIMIT_PATTERNS: dict[str, re.Pattern[str]] = {
+    # the human string, in a result event's text or its subtype
+    "message": re.compile(r"(?:usage|rate)[ _-]?limit(?:s)?[ _-]?(?:reached|exceeded|error)|rate[ _-]?limited", re.IGNORECASE),
+    # "Claude AI usage limit reached|1753900000" -- the epoch tail carries the reset
+    "epoch": re.compile(r"limit reached\|(?P<epoch>\d{9,})", re.IGNORECASE),
+}
+
+#: ``rate_limit_event.rate_limit_info.status`` values that mean the request was
+#: let through. Anything else is a limit (§5.4). ``allowed_warning`` is the
+#: "you are close" heartbeat, not a refusal.
+RATE_LIMIT_ALLOWED_STATUSES: frozenset[str] = frozenset({"allowed", "allowed_warning"})
+
+#: Where a rate-limit event carries its reset time. Read as epoch seconds or as
+#: an ISO-8601 string -- which one it is has not been observed.
+_RESET_FIELDS: tuple[str, ...] = ("resetsAt", "resets_at", "reset_at", "retryAt")
 
 _MONTHS = {name: i for i, name in enumerate(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], start=1)}
 
@@ -171,6 +195,101 @@ def parse_usage(text: str, *, now: datetime) -> ParsedUsage:
         extra_pct=extra_pct,
         raw=text,
     )
+
+
+# ---------------------------------------------------------------------------
+# rate-limit detection (§5.4)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RateLimitSignal:
+    """A run that stopped because of a limit, not because it failed (§5.4).
+
+    ``source`` says which channel tripped -- useful in the events log while
+    §9's open question is still open. ``reset_at`` is whatever the signal
+    itself claimed, UTC-aware, or ``None``: the caller prefers a fresh
+    ``/usage`` probe over this and falls back to it, never the other way.
+    """
+
+    source: str
+    detail: str = ""
+    reset_at: datetime | None = None
+
+
+def _reset_from_field(value: Any) -> datetime | None:
+    """Read a reset time given as epoch seconds (int, float, or digit string)
+    or as an ISO-8601 timestamp. Anything else is ``None``."""
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) or (isinstance(value, str) and value.isdigit()):
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return None
+
+
+def _rate_limit_from_event(event: dict[str, Any]) -> RateLimitSignal | None:
+    info = event.get("rate_limit_info") or {}
+    status = info.get("status")
+    if status is None or status in RATE_LIMIT_ALLOWED_STATUSES:
+        return None
+    reset_at = None
+    for field in _RESET_FIELDS:
+        reset_at = _reset_from_field(info.get(field))
+        if reset_at is not None:
+            break
+    return RateLimitSignal(source="rate_limit_event", detail=f"status={status}", reset_at=reset_at)
+
+
+def _rate_limit_from_result(event: dict[str, Any]) -> RateLimitSignal | None:
+    if not event.get("is_error"):
+        return None
+    text = " ".join(str(event.get(key, "")) for key in ("subtype", "result", "error", "stop_reason"))
+    if not RATE_LIMIT_PATTERNS["message"].search(text):
+        return None
+    epoch = RATE_LIMIT_PATTERNS["epoch"].search(text)
+    reset_at = _reset_from_field(epoch["epoch"]) if epoch else None
+    return RateLimitSignal(source="result", detail=str(event.get("subtype", "error")), reset_at=reset_at)
+
+
+def detect_rate_limit(events: Iterable[dict[str, Any]]) -> RateLimitSignal | None:
+    """Whether a run's event stream says it hit a limit (§5.4).
+
+    Two channels, both matched because §9 hasn't settled which one a real
+    limit uses: a ``rate_limit_event`` reporting a status that isn't an
+    allowed one, and an erroring ``result`` event whose text matches
+    :data:`RATE_LIMIT_PATTERNS`. A signal carrying its own reset time wins
+    over one that doesn't -- the caller wants the most specific answer it can
+    get before falling back to a probe.
+
+    Returns ``None`` for an ordinary run, including the informational
+    ``rate_limit_event`` that fires on *every* run: treating that as a limit
+    would block the whole queue for five hours on a job that succeeded.
+    """
+    best: RateLimitSignal | None = None
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        kind = event.get("type")
+        if kind == "rate_limit_event":
+            signal = _rate_limit_from_event(event)
+        elif kind == "result":
+            signal = _rate_limit_from_result(event)
+        else:
+            continue
+        if signal is None:
+            continue
+        if best is None or (best.reset_at is None and signal.reset_at is not None):
+            best = signal
+    return best
 
 
 # ---------------------------------------------------------------------------

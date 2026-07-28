@@ -30,6 +30,8 @@ from zoneinfo import ZoneInfo
 
 import sqlite_utils
 
+from ccq import db, usage
+
 _WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
 #: Only ``fresh`` verifies against a probe (§5.1/§4.2); the rest decide from
@@ -123,6 +125,58 @@ def policy_permits(
 # ---------------------------------------------------------------------------
 # accounting (§5.3)
 # ---------------------------------------------------------------------------
+
+
+def record_probe(
+    database: sqlite_utils.Database,
+    parsed: "usage.ParsedUsage",
+    *,
+    now_str: str,
+    opened_by: int | None = None,
+) -> int | None:
+    """Record a ``/usage`` probe in the ``window`` table (§4.2: "cache anyway").
+
+    Only an *open* window produces a row: a closed reading is the absence of a
+    row (§4.1), never a row with a NULL ``reset_at``. Returns the row's id, or
+    ``None`` for a closed reading.
+
+    Three cases, in order, and the order is the point -- each exists to stop
+    one window being counted twice against §5.3's ceiling:
+
+    1. A row already carries this ``reset_at``: same window, seen again. Update
+       it.
+    2. ``opened_by`` names a job whose dispatch opened a window that has no
+       ``reset_at`` yet (the tick that opened it could not know one). This
+       probe is the first read that does, so complete that row in place.
+    3. Otherwise insert. A window we merely observed -- opened from a phone,
+       say -- still counts: the ceiling measures windows on the account, not
+       windows ccq is proud of.
+    """
+    if not parsed.is_open:
+        return None
+
+    reset_at = parsed.reset_at.isoformat()
+    fields: dict[str, Any] = dict(
+        probed_at=now_str,
+        pct_used=parsed.pct_used,
+        weekly_pct=parsed.weekly_pct,
+        weekly_reset_at=parsed.weekly_reset_at.isoformat() if parsed.weekly_reset_at else None,
+        extra_bucket=parsed.extra_bucket,
+        extra_pct=parsed.extra_pct,
+    )
+
+    existing = list(database["window"].rows_where("reset_at = ?", [reset_at], order_by="id desc", limit=1))
+    if existing:
+        db.update_window(database, existing[0]["id"], **fields)
+        return existing[0]["id"]
+
+    if opened_by is not None:
+        pending = list(database["window"].rows_where("opened_by = ? AND reset_at IS NULL", [opened_by], order_by="id desc", limit=1))
+        if pending:
+            db.update_window(database, pending[0]["id"], reset_at=reset_at, **fields)
+            return pending[0]["id"]
+
+    return db.insert_window(database, opened_at=now_str, reset_at=reset_at, opened_by=opened_by, **fields)
 
 
 def windows_in_last_30d(database: sqlite_utils.Database, now: datetime) -> int:

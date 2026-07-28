@@ -188,40 +188,6 @@ def resolve_resume(database: sqlite_utils.Database, job: Mapping[str, Any]) -> s
 
 
 # ---------------------------------------------------------------------------
-# the window ledger (§4.2 cache, §5.3 accounting)
-# ---------------------------------------------------------------------------
-
-
-def cache_probe(database: sqlite_utils.Database, parsed: usage.ParsedUsage, *, now_str: str) -> int | None:
-    """Record a ``/usage`` probe in the ``window`` table (§4.2: "cache anyway").
-
-    Only an *open* window produces a row -- a closed reading is the absence of
-    one (§4.1), never a row with a NULL ``reset_at``. Rows are keyed by
-    ``reset_at``, so probing the same window repeatedly updates it instead of
-    inflating the §5.3 count. A window observed but not opened by us still
-    counts toward the ceiling: it is a window on the account either way, which
-    is the thing the ceiling is measuring.
-    """
-    if not parsed.is_open:
-        return None
-
-    fields: dict[str, Any] = dict(
-        probed_at=now_str,
-        pct_used=parsed.pct_used,
-        weekly_pct=parsed.weekly_pct,
-        weekly_reset_at=parsed.weekly_reset_at.isoformat() if parsed.weekly_reset_at else None,
-        extra_bucket=parsed.extra_bucket,
-        extra_pct=parsed.extra_pct,
-    )
-    reset_at = parsed.reset_at.isoformat()
-    existing = list(database["window"].rows_where("reset_at = ?", [reset_at], order_by="id desc", limit=1))
-    if existing:
-        db.update_window(database, existing[0]["id"], **fields)
-        return existing[0]["id"]
-    return db.insert_window(database, opened_at=now_str, reset_at=reset_at, **fields)
-
-
-# ---------------------------------------------------------------------------
 # tick result (what the tick decided -- for the caller, tests, and the log)
 # ---------------------------------------------------------------------------
 
@@ -410,7 +376,7 @@ def tick(
                 if probed is None and (window.policy_needs_probe(policy) or is_anchor):
                     probed = probe()
                     result.probed = True
-                    cache_probe(database, probed, now_str=now_str)
+                    window.record_probe(database, probed, now_str=now_str)
 
                 if opened_this_tick:
                     window_open = True

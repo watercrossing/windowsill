@@ -16,10 +16,11 @@ import signal
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ccq import db, runner
+from ccq import db, notify, runner, usage
 
 # ---------------------------------------------------------------------------
 # helpers: fake "claude" scripts (never the real claude, never a network call)
@@ -879,3 +880,283 @@ def test_run_job_writes_under_injected_root_only(tmp_path: Path) -> None:
     )
 
     assert (custom_root / "jobs" / "00001-nightly-lint" / "result.json").exists()
+
+
+# ---------------------------------------------------------------------------
+# §4.3 Δ window %, §5.4 rate limits, §2.3 retries, §8.4 notifications
+# ---------------------------------------------------------------------------
+
+# A fake claude that reports a rate limit rather than a failure (§5.4).
+RATE_LIMITED_SCRIPT = """
+import json, sys
+sys.stdin.read()
+print(json.dumps({"type": "rate_limit_event",
+                  "rate_limit_info": {"status": "rejected", "resetsAt": 1785200000}}))
+print(json.dumps({
+    "type": "result", "subtype": "error", "is_error": True,
+    "duration_ms": 20, "num_turns": 1, "result": "Claude AI usage limit reached",
+    "session_id": "fake-session-limited",
+}))
+"""
+
+
+class FakeProbe:
+    """A `/usage` oracle answering from a canned list of readings, in order."""
+
+    def __init__(self, *readings: usage.ParsedUsage) -> None:
+        self.readings = list(readings)
+        self.calls = 0
+
+    def __call__(self) -> usage.ParsedUsage:
+        self.calls += 1
+        index = min(self.calls - 1, len(self.readings) - 1)
+        return self.readings[index]
+
+
+def _reading(pct: int, reset_at: str | None = None) -> usage.ParsedUsage:
+    return usage.ParsedUsage(pct_used=pct, reset_at=datetime.fromisoformat(reset_at) if reset_at else None)
+
+
+def _run(conn, job_id, tmp_path, script=SUCCESS_SCRIPT, **kwargs):
+    return runner.run_job(
+        conn,
+        job_id,
+        root=tmp_path,
+        claude_cmd=_write_script(tmp_path, "claude_fake.py", script),
+        on_complete=[sys.executable, "-c", "pass"],
+        sleep=noop_sleep,
+        now=iter(["2026-07-21T02:00:00+00:00", "2026-07-21T02:30:00+00:00"]).__next__,
+        **kwargs,
+    )
+
+
+def test_probes_before_and_after_record_the_delta(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "ccq.db")
+    job_id = _make_job(conn, tmp_path)
+    probe = FakeProbe(_reading(10, "2026-07-21T07:00:00+00:00"), _reading(25, "2026-07-21T07:00:00+00:00"))
+
+    outcome = _run(conn, job_id, tmp_path, probe=probe)
+
+    assert probe.calls == 2
+    assert outcome.delta_pct == 15
+    run_row = db.list_runs(conn, job_id=job_id)[0]
+    assert run_row["pct_before"] == 10
+    assert run_row["pct_after"] == 25
+
+
+def test_a_failing_probe_does_not_fail_the_run(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "ccq.db")
+    job_id = _make_job(conn, tmp_path)
+
+    def broken_probe():
+        raise RuntimeError("claude is not answering")
+
+    outcome = _run(conn, job_id, tmp_path, probe=broken_probe)
+
+    assert outcome.outcome == "done"
+    assert outcome.delta_pct is None
+    assert db.get_job(conn, job_id)["state"] == "done"
+
+
+def test_pre_run_probe_completes_the_ledger_row_the_tick_opened(tmp_path: Path) -> None:
+    """§5.3: the tick opens a window row with no reset_at (it can't know one);
+    the run's own pre-probe is the first read that does."""
+    conn = db.connect(tmp_path / "ccq.db")
+    job_id = _make_job(conn, tmp_path)
+    db.insert_window(conn, opened_at="2026-07-21T01:59:00+00:00", opened_by=job_id)
+    probe = FakeProbe(_reading(10, "2026-07-21T07:00:00+00:00"))
+
+    _run(conn, job_id, tmp_path, probe=probe)
+
+    rows = list(conn["window"].rows)
+    assert len(rows) == 1  # completed in place, not duplicated
+    assert rows[0]["reset_at"] == "2026-07-21T07:00:00+00:00"
+    assert rows[0]["pct_used"] == 10
+
+
+def test_rate_limited_run_requeues_and_blocks_the_scheduler(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "ccq.db")
+    job_id = _make_job(conn, tmp_path)
+    probe = FakeProbe(_reading(99, None), _reading(99, "2026-07-21T07:00:00+00:00"))
+
+    outcome = _run(conn, job_id, tmp_path, script=RATE_LIMITED_SCRIPT, probe=probe)
+
+    assert outcome.outcome == "rate_limited"
+
+    job = db.get_job(conn, job_id)
+    assert job["state"] == "ready"  # §5.4: schedulable event, not a failure
+    assert job["retry_count"] == 0  # retry count untouched
+    assert job["conversation_id"] == "fake-session-limited"
+    assert job["resume_id"] == "fake-session-limited"
+    assert job["body"] == runner.RESUME_ON_LIMIT_BODY
+    assert job["pid"] is None
+
+    sched = db.get_sched(conn)
+    assert sched["blocked_until"] == "2026-07-21T07:00:00+00:00"  # the fresh probe wins
+    assert "rate limit" in sched["blocked_reason"]
+
+    assert [event["kind"] for event in db.list_events(conn, job_id=job_id)][-1] == "rate_limited"
+
+
+def test_rate_limit_falls_back_to_the_signals_own_reset(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "ccq.db")
+    job_id = _make_job(conn, tmp_path)
+    probe = FakeProbe(_reading(99, None))  # probe reports closed, so it can't help
+
+    _run(conn, job_id, tmp_path, script=RATE_LIMITED_SCRIPT, probe=probe)
+
+    expected = datetime.fromtimestamp(1785200000, tz=timezone.utc).isoformat()
+    assert db.get_sched(conn)["blocked_until"] == expected
+
+
+def test_rate_limit_falls_back_to_now_plus_the_window_length(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "ccq.db")
+    job_id = _make_job(conn, tmp_path)
+    script = RATE_LIMITED_SCRIPT.replace(', "resetsAt": 1785200000', "").replace(" reached", " reached (no time given)")
+
+    _run(conn, job_id, tmp_path, script=script, probe=FakeProbe(_reading(99, None)), config={"window": {"length": "5h"}})
+
+    # finished_at is 02:30 in the injected clock; 5h later is 07:30.
+    assert db.get_sched(conn)["blocked_until"] == "2026-07-21T07:30:00+00:00"
+
+
+def test_no_resume_on_limit_keeps_the_original_body(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "ccq.db")
+    job_id = db.insert_job(
+        conn,
+        name="nightly-lint",
+        state="running",
+        submitted_at="2026-07-21T00:00:00Z",
+        cwd=str(tmp_path),
+        body="please lint the repo",
+        passthrough=[],
+        no_resume_on_limit=True,
+    )
+
+    _run(conn, job_id, tmp_path, script=RATE_LIMITED_SCRIPT, probe=FakeProbe(_reading(99, None)))
+
+    job = db.get_job(conn, job_id)
+    assert job["body"] == "please lint the repo"
+    assert job["resume_id"] is None
+    assert job["state"] == "ready"
+
+
+def test_failed_run_with_retries_left_requeues(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "ccq.db")
+    job_id = db.insert_job(
+        conn,
+        name="nightly-lint",
+        state="running",
+        submitted_at="2026-07-21T00:00:00Z",
+        cwd=str(tmp_path),
+        body="please lint the repo",
+        passthrough=[],
+        retry_max=2,
+    )
+
+    _run(conn, job_id, tmp_path, script=ERROR_SCRIPT)
+
+    job = db.get_job(conn, job_id)
+    assert job["state"] == "ready"
+    assert job["retry_count"] == 1
+    assert job["finished_at"] is None
+    assert db.list_events(conn, job_id=job_id)[-1]["kind"] == "retry"
+
+
+def test_failed_run_with_retries_exhausted_fails(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "ccq.db")
+    job_id = db.insert_job(
+        conn,
+        name="nightly-lint",
+        state="running",
+        submitted_at="2026-07-21T00:00:00Z",
+        cwd=str(tmp_path),
+        body="please lint the repo",
+        passthrough=[],
+        retry_max=2,
+        retry_count=2,
+    )
+
+    _run(conn, job_id, tmp_path, script=ERROR_SCRIPT)
+
+    job = db.get_job(conn, job_id)
+    assert job["state"] == "failed"
+    assert job["retry_count"] == 2
+
+
+def test_successful_run_notifies_on_the_jobs_channel(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "ccq.db")
+    job_id = db.insert_job(
+        conn,
+        name="nightly-lint",
+        state="running",
+        submitted_at="2026-07-21T00:00:00Z",
+        cwd=str(tmp_path),
+        body="please lint the repo",
+        passthrough=[],
+        notify="ntfy",
+    )
+    sent: list[tuple] = []
+
+    def fake_notify(channel, title, body, *, config):
+        sent.append((channel, title, body))
+        return notify.NotifyResult(True, channel)
+
+    _run(conn, job_id, tmp_path, notify_fn=fake_notify, probe=FakeProbe(_reading(10), _reading(13)))
+
+    assert len(sent) == 1
+    channel, title, body = sent[0]
+    assert channel == "ntfy"
+    assert title == "nightly-lint: done"
+    assert f"ccq resume {job_id}" in body
+    assert "Δ 3%" in body
+    assert db.list_events(conn, job_id=job_id)[-1]["kind"] == "notified"
+
+
+def test_requeued_run_does_not_notify(tmp_path: Path) -> None:
+    """A job that will run again hasn't finished -- no 03:00 phone buzz."""
+    conn = db.connect(tmp_path / "ccq.db")
+    job_id = db.insert_job(
+        conn,
+        name="nightly-lint",
+        state="running",
+        submitted_at="2026-07-21T00:00:00Z",
+        cwd=str(tmp_path),
+        body="please lint the repo",
+        passthrough=[],
+        notify="ntfy",
+    )
+    sent: list[tuple] = []
+
+    _run(
+        conn,
+        job_id,
+        tmp_path,
+        script=RATE_LIMITED_SCRIPT,
+        probe=FakeProbe(_reading(99, None)),
+        notify_fn=lambda *a, **k: sent.append(a) or notify.NotifyResult(True, "ntfy"),
+    )
+
+    assert sent == []
+
+
+def test_failed_notification_is_logged_and_never_fails_the_job(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "ccq.db")
+    job_id = db.insert_job(
+        conn,
+        name="nightly-lint",
+        state="running",
+        submitted_at="2026-07-21T00:00:00Z",
+        cwd=str(tmp_path),
+        body="please lint the repo",
+        passthrough=[],
+        notify="ntfy",
+    )
+
+    outcome = _run(conn, job_id, tmp_path, notify_fn=lambda *a, **k: notify.NotifyResult(False, "ntfy", "ConnectionError: refused"))
+
+    assert outcome.outcome == "done"
+    assert db.get_job(conn, job_id)["state"] == "done"
+    last = db.list_events(conn, job_id=job_id)[-1]
+    assert last["kind"] == "notify_failed"
+    assert "refused" in last["detail"]

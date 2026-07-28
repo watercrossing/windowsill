@@ -39,7 +39,7 @@ from typing import Iterator
 import click
 import sqlite_utils
 
-from ccq import config, db, jobfile, runner, scheduler, usage
+from ccq import config, db, jobfile, runner, scheduler
 
 # ---------------------------------------------------------------------------
 # injectable seams -- see module docstring. Production defaults here;
@@ -95,7 +95,7 @@ _run_job = runner.run_job
 
 #: The ``/usage`` oracle handed to :func:`ccq.scheduler.tick` (§4). Same seam
 #: style again: tests replace it so no real ``claude`` is ever probed.
-_probe = usage.probe
+_probe = runner._default_probe
 
 
 # ---------------------------------------------------------------------------
@@ -576,7 +576,7 @@ def resume(ctx: click.Context, identifier: str) -> None:
 @click.pass_context
 def run_(ctx: click.Context, job_id: int) -> None:
     """Internal; execute one dispatched job to completion (spawned by tick)."""
-    with _session(ctx.obj["home"]) as (database, _cfg, root):
+    with _session(ctx.obj["home"]) as (database, cfg, root):
         if db.get_job(database, job_id) is None:
             raise click.ClickException(f"no job with id {job_id}")
         _run_job(
@@ -585,6 +585,7 @@ def run_(ctx: click.Context, job_id: int) -> None:
             root=root,
             on_complete=list(scheduler.TICK_ARGV),
             claude_cmd=_claude_cmd,
+            config=cfg,
         )
 
 

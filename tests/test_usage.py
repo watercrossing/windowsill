@@ -162,3 +162,83 @@ def test_probe_open_window() -> None:
     assert parsed.is_open is True
     assert parsed.pct_used == 15
     assert parsed.reset_at == datetime(2026, 7, 17, 18, 9, tzinfo=timezone.utc)
+
+
+# ---------------------------------------------------------------------------
+# rate-limit detection (§5.4) -- shape still open (§9), so both channels
+# ---------------------------------------------------------------------------
+
+
+def _allowed_event(**extra):
+    info = {"status": "allowed", "rateLimitType": "five_hour"}
+    info.update(extra)
+    return {"type": "rate_limit_event", "rate_limit_info": info}
+
+
+def test_no_rate_limit_in_an_ordinary_run() -> None:
+    events = [
+        {"type": "system", "subtype": "init"},
+        _allowed_event(),
+        {"type": "result", "subtype": "success", "is_error": False, "result": "done"},
+    ]
+    assert usage.detect_rate_limit(events) is None
+
+
+def test_allowed_warning_is_not_a_limit() -> None:
+    # The "you're getting close" heartbeat must not block the queue for 5h.
+    assert usage.detect_rate_limit([_allowed_event(status="allowed_warning")]) is None
+
+
+def test_rejected_rate_limit_event_is_detected_with_its_reset() -> None:
+    reset_epoch = 1785200000
+    events = [{"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resetsAt": reset_epoch}}]
+
+    signal = usage.detect_rate_limit(events)
+
+    assert signal is not None
+    assert signal.source == "rate_limit_event"
+    assert signal.reset_at == datetime.fromtimestamp(reset_epoch, tz=timezone.utc)
+
+
+def test_rate_limit_event_reset_may_be_iso() -> None:
+    events = [{"type": "rate_limit_event", "rate_limit_info": {"status": "rejected", "resets_at": "2026-07-28T07:00:00+00:00"}}]
+
+    signal = usage.detect_rate_limit(events)
+
+    assert signal.reset_at == datetime(2026, 7, 28, 7, 0, tzinfo=timezone.utc)
+
+
+def test_rate_limit_from_an_erroring_result_string() -> None:
+    events = [{"type": "result", "subtype": "error", "is_error": True, "result": "Claude AI usage limit reached|1785200000"}]
+
+    signal = usage.detect_rate_limit(events)
+
+    assert signal is not None
+    assert signal.source == "result"
+    assert signal.reset_at == datetime.fromtimestamp(1785200000, tz=timezone.utc)
+
+
+def test_ordinary_error_result_is_not_a_rate_limit() -> None:
+    events = [{"type": "result", "subtype": "error_max_turns", "is_error": True, "result": "ran out of turns"}]
+    assert usage.detect_rate_limit(events) is None
+
+
+def test_successful_result_mentioning_rate_limits_is_not_a_limit() -> None:
+    # A job that *wrote about* rate limiting has not hit one.
+    events = [{"type": "result", "subtype": "success", "is_error": False, "result": "I documented the rate limit handling"}]
+    assert usage.detect_rate_limit(events) is None
+
+
+def test_signal_carrying_a_reset_wins_over_one_without() -> None:
+    events = [
+        {"type": "rate_limit_event", "rate_limit_info": {"status": "rejected"}},
+        {"type": "result", "subtype": "error", "is_error": True, "result": "usage limit reached|1785200000"},
+    ]
+
+    signal = usage.detect_rate_limit(events)
+
+    assert signal.reset_at == datetime.fromtimestamp(1785200000, tz=timezone.utc)
+
+
+def test_malformed_events_are_skipped() -> None:
+    assert usage.detect_rate_limit(["not a dict", None, {"type": "rate_limit_event"}]) is None

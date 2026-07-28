@@ -147,7 +147,13 @@ def render_events(events: Iterable[dict[str, Any]], *, prompt: str | None = None
     return "\n".join(lines).rstrip() + "\n"
 
 
-def _iter_stream(stream_path: Path) -> Iterable[dict[str, Any]]:
+def iter_events(stream_path: Path) -> Iterable[dict[str, Any]]:
+    """Yield the well-formed JSON objects in a ``stream.jsonl``.
+
+    Blank and malformed lines are skipped, so a run killed mid-write still
+    yields everything up to the truncation. Shared with :mod:`ccq.runner`,
+    which reads the same stream looking for rate-limit signals (§5.4).
+    """
     with stream_path.open("r", encoding="utf-8") as f:
         for line in f:
             stripped = line.strip()
@@ -165,7 +171,7 @@ def render_stream(stream_path: Path, *, prompt: str | None = None) -> str:
     """Read a ``stream.jsonl`` file and render it. A missing file renders as
     an empty (prompt-only) transcript rather than raising, so a run that died
     before writing any stream still yields something readable."""
-    events = list(_iter_stream(stream_path)) if stream_path.exists() else []
+    events = list(iter_events(stream_path)) if stream_path.exists() else []
     return render_events(events, prompt=prompt)
 
 
