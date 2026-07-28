@@ -37,6 +37,7 @@ import signal
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
+from functools import partial
 from pathlib import Path
 from typing import Iterator
 
@@ -691,7 +692,7 @@ def run_(ctx: click.Context, job_id: int) -> None:
             database,
             job_id,
             root=root,
-            on_complete=list(scheduler.TICK_ARGV),
+            on_complete=scheduler.tick_argv(home=ctx.obj["home"]),
             claude_cmd=_claude_cmd,
             config=cfg,
         )
@@ -707,8 +708,18 @@ def run_(ctx: click.Context, job_id: int) -> None:
 @click.pass_context
 def tick(ctx: click.Context, quiet: bool) -> None:
     """Internal; run one scheduler pass -- promote due jobs and dispatch ready ones (used by cron and the run chain)."""
-    with _session(ctx.obj["home"]) as (database, cfg, root):
-        result = scheduler.tick(database, root=root, config=cfg, now=_iso_now, spawn_run=_spawn_run, probe=_probe)
+    home = ctx.obj["home"]
+    with _session(home) as (database, cfg, root):
+        # Bind --home into the dispatch: the detached `ccq run` must come back
+        # to *this* queue, not to whichever job holds that id in ~/.ccq.
+        result = scheduler.tick(
+            database,
+            root=root,
+            config=cfg,
+            now=_iso_now,
+            spawn_run=partial(_spawn_run, home=home),
+            probe=_probe,
+        )
         # §5.3's ceiling warning survives -q on purpose: "warn loudly" is the
         # whole point, and under cron stdout is the only thing that reaches you.
         for warning in result.warnings:

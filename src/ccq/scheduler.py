@@ -73,14 +73,34 @@ RUN_ARGV: tuple[str, ...] = ("ccq", "run")
 TICK_ARGV: tuple[str, ...] = ("ccq", "tick")
 
 
-def run_argv(job_id: int) -> list[str]:
+def _with_home(argv: tuple[str, ...], home: Path | None) -> list[str]:
+    """``ccq --home <path> <subcommand>``, or plain ``ccq <subcommand>``.
+
+    ``--home`` has to survive every hop of the chain. It doesn't just select a
+    directory: a tick that dispatches against one home and a run that wakes up
+    against another are operating on *different queues*, and the one the run
+    picks is the real ``~/.ccq``. That mis-hop dispatches whichever job holds
+    the same id there.
+    """
+    head, *tail = argv
+    prefix = [head] if home is None else [head, "--home", str(home)]
+    return [*prefix, *tail]
+
+
+def run_argv(job_id: int, *, home: Path | None = None) -> list[str]:
     """The argv the production ``spawn_run`` Popens: ``ccq run <id>``."""
-    return [*RUN_ARGV, str(job_id)]
+    return [*_with_home(RUN_ARGV, home), str(job_id)]
+
+
+def tick_argv(*, home: Path | None = None) -> list[str]:
+    """The argv of the chained next tick, handed to ``run_job(on_complete=)``."""
+    return _with_home(TICK_ARGV, home)
 
 
 def _default_spawn_run(
     job_id: int,
     *,
+    home: Path | None = None,
     popen: Callable[..., subprocess.Popen] = subprocess.Popen,
 ) -> None:
     """Production ``spawn_run``: Popen ``ccq run <id>`` detached, own session.
@@ -90,7 +110,7 @@ def _default_spawn_run(
     never actually spawn it.
     """
     popen(
-        run_argv(job_id),
+        run_argv(job_id, home=home),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

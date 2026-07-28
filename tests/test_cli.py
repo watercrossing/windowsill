@@ -354,7 +354,7 @@ def test_tick_dispatches_job_whose_local_at_just_passed(tmp_path: Path, runner: 
 
     pin_tz("Etc/GMT-1")
     spawned: list[int] = []
-    monkeypatch.setattr(cli, "_spawn_run", lambda jid: spawned.append(jid))
+    monkeypatch.setattr(cli, "_spawn_run", lambda jid, home=None: spawned.append(jid))
 
     sub_result = run(runner, home, "sub", str(job_file))
     assert sub_result.exit_code == 0, sub_result.output
@@ -376,7 +376,7 @@ def test_tick_leaves_job_whose_local_at_is_future_queued(tmp_path: Path, runner:
 
     pin_tz("Etc/GMT-1")
     spawned: list[int] = []
-    monkeypatch.setattr(cli, "_spawn_run", lambda jid: spawned.append(jid))
+    monkeypatch.setattr(cli, "_spawn_run", lambda jid, home=None: spawned.append(jid))
 
     sub_result = run(runner, home, "sub", str(job_file))
     assert sub_result.exit_code == 0, sub_result.output
@@ -725,7 +725,7 @@ def test_tick_dispatches_due_job_via_injected_spawn(tmp_path: Path, runner: CliR
     job_id = add_job(conn, name="ticked", state="queued", at_time=None)
 
     spawned: list[int] = []
-    monkeypatch.setattr(cli, "_spawn_run", lambda jid: spawned.append(jid))
+    monkeypatch.setattr(cli, "_spawn_run", lambda jid, home=None: spawned.append(jid))
 
     result = run(runner, home, "tick")
 
@@ -741,7 +741,7 @@ def test_tick_leaves_not_yet_due_job_alone(tmp_path: Path, runner: CliRunner, mo
     job_id = add_job(conn, name="notyet", state="queued", at_time=FUTURE)
 
     spawned: list[int] = []
-    monkeypatch.setattr(cli, "_spawn_run", lambda jid: spawned.append(jid))
+    monkeypatch.setattr(cli, "_spawn_run", lambda jid, home=None: spawned.append(jid))
 
     result = run(runner, home, "tick")
 
@@ -758,7 +758,7 @@ def test_tick_quiet_suppresses_summary_but_still_dispatches(tmp_path: Path, runn
     job_id = add_job(conn, name="quietly", state="queued", at_time=None)
 
     spawned: list[int] = []
-    monkeypatch.setattr(cli, "_spawn_run", lambda jid: spawned.append(jid))
+    monkeypatch.setattr(cli, "_spawn_run", lambda jid, home=None: spawned.append(jid))
 
     result = run(runner, home, "tick", "-q")
 
@@ -771,7 +771,7 @@ def test_tick_quiet_suppresses_summary_but_still_dispatches(tmp_path: Path, runn
 def test_tick_without_quiet_prints_summary(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
     home = tmp_path / "home"
     make_db(home)
-    monkeypatch.setattr(cli, "_spawn_run", lambda jid: None)
+    monkeypatch.setattr(cli, "_spawn_run", lambda jid, home=None: None)
 
     result = run(runner, home, "tick")
 
@@ -787,7 +787,7 @@ def test_tick_prints_ceiling_warnings_even_when_quiet(tmp_path: Path, runner: Cl
     for _ in range(60):  # DEFAULTS["queue"]["max_sessions_per_month"]
         db.insert_window(conn, opened_at=PAST)
     add_job(conn, name="over-ceiling")
-    monkeypatch.setattr(cli, "_spawn_run", lambda jid: None)
+    monkeypatch.setattr(cli, "_spawn_run", lambda jid, home=None: None)
 
     result = run(runner, home, "tick", "-q")
 
@@ -874,7 +874,8 @@ def test_run_executes_job_to_terminal_via_fake_claude(tmp_path: Path, runner: Cl
     # `ccq run` wired run_job to the right job, root, chain, and claude seam.
     assert captured["job_id"] == job_id
     assert captured["root"] == home / ".ccq"
-    assert captured["on_complete"] == list(scheduler.TICK_ARGV)
+    # --home survives the chain: the next tick must come back to this queue.
+    assert captured["on_complete"] == ["ccq", "--home", str(home), "tick"]
     assert captured["claude_cmd"] == claude_cmd
 
     # Job reached a terminal state and captured the conversation id (§7).
@@ -1057,3 +1058,34 @@ def test_report_rejects_an_unparseable_since(tmp_path: Path, runner: CliRunner) 
     result = run(runner, home, "report", "--since", "last tuesday")
 
     assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# --home survives the dispatch chain
+# ---------------------------------------------------------------------------
+
+
+def test_tick_dispatch_carries_home_into_the_detached_run(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without this, `ccq --home X tick` dispatches `ccq run <id>` with no
+    --home -- and the run wakes up against the real ~/.ccq, where that id is
+    somebody else's job entirely."""
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="mine", at_time=PAST)
+    popened: list[list[str]] = []
+
+    def fake_popen(argv, **kwargs):
+        popened.append(list(argv))
+        return object()
+
+    monkeypatch.setattr(cli, "_spawn_run", lambda jid, home=None: scheduler._default_spawn_run(jid, home=home, popen=fake_popen))
+
+    result = run(runner, home, "tick")
+
+    assert result.exit_code == 0, result.output
+    assert popened == [["ccq", "--home", str(home), "run", str(job_id)]]
+
+
+def test_argv_builders_omit_home_when_it_is_the_default(tmp_path: Path) -> None:
+    assert scheduler.run_argv(7) == ["ccq", "run", "7"]
+    assert scheduler.tick_argv() == ["ccq", "tick"]
