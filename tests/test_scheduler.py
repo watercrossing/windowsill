@@ -12,13 +12,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 import sqlite_utils
 
-from ccq import db, runner, scheduler
+from ccq import db, runner, scheduler, usage
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -42,6 +43,13 @@ def add_job(
     before_time: str | None = None,
     pid: int | None = None,
     cwd: str = "/tmp",
+    window_policy: str = "share",
+    is_anchor: bool = False,
+    priority: int = 0,
+    hold_jid: list[str] | None = None,
+    resume_from: str | None = None,
+    resume_id: str | None = None,
+    conversation_id: str | None = None,
 ) -> int:
     return db.insert_job(
         conn,
@@ -54,7 +62,36 @@ def add_job(
         at_time=at_time,
         before_time=before_time,
         pid=pid,
+        window_policy=window_policy,
+        is_anchor=is_anchor,
+        priority=priority,
+        hold_jid=hold_jid,
+        resume_from=resume_from,
+        resume_id=resume_id,
+        conversation_id=conversation_id,
     )
+
+
+class ProbeSpy:
+    """A `/usage` oracle that answers from a canned reading and counts calls.
+
+    §4.2 allows a probe only when a dispatch decision depends on window state,
+    so "how many times was this called" is itself the assertion in several
+    tests below. No `claude` is ever invoked.
+    """
+
+    def __init__(self, *, open_until: str | None) -> None:
+        self.reset_at = datetime.fromisoformat(open_until) if open_until else None
+        self.calls = 0
+
+    def __call__(self) -> usage.ParsedUsage:
+        self.calls += 1
+        return usage.ParsedUsage(pct_used=15 if self.reset_at else 0, reset_at=self.reset_at)
+
+
+def exploding_probe() -> usage.ParsedUsage:
+    """A probe that must never be called (§4.2: don't probe with no question)."""
+    raise AssertionError("tick probed /usage when no decision depended on window state")
 
 
 class SpawnSpy:
@@ -526,3 +563,294 @@ def test_default_spawn_run_popens_detached_ccq_run(tmp_path: Path) -> None:
 
     assert calls[0][0] == ["ccq", "run", "42"]
     assert calls[0][1]["start_new_session"] is True
+
+
+# ---------------------------------------------------------------------------
+# dependencies: --hold-jid and --resume-from gate promotion (§2.3, §7)
+# ---------------------------------------------------------------------------
+
+
+def test_hold_jid_keeps_a_job_queued_until_its_dependency_is_done(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    dep_id = add_job(conn, name="first", state="running", pid=None)
+    waiter = add_job(conn, name="second", hold_jid=[str(dep_id)])
+    spawn = SpawnSpy()
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(2), now=NOW, spawn_run=spawn)
+
+    assert waiter not in result.promoted
+    assert db.get_job(conn, waiter)["state"] == "queued"
+
+    db.update_job(conn, dep_id, state="done", finished_at=NOW)
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(2), now=NOW, spawn_run=spawn)
+
+    assert result.dispatched == [waiter]
+
+
+def test_hold_jid_resolves_a_dependency_by_name_after_it_finished(tmp_path: Path) -> None:
+    # A name resolves among non-terminal jobs (§6.1) -- but a dependency is
+    # only satisfied once it is terminal, so the lookup has to keep working.
+    conn = make_db(tmp_path)
+    add_job(conn, name="audit", state="done")
+    waiter = add_job(conn, name="refactor", hold_jid=["audit"])
+    spawn = SpawnSpy()
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=spawn)
+
+    assert result.dispatched == [waiter]
+
+
+def test_hold_jid_dependency_that_failed_skips_the_dependent(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    dep_id = add_job(conn, name="first", state="failed", at_time=PAST)
+    waiter = add_job(conn, name="second", hold_jid=[str(dep_id)])
+    spawn = SpawnSpy()
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=spawn)
+
+    assert result.skipped == [waiter]
+    assert spawn.ids == []
+    job = db.get_job(conn, waiter)
+    assert job["state"] == "skipped"
+    assert job["finished_at"] == NOW
+    detail = db.list_events(conn, job_id=waiter)[-1]["detail"]
+    assert "failed" in detail
+
+
+def test_resume_from_resolves_the_conversation_at_dispatch(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    add_job(conn, name="audit", state="done", conversation_id="conv-audit-1")
+    follow_on = add_job(conn, name="refactor", resume_from="audit")
+    spawn = SpawnSpy()
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=spawn)
+
+    assert result.dispatched == [follow_on]
+    assert db.get_job(conn, follow_on)["resume_id"] == "conv-audit-1"
+
+
+def test_resume_from_waits_for_the_conversation_to_exist(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    add_job(conn, name="audit", state="running", pid=None)
+    follow_on = add_job(conn, name="refactor", resume_from="audit")
+    spawn = SpawnSpy()
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(2), now=NOW, spawn_run=spawn)
+
+    assert follow_on not in result.dispatched
+    assert db.get_job(conn, follow_on)["state"] == "queued"
+
+
+def test_explicit_resume_id_is_not_overwritten(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, resume_id="conv-explicit")
+    spawn = SpawnSpy()
+
+    scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=spawn)
+
+    assert db.get_job(conn, job_id)["resume_id"] == "conv-explicit"
+
+
+# ---------------------------------------------------------------------------
+# --priority orders dispatch (§2.3: lower runs first)
+# ---------------------------------------------------------------------------
+
+
+def test_lower_priority_number_dispatches_first(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    add_job(conn, name="ordinary", priority=0)
+    urgent = add_job(conn, name="urgent", priority=-10)
+    spawn = SpawnSpy()
+
+    scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=spawn)
+
+    assert spawn.ids == [urgent]  # submitted second, dispatched first
+
+
+def test_equal_priority_dispatches_fifo_by_id(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    first = add_job(conn, name="first")
+    add_job(conn, name="second")
+    spawn = SpawnSpy()
+
+    scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=spawn)
+
+    assert spawn.ids == [first]
+
+
+# ---------------------------------------------------------------------------
+# --window policies (§5.1) and the probe rule (§4.2)
+# ---------------------------------------------------------------------------
+
+
+def test_share_policy_never_probes(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, window_policy="share")
+    spawn = SpawnSpy()
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=spawn, probe=exploding_probe)
+
+    assert result.dispatched == [job_id]
+    assert result.probed is False
+
+
+def test_fresh_policy_dispatches_when_the_probe_reports_no_window(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, window_policy="fresh")
+    probe = ProbeSpy(open_until=None)
+    spawn = SpawnSpy()
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=spawn, probe=probe)
+
+    assert result.dispatched == [job_id]
+    assert result.probed is True
+    assert probe.calls == 1
+
+
+def test_fresh_policy_defers_while_a_window_is_open(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, window_policy="fresh")
+    probe = ProbeSpy(open_until=FUTURE)
+    spawn = SpawnSpy()
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=spawn, probe=probe)
+
+    assert result.deferred == [job_id]
+    assert result.dispatched == []
+    # Deferred, not terminal: the job stays ready for the next tick.
+    assert db.get_job(conn, job_id)["state"] == "ready"
+
+
+def test_probe_is_taken_once_per_tick_and_cached_in_the_window_table(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    add_job(conn, name="a", window_policy="fresh")
+    add_job(conn, name="b", window_policy="fresh")
+    probe = ProbeSpy(open_until=FUTURE)
+
+    scheduler.tick(conn, root=tmp_path, config=cfg(2), now=NOW, spawn_run=SpawnSpy(), probe=probe)
+
+    assert probe.calls == 1
+    cached = db.current_window(conn, NOW)
+    assert cached is not None
+    assert cached["pct_used"] == 15
+    assert cached["probed_at"] == NOW
+
+
+def test_offpeak_policy_defers_inside_the_peak_band(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, window_policy="offpeak")
+    spawn = SpawnSpy()
+
+    # NOW is 12:00Z on a Tuesday = 13:00 Europe/London, the start of the band.
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=spawn, probe=exploding_probe)
+
+    assert result.deferred == [job_id]
+    assert spawn.ids == []
+
+
+def test_offpeak_policy_dispatches_outside_the_peak_band(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, window_policy="offpeak")
+    spawn = SpawnSpy()
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=PAST, spawn_run=spawn, probe=exploding_probe)
+
+    assert result.dispatched == [job_id]
+
+
+# ---------------------------------------------------------------------------
+# anchors fire conditionally (§5.2)
+# ---------------------------------------------------------------------------
+
+
+def test_anchor_skips_when_a_window_is_already_open(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    anchor = add_job(conn, name="morning-anchor", is_anchor=True)
+    probe = ProbeSpy(open_until=FUTURE)
+    spawn = SpawnSpy()
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=spawn, probe=probe)
+
+    assert result.skipped == [anchor]
+    assert spawn.ids == []
+    assert db.get_job(conn, anchor)["state"] == "skipped"
+
+
+def test_anchor_dispatches_when_no_window_is_open(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    anchor = add_job(conn, name="morning-anchor", is_anchor=True)
+    probe = ProbeSpy(open_until=None)
+    spawn = SpawnSpy()
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=spawn, probe=probe)
+
+    assert result.dispatched == [anchor]
+
+
+# ---------------------------------------------------------------------------
+# the window ledger and the 30d ceiling (§5.3)
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_while_closed_records_the_window_it_opened(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    job_id = add_job(conn)
+
+    scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=SpawnSpy(), probe=exploding_probe)
+
+    rows = list(conn["window"].rows)
+    assert len(rows) == 1
+    assert rows[0]["opened_at"] == NOW
+    assert rows[0]["opened_by"] == job_id
+
+
+def test_dispatch_into_an_open_window_records_nothing(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    db.insert_window(conn, opened_at=PAST, reset_at=FUTURE)
+    add_job(conn)
+
+    scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=SpawnSpy(), probe=exploding_probe)
+
+    assert len(list(conn["window"].rows)) == 1  # still just the open one
+
+
+def test_two_dispatches_in_one_tick_open_only_one_window(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    add_job(conn, name="a")
+    add_job(conn, name="b")
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(2), now=NOW, spawn_run=SpawnSpy(), probe=exploding_probe)
+
+    assert len(result.dispatched) == 2
+    assert len(list(conn["window"].rows)) == 1
+
+
+def _fill_window_ledger(conn: sqlite_utils.Database, count: int) -> None:
+    for _ in range(count):
+        db.insert_window(conn, opened_at=PAST)
+
+
+def test_anchor_is_refused_at_the_30d_ceiling(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    _fill_window_ledger(conn, 3)
+    anchor = add_job(conn, name="morning-anchor", is_anchor=True)
+    config = {"queue": {"max_parallel": 1, "max_sessions_per_month": 3}}
+
+    result = scheduler.tick(conn, root=tmp_path, config=config, now=NOW, spawn_run=SpawnSpy(), probe=ProbeSpy(open_until=None))
+
+    assert result.skipped == [anchor]
+    assert "ceiling" in db.list_events(conn, job_id=anchor)[-1]["detail"]
+
+
+def test_real_job_warns_at_the_ceiling_but_still_runs(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    _fill_window_ledger(conn, 3)
+    job_id = add_job(conn)
+    config = {"queue": {"max_parallel": 1, "max_sessions_per_month": 3}}
+
+    result = scheduler.tick(conn, root=tmp_path, config=config, now=NOW, spawn_run=SpawnSpy(), probe=exploding_probe)
+
+    assert result.dispatched == [job_id]
+    assert len(result.warnings) == 1
+    assert "ceiling" in result.warnings[0]
+    assert [event["kind"] for event in db.list_events(conn, job_id=job_id)] == ["ready", "warning", "claimed"]

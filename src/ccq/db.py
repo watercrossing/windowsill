@@ -338,6 +338,7 @@ def resolve_identifier(
     identifier: str | int,
     *,
     terminal_states: frozenset[str] = TERMINAL_STATES,
+    include_terminal: bool = False,
 ) -> int:
     """Resolve a ``--hold-jid`` / ``--resume-from`` argument to a job id.
 
@@ -348,6 +349,14 @@ def resolve_identifier(
     :class:`UnknownIdentifierError`; two or more is an
     :class:`AmbiguousIdentifierError` (can't disambiguate, so we refuse
     to guess — the caller should use the numeric id instead).
+
+    ``include_terminal`` widens the *fallback* only: with no live match, the
+    most recent job of that name wins whatever its state. That is what a
+    dependency lookup needs — ``--resume-from audit-auth`` names a job that,
+    by the time it is resolved, has necessarily finished — while an
+    ambiguous live name is still refused. Interactive commands keep the
+    narrow default: ``ccq del nightly-lint`` should not reach back into last
+    week's finished run.
     """
     try:
         job_id = int(identifier)
@@ -360,12 +369,15 @@ def resolve_identifier(
         return job_id
 
     name = str(identifier)
-    candidates = [row for row in database["jobs"].rows_where("name = ?", [name], order_by="id desc") if row["state"] not in terminal_states]
-    if not candidates:
-        raise UnknownIdentifierError(f"no non-terminal job named {name!r}")
+    matches = list(database["jobs"].rows_where("name = ?", [name], order_by="id desc"))
+    candidates = [row for row in matches if row["state"] not in terminal_states]
     if len(candidates) > 1:
         raise AmbiguousIdentifierError(f"{len(candidates)} non-terminal jobs named {name!r}; use the numeric id")
-    return candidates[0]["id"]
+    if candidates:
+        return candidates[0]["id"]
+    if include_terminal and matches:
+        return matches[0]["id"]
+    raise UnknownIdentifierError(f"no non-terminal job named {name!r}")
 
 
 # ---------------------------------------------------------------------------

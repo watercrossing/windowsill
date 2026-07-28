@@ -20,7 +20,7 @@ from typing import Any
 import pytest
 from click.testing import CliRunner
 
-from ccq import cli, db, scheduler
+from ccq import cli, db, scheduler, usage
 from ccq import runner as runner_mod
 
 NOW = "2026-07-22T09:00:00+00:00"
@@ -275,6 +275,17 @@ def test_sub_leaves_relative_log_directive_relative(tmp_path: Path, runner: CliR
     job = db.get_job(make_db(home), int(result.output.strip()))
 
     assert job["log_path"] == "logs/run.md"
+
+
+def test_sub_rejects_resume_and_resume_from_together(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    job_file = tmp_path / "j.md"
+    job_file.write_text("#$ --resume conv-1\n#$ --resume-from other-job\n\nbody\n")
+
+    result = run(runner, home, "sub", str(job_file))
+
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
 
 
 def test_sub_writes_job_md_verbatim(tmp_path: Path, runner: CliRunner) -> None:
@@ -764,7 +775,28 @@ def test_tick_without_quiet_prints_summary(tmp_path: Path, runner: CliRunner, mo
     result = run(runner, home, "tick")
 
     assert result.exit_code == 0, result.output
-    assert "reaped=0 expired=0 promoted=0 dispatched=0" in result.output
+    assert "reaped=0 expired=0 promoted=0 dispatched=0 skipped=0 deferred=0" in result.output
+
+
+def test_tick_prints_ceiling_warnings_even_when_quiet(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
+    """§5.3: warn loudly on real work. Under cron, -q is the normal mode and
+    stdout/stderr is the only channel that reaches a human."""
+    home = tmp_path / "home"
+    conn = make_db(home)
+    for _ in range(60):  # DEFAULTS["queue"]["max_sessions_per_month"]
+        db.insert_window(conn, opened_at=PAST)
+    add_job(conn, name="over-ceiling")
+    monkeypatch.setattr(cli, "_spawn_run", lambda jid: None)
+
+    result = run(runner, home, "tick", "-q")
+
+    assert result.exit_code == 0, result.output
+    assert "warning:" in result.output
+    assert "ceiling" in result.output
+
+
+def test_tick_default_probe_is_the_usage_oracle(tmp_path: Path) -> None:
+    assert cli._probe is usage.probe
 
 
 def test_tick_default_spawn_run_is_schedulers_default(tmp_path: Path) -> None:

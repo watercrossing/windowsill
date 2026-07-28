@@ -39,7 +39,7 @@ from typing import Iterator
 import click
 import sqlite_utils
 
-from ccq import config, db, jobfile, runner, scheduler
+from ccq import config, db, jobfile, runner, scheduler, usage
 
 # ---------------------------------------------------------------------------
 # injectable seams -- see module docstring. Production defaults here;
@@ -92,6 +92,10 @@ _spawn_run = scheduler._default_spawn_run
 #: monkeypatch it so a fake ``claude`` (via ``_claude_cmd``) is spawned
 #: instead of the real binary, and no chained ``ccq tick`` is ever Popened.
 _run_job = runner.run_job
+
+#: The ``/usage`` oracle handed to :func:`ccq.scheduler.tick` (§4). Same seam
+#: style again: tests replace it so no real ``claude`` is ever probed.
+_probe = usage.probe
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +286,12 @@ def sub(ctx: click.Context, file, run_now: bool) -> None:
         text = file.read()
         jf = jobfile.parse_jobfile(text)
         d = jf.directives
+
+        # §2.3: mutually exclusive. The parser deliberately doesn't reject this
+        # (pass-through beats validation, §0.4) -- the scheduler side does, and
+        # failing at submit beats failing at 02:00.
+        if d.resume and d.resume_from:
+            raise click.ClickException("--resume and --resume-from are mutually exclusive")
 
         name = d.name or _default_name(file.name)
         cwd = str(Path(d.cwd).expanduser()) if d.cwd else str(Path.cwd())
@@ -589,9 +599,16 @@ def run_(ctx: click.Context, job_id: int) -> None:
 def tick(ctx: click.Context, quiet: bool) -> None:
     """Internal; run one scheduler pass -- promote due jobs and dispatch ready ones (used by cron and the run chain)."""
     with _session(ctx.obj["home"]) as (database, cfg, root):
-        result = scheduler.tick(database, root=root, config=cfg, now=_iso_now, spawn_run=_spawn_run)
+        result = scheduler.tick(database, root=root, config=cfg, now=_iso_now, spawn_run=_spawn_run, probe=_probe)
+        # §5.3's ceiling warning survives -q on purpose: "warn loudly" is the
+        # whole point, and under cron stdout is the only thing that reaches you.
+        for warning in result.warnings:
+            click.echo(f"warning: {warning}", err=True)
         if not quiet:
-            click.echo(f"reaped={len(result.reaped)} expired={len(result.expired)} promoted={len(result.promoted)} dispatched={len(result.dispatched)}")
+            click.echo(
+                f"reaped={len(result.reaped)} expired={len(result.expired)} promoted={len(result.promoted)} "
+                f"dispatched={len(result.dispatched)} skipped={len(result.skipped)} deferred={len(result.deferred)}"
+            )
 
 
 if __name__ == "__main__":  # pragma: no cover
