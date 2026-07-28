@@ -21,8 +21,17 @@ Evidence is one machine, one client version, one night. These are behavioural fi
 
 Both observed on the target account while a window was live, and both were caught by the parser reporting `is_open: False` at 74% used — the percentage is display-only ([§4.1](04-usage-oracle.md)), so nothing else would have noticed.
 
+## Settled 2026-07-28, second sitting
+
+Three jobs — one Haiku 4.5, one Sonnet 5 spawning a subagent, one Opus 4.8 held on the second — submitted to a throwaway `--home` and dispatched by hand-run ticks.
+
+| Question | Answer | Consequence |
+|---|---|---|
+| Does a denied permission fail the run? | **No.** Two `Write` calls were refused under `--permission-mode auto`; the envelope still returned `subtype: success`, `is_error: false`, with both refusals listed in `permission_denials` | A job that was blocked from doing anything reads `done` in `ccq stat`. That is the overnight failure this project exists to catch, and nothing in [§7](07-lifecycle.md) currently looks at the field. Count it per run ([§6](06-state.md)) and show it ([§8.1](08-interface.md)) |
+| Is `total_cost_usd` populated for a real run on a subscription? | **Yes.** `0.0259` for the Haiku run, `0.0873` for the Opus one | Answers the open question below it. [§4.3](04-usage-oracle.md)'s Δ% is still the unit that binds — a dollar figure on a subscription is a shadow price, not a budget |
+| Is `--permission-mode auto` enough for an unattended writer? | **No, and not per-model.** Sonnet's writes went through in the same directory where Haiku's were refused | Do not read one job's success as proof the mode is sufficient. [§3.3](03-execution-model.md)'s allowlist is the mechanism; `auto` is a coin toss |
+
 ## Still open
 
 - **Rate-limit signal shape:** exit code, a subtype in the JSON, or only a human string? Decides how brittle [§5.4](05-windows.md) is. Only learnable by hitting a real one — which M1 will do within a week of use.
-- **Is `total_cost_usd` populated for a real run on a subscription?** The observed `0` was a zero-turn slash command and proves nothing. Low stakes: [§4.3](04-usage-oracle.md) uses Δ% regardless.
 - **How much does `--resume` actually cost** at high context? [§5.4](05-windows.md)'s guidance assumes it is expensive, on the basis that one >150k-context turn cost 15% of a window. Now measurable: probe, resume a long conversation with a trivial turn, probe again. Worth doing early — it is the difference between resume-on-limit being a safety net and being a trap.
