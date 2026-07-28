@@ -1,6 +1,8 @@
-# ccq
+# windowsill
 
 A local batch queue for Claude Code.
+
+Where you leave things overnight, in the window, to be dealt with in the morning.
 
 ## The problem
 
@@ -8,8 +10,8 @@ The binding constraint on a Claude Code subscription usually isn't the weekly ca
 A window starts on your first message and lasts 5 hours; whatever's left when you stop working is gone, not banked.
 Most of that headroom evaporates overnight while you sleep.
 
-`ccq` is a cron-driven queue that submits Markdown job files — prompt bodies with a small directive header — and dispatches them into windows you'd otherwise waste, up to a monthly ceiling you configure.
-You write jobs before bed; you run `ccq resume <id>` in the morning to pick a conversation back up.
+windowsill is a cron-driven queue that submits Markdown job files — prompt bodies with a small directive header — and dispatches them into windows you'd otherwise waste, up to a monthly ceiling you configure.
+You write jobs before bed; you run `ccresume <id>` in the morning to pick a conversation back up.
 
 A quick note on words this project is careful about, since Claude Code overloads "session":
 
@@ -17,31 +19,41 @@ A quick note on words this project is careful about, since Claude Code overloads
 |---|---|---|
 | The 5-hour billing segment | **window** | `/usage`'s "Current session: N% used"; the monthly benchmark |
 | A Claude Code conversation with a `session_id` | **conversation** | `--resume`, `~/.claude/projects/` |
-| One execution attempt of a queued job | **run** | `ccq` internals only |
+| One execution attempt of a queued job | **run** | windowsill internals only |
 
 ## Install
 
-Install it on your PATH as a tool:
-
 ```
-uv tool install .
+uv tool install windowsill
 ```
 
-Or, from a checkout of this repo, run it straight from the project environment:
+That puts five commands on your PATH: the four short verbs `ccsub`, `ccstat`, `ccdel`, `ccresume`,
+and `ccq`, the dispatcher that carries all of them plus the rest — `ccq show`, `ccq report`, `ccq tick`.
+`ccq --help` is the one place that lists everything.
+
+From a checkout of this repo, run it straight from the project environment instead:
 
 ```
-uv run ccq
+uv run ccstat
 ```
 
-`uv run` uses the project's own venv with `ccq` installed editable,
+`uv run` uses the project's own venv with windowsill installed editable,
 so your source edits take effect immediately — prefer it while working in the repo.
-`uvx --from . ccq` runs it too, but builds `ccq` into a separate, ephemeral tool
+`uvx --from . ccstat` runs it too, but builds the package into a separate, ephemeral tool
 environment each time and runs that snapshot rather than your live source:
 handy for a one-off try, redundant once the code is already local.
 
+### Upgrading from `ccq`
+
+The package used to be called `ccq`. If you have a `~/.ccq` from before the rename,
+windowsill keeps using it — queue, ledger, job dirs, and `ccq.db` filename included —
+so an upgrade strands nothing and cron keeps working untouched.
+New installs get `~/.windowsill`. To move an existing one, stop the queue, `mv ~/.ccq ~/.windowsill`,
+and rename `ccq.db` inside it to `windowsill.db`; the old directory is ignored as soon as the new one exists.
+
 ## Running on a schedule (cron)
 
-`ccq` dispatches jobs two ways (see [`design/03-execution-model.md`](design/03-execution-model.md)).
+windowsill dispatches jobs two ways (see [`design/03-execution-model.md`](design/03-execution-model.md)).
 The fast path is the *chain*: when a job finishes it kicks the next tick itself, so back-to-back jobs in one open window start seconds apart.
 Cron is the *liveness floor* underneath that — it catches a broken chain, an `--at` coming due, and a rate-limit `blocked_until` expiring.
 Fifteen minutes is fine precisely because it is never the latency path.
@@ -56,25 +68,25 @@ PATH=/home/you/.local/bin:/usr/bin:/bin
 - **`-q`** suppresses `tick`'s one-line summary, so cron has no output to mail you every 15 minutes.
 - **`PATH`** matters because cron runs with a nearly empty environment.
   Both `ccq` *and* `claude` have to be findable on it — a tick with a due job spawns `ccq run`, which spawns `claude`.
-  `uv tool install .` puts `ccq` in `~/.local/bin`, where `claude` usually already lives; confirm with `command -v ccq claude` and set the `PATH=` line to match.
-  (If you run from a checkout instead of installing, use `uv run --project /path/to/ccq ccq tick -q` and make sure `uv` is on that `PATH` too.)
+  `uv tool install windowsill` puts `ccq` in `~/.local/bin`, where `claude` usually already lives; confirm with `command -v ccq claude` and set the `PATH=` line to match.
+  (If you run from a checkout instead of installing, use `uv run --project /path/to/windowsill ccq tick -q` and make sure `uv` is on that `PATH` too.)
 - **`HOME`** is set by cron automatically, which is all `claude` needs to find its credentials — a non-interactive job with no TTY authenticates fine (verified in [`design/09-findings.md`](design/09-findings.md)).
 
 To keep a heartbeat and capture any errors, redirect to a log instead:
 
 ```cron
-*/15 * * * * ccq tick >> "$HOME/.ccq/logs/ccq.log" 2>&1
+*/15 * * * * ccq tick >> "$HOME/.windowsill/logs/tick.log" 2>&1
 ```
 
 Drop the `-q` when you redirect — the summary line becomes a useful "it's alive" trace in the log rather than mail in your inbox.
-`ccq` creates `~/.ccq/logs/` for you on first run.
+windowsill creates `~/.windowsill/logs/` for you on first run.
 
 ## The job file
 
 A job is a UTF-8 text file: an optional shebang, a header of `#$` directives, a blank line, then the prompt body — verbatim, no templating, any length.
 
 ```
-#!/usr/bin/env ccq
+#!/usr/bin/env ccsub
 #$ --name refactor-auth
 #$ --at 2026-07-18T02:00
 #$ --model claude-opus-4-8
@@ -97,6 +109,7 @@ need to `BLOCKED.md`, then continue with the next call site.
 Parsing rules that matter:
 
 - The `#!` line, if present, is ignored — job files can be `chmod +x` and self-submitted.
+  `ccsub` takes the file as its only argument, so `#!/usr/bin/env ccsub` makes `./refactor-auth.md` submit itself.
 - Directives are lines matching `^#\$\s+(.*)$`, and must appear before the first non-directive, non-blank, non-shebang line.
   Once prose starts, the header is closed — a `#$` line can't resume later in the file.
 - The first blank line after the header ends the header.
@@ -106,9 +119,9 @@ Parsing rules that matter:
 - Directive arguments are tokenised with shell-like quoting rules (so `--name "has spaces"` works as you'd expect).
 
 **Two kinds of directive.**
-`ccq` recognises a fixed set of *scheduler* directives (below); everything else is passed through verbatim, in order, to `claude` as argv.
+windowsill recognises a fixed set of *scheduler* directives (below); everything else is passed through verbatim, in order, to `claude` as argv.
 `#$ --model claude-opus-4-8` becomes `claude --model claude-opus-4-8`.
-This means a new `claude` flag works the day it ships, with no change to `ccq` — and `ccq` never validates or rejects a directive it doesn't recognise; unknown ones flow straight through and `claude` complains if they're wrong.
+This means a new `claude` flag works the day it ships, with no change here — and windowsill never validates or rejects a directive it doesn't recognise; unknown ones flow straight through and `claude` complains if they're wrong.
 
 ### Scheduler directives
 
@@ -140,30 +153,31 @@ Every directive above is parsed *and* acted on today, with two exceptions: `--is
 
 ## Commands
 
-Three commands you'll use constantly:
+Three commands you'll use constantly, each its own executable, after Grid Engine's `qsub`/`qstat`/`qdel`:
 
-- **`ccq sub <file>`** — submit a job.
+- **`ccsub <file>`** — submit a job.
   Use `-` to read from stdin.
   Prints the job id.
-- **`ccq stat`** — see what's queued, running, held, or recently finished: id, name, state, model, when, cwd, elapsed.
-- **`ccq resume <id>`** — the morning-after command.
+- **`ccstat`** — see what's queued, running, held, or recently finished: id, name, state, model, when, cwd, elapsed.
+- **`ccresume <id>`** — the morning-after command.
   `exec`s into `claude --resume <conversation_id>` in the job's working directory, so you drop straight back into last night's conversation.
 
-Working today (milestones M1 and M2):
+Working today (milestones M1 and M2). Every row is also reachable as a subcommand of `ccq`,
+which is the form cron and the job chain use:
 
-| Command | Behaviour |
-|---|---|
-| `ccq sub <file>` | Submit. `-` reads stdin. Prints job id. `--now` bypasses `--at` |
-| `ccq stat` | id, name, state, model, when, cwd, elapsed, plus window state and 30d count |
-| `ccq stat -a` | Include terminal jobs from the last 7 days |
-| `ccq show <id>` | Directives, resolved argv, state, conversation id, Δ%, transcript tail |
-| `ccq log <id> [-f]` | Stream the transcript; `-f` follows a running job |
-| `ccq del <id>` | Cancel; SIGTERM the process group if running |
-| `ccq hold <id>` / `ccq release <id>` | Toggle held |
-| `ccq resume <id>` | `exec` into `claude --resume <conversation_id>` in the job's cwd |
-| `ccq usage [--probe]` | Cached window state; `--probe` reads `/usage` fresh (max once per 10s) |
-| `ccq report [--since 24h]` | Digest of what ran: state, duration, Δ%, and a `ccq resume` line each |
-| `ccq tick` | Internal; cron and chain entry point |
+| Command | Also | Behaviour |
+|---|---|---|
+| `ccsub <file>` | `ccq sub` | Submit. `-` reads stdin. Prints job id. `--now` bypasses `--at` |
+| `ccstat` | `ccq stat` | id, name, state, model, when, cwd, elapsed, plus window state and 30d count |
+| `ccstat -a` | `ccq stat -a` | Include terminal jobs from the last 7 days |
+| `ccdel <id>` | `ccq del` | Cancel; SIGTERM the process group if running |
+| `ccresume <id>` | `ccq resume` | `exec` into `claude --resume <conversation_id>` in the job's cwd |
+| — | `ccq show <id>` | Directives, resolved argv, state, conversation id, Δ%, permission denials, transcript tail |
+| — | `ccq log <id> [-f]` | Stream the transcript; `-f` follows a running job |
+| — | `ccq hold <id>` / `ccq release <id>` | Toggle held |
+| — | `ccq usage [--probe]` | Cached window state; `--probe` reads `/usage` fresh (max once per 10s) |
+| — | `ccq report [--since 24h]` | Digest of what ran: state, duration, Δ%, and a `ccresume` line each |
+| — | `ccq tick` | Internal; cron and chain entry point |
 
 Times are printed in your machine's own local time with no zone attached — `2026-07-28 02:00`.
 Pass `--with-timezone` to any of these for the offset-bearing ISO form instead.
@@ -196,7 +210,7 @@ What separates these tools isn't the queue — it's what *triggers* a dispatch.
   Unrelated to the above despite the identical name.
   A PyQt6 desktop app with a REST API on :5679, a Job→Task→Run hierarchy, and profiles for AWS Bedrock and Z.AI.
 - **[`gruckion/claude-scheduler`](https://github.com/gruckion/claude-scheduler)** — *triggered by the wall clock,* one-shot.
-  Small, but it captures the conversation id and hands you click-to-resume notifications — the ergonomics `ccq resume` is aiming at.
+  Small, but it captures the conversation id and hands you click-to-resume notifications — the ergonomics `ccresume` is aiming at.
 - **Claude Code's own scheduling** — *triggered by the wall clock.*
   `/loop` with the `Cron*` tools schedules within a session; the desktop app's scheduled tasks use a `SKILL.md` with YAML frontmatter, which is Anthropic's own take on a job file and worth reading before changing [`design/02-job-file.md`](design/02-job-file.md).
 
@@ -206,7 +220,7 @@ A clock knows what time it is; it doesn't know whether you have a window open.
 `claude-code-queue` is the closest neighbour, and the overlap is real: Markdown job files with a directive header, a queue, retries, and an awareness that the 5-hour window is the thing that actually hurts.
 The difference is which direction the tool faces.
 `claude-code-queue` is **reactive** — it exists so that hitting a limit doesn't block you, and it waits a window out.
-`ccq` is **opportunistic** — it exists to spend windows that would otherwise expire unused, and it treats capacity as a budget rather than as free-until-blocked.
+windowsill is **opportunistic** — it exists to spend windows that would otherwise expire unused, and it treats capacity as a budget rather than as free-until-blocked.
 
 Three things follow from that, none of which have a counterpart above:
 
