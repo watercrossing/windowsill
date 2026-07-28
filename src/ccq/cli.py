@@ -455,6 +455,17 @@ def _delta_pct(database: sqlite_utils.Database, job_id: int) -> int | None:
     return last["pct_after"] - last["pct_before"]
 
 
+def _permission_denials(database: sqlite_utils.Database, job_id: int) -> int | None:
+    """Permission denials of a job's last run, or ``None`` when there is no
+    run yet / the run predates this column (§9 "Settled 2026-07-28, second
+    sitting"): a run can read ``done`` having written nothing because every
+    write was refused, and nothing else in the output flags that."""
+    runs = db.list_runs(database, job_id=job_id)
+    if not runs:
+        return None
+    return runs[-1].get("permission_denials")
+
+
 @main.command()
 @click.option("--since", default="24h", show_default=True, help="How far back to report (e.g. 24h, 7d, 90m).")
 @click.option("--with-timezone", is_flag=True, help="Show times with their UTC offset instead of bare system local time.")
@@ -476,7 +487,14 @@ def report(ctx: click.Context, since: str, with_timezone: bool) -> None:
             if delta is not None:
                 total_delta += delta
             delta_text = f"Δ {delta}%" if delta is not None else "Δ -"
-            click.echo(f"{job['id']:<5} {job['name']:<24} {job['state']:<10} {_elapsed(job, now_str):<9} {delta_text:<7} ccq resume {job['id']}")
+            denials = _permission_denials(database, job["id"])
+            # Terse and silent when zero/unknown (§8.1 one-screen constraint) --
+            # only a non-zero count is worth a reader's attention (§9
+            # "Settled 2026-07-28, second sitting").
+            denial_text = f" denied={denials}" if denials else ""
+            click.echo(
+                f"{job['id']:<5} {job['name']:<24} {job['state']:<10} {_elapsed(job, now_str):<9} {delta_text:<7} ccq resume {job['id']}{denial_text}"
+            )
 
         if not jobs:
             click.echo("(nothing ran)")
@@ -507,6 +525,7 @@ def show(ctx: click.Context, identifier: str) -> None:
         delta = None
         if last_run and last_run.get("pct_before") is not None and last_run.get("pct_after") is not None:
             delta = last_run["pct_after"] - last_run["pct_before"]
+        denials = last_run.get("permission_denials") if last_run else None
 
         dir_ = runner.job_dir(root, job_id, job["name"])
         # Prefer the rendered, human-readable transcript (§6.2); fall back to
@@ -521,6 +540,7 @@ def show(ctx: click.Context, identifier: str) -> None:
         click.echo(f"model: {job['model'] or '-'}")
         click.echo(f"conversation_id: {job['conversation_id'] or '-'}")
         click.echo(f"delta%: {delta if delta is not None else 'n/a'}")
+        click.echo(f"permission denials (last run): {denials if denials is not None else 'n/a'}")
         click.echo("directives:")
         click.echo(f"  window: {job['window_policy']}")
         click.echo(f"  anchor: {bool(job['is_anchor'])}")

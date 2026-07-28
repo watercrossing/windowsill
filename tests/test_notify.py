@@ -67,6 +67,30 @@ def test_compose_body_omits_delta_when_absent() -> None:
     assert "ccq resume 7" in body
 
 
+def test_compose_body_flags_nonzero_permission_denials() -> None:
+    """§9 "Settled 2026-07-28, second sitting": a run can read "done" with
+    every write refused -- the notification is where the reader would
+    otherwise trust that "done" blind."""
+    _, body = notify.compose(job_id=42, name="refactor-auth", state="done", permission_denials=2)
+    assert "2 permission denials" in body
+
+
+def test_compose_body_singular_for_one_denial() -> None:
+    _, body = notify.compose(job_id=42, name="j", state="done", permission_denials=1)
+    assert "1 permission denial" in body
+    assert "1 permission denials" not in body
+
+
+def test_compose_body_omits_permission_denials_when_zero() -> None:
+    _, body = notify.compose(job_id=42, name="j", state="done", permission_denials=0)
+    assert "permission denial" not in body
+
+
+def test_compose_body_omits_permission_denials_when_absent() -> None:
+    _, body = notify.compose(job_id=42, name="j", state="done")
+    assert "permission denial" not in body
+
+
 # ---------------------------------------------------------------------------
 # channel dispatch
 # ---------------------------------------------------------------------------

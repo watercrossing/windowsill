@@ -533,6 +533,7 @@ def _notify_job(
     *,
     summary: str,
     delta_pct: int | None,
+    permission_denials: int | None,
     ts: str,
     config: Mapping[str, Any] | None,
     notify_fn: Callable[..., "notify.NotifyResult"],
@@ -544,7 +545,14 @@ def _notify_job(
     that a failed notification is *logged* and never fails the job, and
     :func:`ccq.notify.notify` already guarantees the second half.
     """
-    title, body = notify.compose(job_id=job["id"], name=job["name"], state=job_state, summary=summary, delta_pct=delta_pct)
+    title, body = notify.compose(
+        job_id=job["id"],
+        name=job["name"],
+        state=job_state,
+        summary=summary,
+        delta_pct=delta_pct,
+        permission_denials=permission_denials,
+    )
     outcome = notify_fn(job["notify"], title, body, config=config or {})
     if outcome.channel == "none":
         return
@@ -647,6 +655,12 @@ def run_job(
     finished_at = now()
     conversation_id = result_event.get("session_id") if result_event else None
 
+    # design/09-findings.md, "Settled 2026-07-28, second sitting": a denied
+    # permission does not fail the run -- the envelope can read subtype
+    # "success", is_error False, with refusals only visible in this list. Count
+    # them per run so a job that wrote nothing doesn't just read "done".
+    permission_denials = len(result_event.get("permission_denials") or []) if result_event is not None else None
+
     after = _safe_probe(probe)
     if after is not None:
         window.record_probe(database, after, now_str=finished_at)
@@ -662,6 +676,7 @@ def run_job(
         pct_after=pct_after,
         num_turns=(result_event.get("num_turns") if result_event else None),
         duration_ms=(result_event.get("duration_ms") if result_event else None),
+        permission_denials=permission_denials,
         conversation_id=conversation_id,
     )
 
@@ -715,6 +730,7 @@ def run_job(
             job_state,
             summary=_summary(result_event),
             delta_pct=delta_pct,
+            permission_denials=permission_denials,
             ts=finished_at,
             config=config,
             notify_fn=notify_fn,

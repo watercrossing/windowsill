@@ -75,6 +75,27 @@ sys.stdin.read()
 print(json.dumps({"type": "system", "subtype": "init"}))
 """
 
+# The regression shape from design/09-findings.md, "Settled 2026-07-28, second
+# sitting": subtype "success", is_error False -- an ordinary "done" run -- but
+# two Write calls were refused, visible only in permission_denials.
+PERMISSION_DENIED_SCRIPT = """
+import json, sys
+sys.stdin.read()
+print(json.dumps({"type": "system", "subtype": "init"}))
+print(json.dumps({
+    "type": "result", "subtype": "success", "is_error": False,
+    "duration_ms": 200, "duration_api_ms": 150, "num_turns": 4,
+    "result": "done, but", "stop_reason": None,
+    "session_id": "fake-session-denied", "total_cost_usd": 0,
+    "usage": {}, "modelUsage": {},
+    "permission_denials": [
+        {"tool_name": "Write", "tool_input": {"file_path": "a.txt"}},
+        {"tool_name": "Write", "tool_input": {"file_path": "b.txt"}}
+    ],
+    "uuid": "u3",
+}))
+"""
+
 HANG_IGNORES_SIGTERM_SCRIPT = """
 import signal, time
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -739,6 +760,73 @@ def test_run_job_failure_marks_job_failed(tmp_path: Path) -> None:
     assert job["conversation_id"] == "fake-session-err"
 
 
+def test_run_job_counts_permission_denials_even_when_envelope_reads_success(tmp_path: Path) -> None:
+    """§9 "Settled 2026-07-28, second sitting": a job blocked from doing
+    anything must not just read "done" -- the denial count has to land
+    somewhere. The run outcome itself is untouched: still whatever the
+    envelope says, "done" here, no new job state invented."""
+    conn = db.connect(tmp_path / "ccq.db")
+    job_id = _make_job(conn, tmp_path)
+    claude_cmd = _write_script(tmp_path, "claude_denied.py", PERMISSION_DENIED_SCRIPT)
+
+    outcome = runner.run_job(
+        conn,
+        job_id,
+        root=tmp_path,
+        claude_cmd=claude_cmd,
+        on_complete=[sys.executable, "-c", "pass"],
+        now=iter(["2026-07-21T02:00:00Z", "2026-07-21T02:01:00Z"]).__next__,
+        sleep=noop_sleep,
+    )
+
+    assert outcome.outcome == "done"
+    assert db.get_job(conn, job_id)["state"] == "done"
+
+    run = db.list_runs(conn, job_id=job_id)[0]
+    assert run["outcome"] == "done"
+    assert run["permission_denials"] == 2
+
+
+def test_run_job_permission_denials_is_zero_when_envelope_list_is_empty(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "ccq.db")
+    job_id = _make_job(conn, tmp_path)
+    claude_cmd = _write_script(tmp_path, "claude_ok.py", SUCCESS_SCRIPT)
+
+    runner.run_job(
+        conn,
+        job_id,
+        root=tmp_path,
+        claude_cmd=claude_cmd,
+        on_complete=[sys.executable, "-c", "pass"],
+        sleep=noop_sleep,
+    )
+
+    run = db.list_runs(conn, job_id=job_id)[0]
+    assert run["permission_denials"] == 0
+
+
+def test_run_job_permission_denials_is_none_without_a_result_event(tmp_path: Path) -> None:
+    """A run killed before ever emitting a result event has no envelope to
+    read a denial count from -- ``None``, not ``0``, mirrors how num_turns
+    and duration_ms already behave for this case."""
+    conn = db.connect(tmp_path / "ccq.db")
+    job_id = _make_job(conn, tmp_path)
+    claude_cmd = _write_script(tmp_path, "claude_noresult.py", NO_RESULT_SCRIPT)
+
+    runner.run_job(
+        conn,
+        job_id,
+        root=tmp_path,
+        claude_cmd=claude_cmd,
+        on_complete=[sys.executable, "-c", "pass"],
+        now=iter(["2026-07-21T02:00:00Z", "2026-07-21T02:01:00Z"]).__next__,
+        sleep=noop_sleep,
+    )
+
+    run = db.list_runs(conn, job_id=job_id)[0]
+    assert run["permission_denials"] is None
+
+
 def test_run_job_timeout_marks_job_failed_with_timeout_outcome(tmp_path: Path) -> None:
     conn = db.connect(tmp_path / "ccq.db")
     job_id = _make_job(conn, tmp_path, timeout="0s")
@@ -1111,6 +1199,33 @@ def test_successful_run_notifies_on_the_jobs_channel(tmp_path: Path) -> None:
     assert f"ccq resume {job_id}" in body
     assert "Δ 3%" in body
     assert db.list_events(conn, job_id=job_id)[-1]["kind"] == "notified"
+
+
+def test_notification_flags_nonzero_permission_denials(tmp_path: Path) -> None:
+    """§8.4/§9: the completion notification is exactly where an unattended
+    "done" that wrote nothing must be caught before the morning after."""
+    conn = db.connect(tmp_path / "ccq.db")
+    job_id = db.insert_job(
+        conn,
+        name="nightly-lint",
+        state="running",
+        submitted_at="2026-07-21T00:00:00Z",
+        cwd=str(tmp_path),
+        body="please lint the repo",
+        passthrough=[],
+        notify="ntfy",
+    )
+    sent: list[tuple] = []
+
+    def fake_notify(channel, title, body, *, config):
+        sent.append((channel, title, body))
+        return notify.NotifyResult(True, channel)
+
+    _run(conn, job_id, tmp_path, script=PERMISSION_DENIED_SCRIPT, notify_fn=fake_notify)
+
+    assert len(sent) == 1
+    _, _, body = sent[0]
+    assert "2 permission denials" in body
 
 
 def test_requeued_run_does_not_notify(tmp_path: Path) -> None:

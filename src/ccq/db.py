@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS runs (      -- one row per execution attempt
   outcome       TEXT,                 -- done | failed | rate_limited | timeout | killed
   pct_before    INTEGER, pct_after INTEGER,   -- §4.3
   num_turns     INTEGER, duration_ms INTEGER,
+  permission_denials INTEGER,        -- count of the result envelope's permission_denials (§9 2026-07-28)
   conversation_id TEXT
 );
 
@@ -108,6 +109,7 @@ _JOB_JSON_FIELDS = ("passthrough", "hold_jid")
 #: keeps its jobs instead of needing a rebuild.
 ADDED_COLUMNS: dict[str, dict[str, str]] = {
     "jobs": {"log_path": "TEXT"},
+    "runs": {"permission_denials": "INTEGER"},
 }
 
 
@@ -396,6 +398,7 @@ def insert_run(
     pct_after: int | None = None,
     num_turns: int | None = None,
     duration_ms: int | None = None,
+    permission_denials: int | None = None,
     conversation_id: str | None = None,
 ) -> int:
     """Insert a row into ``runs`` (one execution attempt), return its id."""
@@ -408,6 +411,7 @@ def insert_run(
         pct_after=pct_after,
         num_turns=num_turns,
         duration_ms=duration_ms,
+        permission_denials=permission_denials,
         conversation_id=conversation_id,
     )
     return database["runs"].insert(record).last_pk  # type: ignore[return-value]

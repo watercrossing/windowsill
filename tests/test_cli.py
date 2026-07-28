@@ -517,6 +517,31 @@ def test_show_computes_delta_from_last_run(tmp_path: Path, runner: CliRunner) ->
     assert "delta%: 15" in result.output
 
 
+def test_show_reports_permission_denials_of_last_run(tmp_path: Path, runner: CliRunner) -> None:
+    """§9 "Settled 2026-07-28, second sitting": the count for the latest run,
+    surfaced before a person would trust a "done"."""
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="showme", state="done", finished_at=PAST)
+    db.insert_run(conn, job_id=job_id, started_at=PAST, finished_at=NOW, permission_denials=2)
+
+    result = run(runner, home, "show", str(job_id))
+
+    assert result.exit_code == 0, result.output
+    assert "permission denials (last run): 2" in result.output
+
+
+def test_show_permission_denials_is_n_a_with_no_runs(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="showme", state="queued")
+
+    result = run(runner, home, "show", str(job_id))
+
+    assert result.exit_code == 0, result.output
+    assert "permission denials (last run): n/a" in result.output
+
+
 def test_show_unknown_id_errors(tmp_path: Path, runner: CliRunner) -> None:
     home = tmp_path / "home"
     make_db(home)
@@ -1049,6 +1074,34 @@ def test_report_includes_a_job_with_no_delta(tmp_path: Path, runner: CliRunner) 
 
     assert "killed-one" in result.output
     assert "Δ -" in result.output
+
+
+def test_report_flags_nonzero_permission_denials(tmp_path: Path, runner: CliRunner) -> None:
+    """§9 "Settled 2026-07-28, second sitting": a run that was blocked from
+    doing anything must draw attention even in the terse one-line-per-job
+    digest that is "the actual product at 08:00"."""
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="blocked-writer", state="done", started_at=PAST, finished_at=NOW)
+    db.insert_run(conn, job_id=job_id, started_at=PAST, finished_at=NOW, outcome="done", permission_denials=2)
+
+    result = run(runner, home, "report", "--since", "48h")
+
+    assert result.exit_code == 0, result.output
+    assert "denied=2" in result.output
+
+
+def test_report_stays_silent_on_permission_denials_when_zero(tmp_path: Path, runner: CliRunner) -> None:
+    """Terse (§8.1): a clean run's line doesn't grow a "denied=0" nobody needs."""
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="clean-run", state="done", started_at=PAST, finished_at=NOW)
+    db.insert_run(conn, job_id=job_id, started_at=PAST, finished_at=NOW, outcome="done", permission_denials=0)
+
+    result = run(runner, home, "report", "--since", "48h")
+
+    assert result.exit_code == 0, result.output
+    assert "denied=" not in result.output
 
 
 def test_report_rejects_an_unparseable_since(tmp_path: Path, runner: CliRunner) -> None:

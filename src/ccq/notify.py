@@ -47,12 +47,19 @@ def compose(
     state: str,
     summary: str | None = None,
     delta_pct: int | None = None,
+    permission_denials: int | None = None,
 ) -> tuple[str, str]:
     """Build the ``(title, body)`` for a job's completion notification.
 
     Title is ``"<name>: <state>"``; body is the one-line result, the Δ window %
     when known, and ``ccq resume <id>`` -- each on its own line so the resume
     command is tappable.
+
+    ``permission_denials`` (design/09-findings.md, "Settled 2026-07-28, second
+    sitting") only earns a line when non-zero: a run can read ``state ==
+    "done"`` while having written nothing because every ``Write``/``Edit`` was
+    refused, and that is exactly the case the morning-after reader must not
+    breeze past.
     """
     title = f"{name}: {state}"
     lines: list[str] = []
@@ -60,6 +67,8 @@ def compose(
         lines.append(summary)
     if delta_pct is not None:
         lines.append(f"Δ {delta_pct}%")
+    if permission_denials:
+        lines.append(f"{permission_denials} permission denial{'s' if permission_denials != 1 else ''}")
     lines.append(f"ccq resume {job_id}")
     return title, "\n".join(lines)
 

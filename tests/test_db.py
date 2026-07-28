@@ -109,6 +109,32 @@ def test_migrate_adds_a_missing_column_to_an_existing_database(tmp_path: Path) -
     assert job["log_path"] is None
 
 
+def test_runs_table_has_permission_denials_column(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    cols = {row[1] for row in conn.conn.execute("PRAGMA table_info(runs)").fetchall()}
+    assert "permission_denials" in cols
+
+
+def test_migrate_adds_permission_denials_to_an_existing_runs_table(tmp_path: Path) -> None:
+    """A DB created before this column existed gets it added in place,
+    keeping its run rows -- the same story as the jobs.log_path migration
+    above, now for runs (§9 "Settled 2026-07-28, second sitting")."""
+    path = tmp_path / "old.db"
+    conn = db.connect(path)
+    job_id = insert_bare_job(conn, name="pre-existing", state="done")
+    run_id = db.insert_run(conn, job_id=job_id, started_at="2026-07-18T01:00:00Z", outcome="done")
+    conn.conn.execute("ALTER TABLE runs DROP COLUMN permission_denials")  # pretend it predates the column
+    conn.close()
+
+    reopened = db.connect(path)
+
+    cols = {row[1] for row in reopened.conn.execute("PRAGMA table_info(runs)").fetchall()}
+    assert "permission_denials" in cols
+    run = db.get_run(reopened, run_id)
+    assert run["outcome"] == "done"
+    assert run["permission_denials"] is None
+
+
 def test_migrate_is_a_noop_on_an_up_to_date_database(tmp_path: Path) -> None:
     conn = make_db(tmp_path)
     assert db.migrate(conn) == []
@@ -360,6 +386,15 @@ def test_insert_and_get_run(tmp_path: Path) -> None:
     assert run["outcome"] == "done"
     assert run["pct_before"] == 10
     assert run["pct_after"] == 42
+
+
+def test_insert_and_get_run_round_trips_permission_denials(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    job_id = insert_bare_job(conn, name="foo", state="running")
+
+    run_id = db.insert_run(conn, job_id=job_id, started_at="2026-07-18T01:00:00Z", permission_denials=2)
+
+    assert db.get_run(conn, run_id)["permission_denials"] == 2
 
 
 def test_run_requires_existing_job(tmp_path: Path) -> None:
