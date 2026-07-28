@@ -12,6 +12,15 @@
 
 Evidence is one machine, one client version, one night. These are behavioural findings, not documented guarantees; `ccq doctor` re-checks the first four ([§8.2](08-interface.md)).
 
+## Settled 2026-07-28
+
+| Question | Answer | Consequence |
+|---|---|---|
+| Does the reset clause always carry minutes? | **No.** On the hour it prints `resets Jul 28, 7am (Europe/London)` — no `:00` | [§4.1](04-usage-oracle.md) — minutes are optional in the pattern. Requiring them read a live 74%-used window as *closed*, which is the failure that dispatches `--window fresh` into an open window |
+| Is the extra weekly bucket always present? | **No.** The same output had no `Current week (Fable)` line at all | Read the bucket if it's there; its absence is not a parse failure |
+
+Both observed on the target account while a window was live, and both were caught by the parser reporting `is_open: False` at 74% used — the percentage is display-only ([§4.1](04-usage-oracle.md)), so nothing else would have noticed.
+
 ## Still open
 
 - **Rate-limit signal shape:** exit code, a subtype in the JSON, or only a human string? Decides how brittle [§5.4](05-windows.md) is. Only learnable by hitting a real one — which M1 will do within a week of use.

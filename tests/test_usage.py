@@ -242,3 +242,37 @@ def test_signal_carrying_a_reset_wins_over_one_without() -> None:
 
 def test_malformed_events_are_skipped() -> None:
     assert usage.detect_rate_limit(["not a dict", None, {"type": "rate_limit_event"}]) is None
+
+
+# ---------------------------------------------------------------------------
+# on-the-hour resets: "7am", not "7:00am" (observed live 2026-07-28, §9)
+# ---------------------------------------------------------------------------
+
+ON_THE_HOUR_TEXT = (FIXTURES / "usage_open_on_the_hour.txt").read_text()
+NOW_ON_THE_HOUR = datetime(2026, 7, 28, 1, 30, tzinfo=timezone.utc)
+
+
+def test_on_the_hour_reset_is_still_an_open_window() -> None:
+    # The bug this pins: a reset clause with no ":mm" failed to match, so a
+    # 74%-used *live* window read as closed -- exactly the failure §4.1 warns
+    # about, in the direction that dispatches --window fresh into a live one.
+    parsed = usage.parse_usage(ON_THE_HOUR_TEXT, now=NOW_ON_THE_HOUR)
+
+    assert parsed.is_open is True
+    assert parsed.pct_used == 74
+    assert parsed.reset_at == datetime(2026, 7, 28, 6, 0, tzinfo=timezone.utc)  # 7am BST
+
+
+def test_on_the_hour_weekly_reset_parses_too() -> None:
+    parsed = usage.parse_usage(ON_THE_HOUR_TEXT, now=NOW_ON_THE_HOUR)
+
+    assert parsed.weekly_pct == 40
+    assert parsed.weekly_reset_at == datetime(2026, 7, 31, 5, 0, tzinfo=timezone.utc)  # 6am BST
+
+
+def test_missing_extra_weekly_bucket_is_fine() -> None:
+    # The live 2026-07-28 output had no "Current week (Fable)" line at all.
+    parsed = usage.parse_usage(ON_THE_HOUR_TEXT, now=NOW_ON_THE_HOUR)
+
+    assert parsed.extra_bucket is None
+    assert parsed.extra_pct is None

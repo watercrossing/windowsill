@@ -1,0 +1,10 @@
+You are currently using your subscription to power your Claude Code usage
+
+Current session: 74% used · resets Jul 28, 7am (Europe/London)
+Current week (all models): 40% used · resets Jul 31, 6am (Europe/London)
+
+What's contributing to your limits usage?
+Approximate, based on local sessions on this machine — does not include other devices or claude.ai. Behaviors are independent characteristics, not a breakdown.
+
+Last 24h · 214 requests · 9 sessions
+  68% of your usage was at >150k context

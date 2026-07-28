@@ -45,6 +45,7 @@ Notes:
   - **The percentage is display-only. Never infer state from it.** A window opened by one tiny request reads `0% used · resets ...`, so 0% is not evidence of anything.
   - **Never default a missing `reset_at` to `now + 5h`.** That reads the closed state as a window live until 07:00: `--window fresh` jobs never dispatch, and the cache reports live so nothing re-probes to correct it. Missing ⇒ `NULL` ⇒ closed.
 - **No year in the timestamp.** Infer by choosing the candidate year (`now.year`, `±1`) that puts the reset nearest to now and in the future. Test 31 Dec explicitly.
+- **The minutes are optional.** On the hour the clause reads `resets Jul 28, 7am (Europe/London)`, with no `:00` ([§9](09-findings.md), observed 2026-07-28). A pattern that requires `:mm` reads a live window as closed.
 - The timezone is parenthesised — resolve via `zoneinfo`, store UTC, display local.
 - `ccq doctor` asserts the parse still works against live output and fails loudly if not.
 

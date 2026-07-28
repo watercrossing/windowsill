@@ -48,8 +48,13 @@ USAGE_PATTERNS: dict[str, re.Pattern[str]] = {
     "session": re.compile(r"Current session:\s*(?P<pct>\d+)%\s*used(?P<reset>[^\n]*)"),
     # "Current week (<bucket>): N% used[ · resets …]" -- one per weekly bucket.
     "week": re.compile(r"Current week \((?P<bucket>[^)]+)\):\s*(?P<pct>\d+)%\s*used(?P<reset>[^\n]*)"),
-    # the reset clause itself: "resets Jul 17, 7:09pm (Europe/London)".
-    "reset": re.compile(r"resets\s+(?P<mon>[A-Za-z]{3})\s+(?P<day>\d{1,2}),\s+(?P<hour>\d{1,2}):(?P<min>\d{2})\s*(?P<ampm>[ap]m)\s*\((?P<tz>[^)]+)\)"),
+    # the reset clause itself: "resets Jul 17, 7:09pm (Europe/London)" -- and,
+    # on the hour, "resets Jul 28, 7am (Europe/London)" with no ":mm" at all
+    # (observed live 2026-07-28, §9). The minutes are optional for that reason:
+    # requiring them read a live 74%-used window as *closed*.
+    "reset": re.compile(
+        r"resets\s+(?P<mon>[A-Za-z]{3})\s+(?P<day>\d{1,2}),\s+(?P<hour>\d{1,2})(?::(?P<min>\d{2}))?\s*(?P<ampm>[ap]m)\s*\((?P<tz>[^)]+)\)"
+    ),
 }
 
 #: argv appended to ``claude_cmd`` for a probe. ``--output-format json`` gives
@@ -132,7 +137,7 @@ def _resolve_reset(match: re.Match[str], now: datetime) -> datetime | None:
     month = _MONTHS[match["mon"].title()]
     day = int(match["day"])
     hour = _to_24h(match["hour"], match["ampm"])
-    minute = int(match["min"])
+    minute = int(match["min"] or 0)
     zone = ZoneInfo(match["tz"])
 
     candidates: list[datetime] = []
