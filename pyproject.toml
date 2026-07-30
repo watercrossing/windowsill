@@ -7,6 +7,8 @@ name = "windowsill"
 version = "0.1.0"
 description = "A local batch queue for Claude Code — SGE-style job files that run prompts unattended in 5-hour windows."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.13"
 dependencies = [
     "click",
