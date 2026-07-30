@@ -53,15 +53,18 @@ DEFAULTS: dict[str, Any] = {
         "default_isolate": "worktree",
         "allow_dirty": False,
     },
+    # §8.4: notifications are opt-in, and there is no default destination for
+    # either channel. A shipped recipient is an address that bounces -- the
+    # placeholder that used to sit here was mailed for real and refused by the
+    # postmaster ("an MX or SRV record indicated no SMTP service") -- and a
+    # shipped ntfy topic is a *public* one. So: no `to`, no `topic`, and
+    # `default = "none"` until the user says otherwise.
     "notify": {
-        "default": "email",
+        "default": "none",
         "ntfy": {
             "url": "https://ntfy.sh",
-            "topic": "...",
         },
         "email": {
-            "to": "you@example.org",
-            "from": "noreply@example.org",
             "sendmail": "/usr/sbin/sendmail",
         },
     },

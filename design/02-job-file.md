@@ -66,7 +66,7 @@ Non-negotiable consequences:
 | `--priority <-20..19>` | `0` | Tie-break within a window; lower runs first |
 | `--isolate <mode>` | config | `none` \| `worktree` |
 | `--allow-dirty` | false | Permit running against a dirty tree |
-| `--notify <channel>` | config | `none` \| `ntfy` \| `email` |
+| `--notify <channel>[:<dest>]` | config (`none`) | `none` \| `ntfy` \| `email`, optionally carrying this job's own recipient/topic — `email:me@example.com` ([§8.4](08-interface.md)) |
 | `--hold` | false | Submit `held`; needs `ccq release` |
 | `--timeout <dur>` | `4h` | Wall-clock kill |
 | `--no-resume-on-limit` | false | On rate-limit requeue, restart from the original body instead of resuming ([§5.4](05-windows.md)) |

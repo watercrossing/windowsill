@@ -46,13 +46,14 @@ def test_defaults_used_when_no_file_exists(tmp_path: Path) -> None:
         "allow_dirty": False,
     }
 
-    assert cfg["notify"]["default"] == "email"
-    assert cfg["notify"]["ntfy"] == {"url": "https://ntfy.sh", "topic": "..."}
-    assert cfg["notify"]["email"] == {
-        "to": "you@example.org",
-        "from": "noreply@example.org",
-        "sendmail": "/usr/sbin/sendmail",
-    }
+    # §8.4: notifications are opt-in, and neither channel ships a destination.
+    # A default recipient is an address that bounces (or worse, someone else's);
+    # a default ntfy topic is a public one.
+    assert cfg["notify"]["default"] == "none"
+    assert cfg["notify"]["ntfy"] == {"url": "https://ntfy.sh"}
+    assert cfg["notify"]["email"] == {"sendmail": "/usr/sbin/sendmail"}
+    assert "to" not in cfg["notify"]["email"]
+    assert "topic" not in cfg["notify"]["ntfy"]
 
 
 def test_defaults_are_not_shared_mutable_state(tmp_path: Path) -> None:
@@ -118,8 +119,8 @@ def test_partial_nested_override_preserves_sibling_defaults(tmp_path: Path) -> N
     # sibling default inside the same nested table survives
     assert cfg["notify"]["ntfy"]["url"] == "https://ntfy.sh"
     # unrelated notify keys survive
-    assert cfg["notify"]["default"] == "email"
-    assert cfg["notify"]["email"]["to"] == "you@example.org"
+    assert cfg["notify"]["default"] == "none"
+    assert cfg["notify"]["email"] == {"sendmail": "/usr/sbin/sendmail"}
 
 
 def test_peak_band_override_merges_field_by_field(tmp_path: Path) -> None:
@@ -160,7 +161,9 @@ def test_list_values_are_replaced_not_merged(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Full file: every nested table from the §8.3 example loads verbatim
+# Full file: every nested table from the §8.3 example loads verbatim --
+# notifications included, which in §8.3 are commented out because they are
+# opt-in (§8.4). This is what a user who has actually turned them on has.
 # ---------------------------------------------------------------------------
 
 
@@ -191,11 +194,11 @@ default = "email"
 
 [notify.ntfy]
 url   = "https://ntfy.sh"
-topic = "..."
+topic = "ccq-nightly"
 
 [notify.email]
-to       = "you@example.org"
-from     = "noreply@example.org"
+to       = "you@your-real-domain"
+from     = "noreply@your-real-domain"
 sendmail = "/usr/sbin/sendmail"
 """
 
@@ -234,10 +237,10 @@ def test_full_example_config_round_trips(tmp_path: Path) -> None:
     }
     assert cfg["notify"] == {
         "default": "email",
-        "ntfy": {"url": "https://ntfy.sh", "topic": "..."},
+        "ntfy": {"url": "https://ntfy.sh", "topic": "ccq-nightly"},
         "email": {
-            "to": "you@example.org",
-            "from": "noreply@example.org",
+            "to": "you@your-real-domain",
+            "from": "noreply@your-real-domain",
             "sendmail": "/usr/sbin/sendmail",
         },
     }

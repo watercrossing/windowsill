@@ -39,12 +39,12 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Mapping
 
 import click
 import sqlite_utils
 
-from windowsill import config, db, jobfile, runner, scheduler, window
+from windowsill import config, db, jobfile, notify, runner, scheduler, window
 
 # ---------------------------------------------------------------------------
 # injectable seams -- see module docstring. Production defaults here;
@@ -237,6 +237,26 @@ def _local(value: str | None, *, with_timezone: bool = False) -> str:
     if with_timezone:
         return moment.isoformat(timespec="seconds")
     return moment.strftime("%Y-%m-%d %H:%M")
+
+
+def _notify_display(value: str | None, cfg: Mapping[str, object]) -> str:
+    """A job's ``--notify`` plus the destination it would actually reach (§8.4).
+
+    Notifications are opt-in and have no default destination, so ``email`` on
+    its own is not evidence that anything will arrive -- and a surface that
+    prints the channel and stops reads as if it were. Resolve it here instead:
+    either the address/topic, or the fact that there isn't one.
+    """
+    channel, override = notify.split_channel(value)
+    if channel == "none":
+        return "none"
+    where = notify.destination(channel, cfg, override)
+    if where is None:
+        key = notify.DESTINATION_KEY.get(channel)
+        if key is None:
+            return f"{channel} (unknown channel)"
+        return f"{channel} (no destination configured; set notify.{channel}.{key})"
+    return f"{channel} -> {where}"
 
 
 def _cutoff(now_str: str, *, days: int) -> str:
@@ -546,7 +566,7 @@ def report(ctx: click.Context, since: str, with_timezone: bool) -> None:
 @click.pass_context
 def show(ctx: click.Context, identifier: str) -> None:
     """Directives, resolved argv, state, conversation id, delta%, transcript tail."""
-    with _session(_home(ctx)) as (database, _cfg, root):
+    with _session(_home(ctx)) as (database, cfg, root):
         job_id = _resolve(database, identifier)
         job = db.get_job(database, job_id)
         argv = runner.build_argv(job["passthrough"], resume=job.get("resume_id"))
@@ -582,7 +602,7 @@ def show(ctx: click.Context, identifier: str) -> None:
         click.echo(f"  priority: {job['priority']}")
         click.echo(f"  isolate: {job['isolate'] or '-'}")
         click.echo(f"  allow_dirty: {bool(job['allow_dirty'])}")
-        click.echo(f"  notify: {job['notify'] or '-'}")
+        click.echo(f"  notify: {_notify_display(job['notify'], cfg)}")
         click.echo(f"  timeout: {job['timeout']}")
         click.echo(f"  log: {job['log_path'] or '-'}")
         click.echo(f"  no_resume_on_limit: {bool(job['no_resume_on_limit'])}")

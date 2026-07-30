@@ -80,6 +80,7 @@ def add_job(
     pid: int | None = None,
     conversation_id: str | None = None,
     at_time: str | None = None,
+    notify: str | None = None,
 ) -> int:
     return db.insert_job(
         conn,
@@ -94,6 +95,7 @@ def add_job(
         pid=pid,
         conversation_id=conversation_id,
         at_time=at_time,
+        notify=notify,
     )
 
 
@@ -238,7 +240,8 @@ def test_sub_defaults_isolate_and_notify_from_config(tmp_path: Path, runner: Cli
     job = db.get_job(make_db(home), job_id)
 
     assert job["isolate"] == "worktree"  # DEFAULTS["safety"]["default_isolate"]
-    assert job["notify"] == "email"  # DEFAULTS["notify"]["default"]
+    # §8.4: notifications are opt-in -- a job file that says nothing gets none.
+    assert job["notify"] == "none"  # DEFAULTS["notify"]["default"]
 
 
 def test_sub_mirrors_model_from_passthrough(tmp_path: Path, runner: CliRunner) -> None:
@@ -540,6 +543,51 @@ def test_show_permission_denials_is_n_a_with_no_runs(tmp_path: Path, runner: Cli
 
     assert result.exit_code == 0, result.output
     assert "permission denials (last run): n/a" in result.output
+
+
+def test_show_notify_names_the_address_it_would_reach(tmp_path: Path, runner: CliRunner) -> None:
+    """§8.4: the channel alone is not evidence anything will arrive."""
+    home = tmp_path / "home"
+    (home / ".windowsill").mkdir(parents=True)
+    (home / ".windowsill" / "config.toml").write_text('[notify.email]\nto = "me@real.example"\n')
+    conn = make_db(home)
+    job_id = add_job(conn, name="showme", notify="email")
+
+    result = run(runner, home, "show", str(job_id))
+
+    assert "notify: email -> me@real.example" in result.output
+
+
+def test_show_notify_says_when_no_destination_is_configured(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="showme", notify="email")
+
+    result = run(runner, home, "show", str(job_id))
+
+    assert "notify: email (no destination configured; set notify.email.to)" in result.output
+
+
+def test_show_notify_prefers_the_job_files_own_address(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    (home / ".windowsill").mkdir(parents=True)
+    (home / ".windowsill" / "config.toml").write_text('[notify.email]\nto = "global@real.example"\n')
+    conn = make_db(home)
+    job_id = add_job(conn, name="showme", notify="email:job@real.example")
+
+    result = run(runner, home, "show", str(job_id))
+
+    assert "notify: email -> job@real.example" in result.output
+
+
+def test_show_notify_none_when_off(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="showme", notify="none")
+
+    result = run(runner, home, "show", str(job_id))
+
+    assert "notify: none" in result.output
 
 
 def test_show_unknown_id_errors(tmp_path: Path, runner: CliRunner) -> None:

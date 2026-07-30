@@ -5,6 +5,10 @@ both injectable seams the tests replace with spies. The load-bearing contract
 is that **a failed notification is logged and never fails the job** (§8.4), so
 several tests assert that a raising transport yields a not-ok result rather
 than an exception.
+
+The second contract, added after a live run mailed the shipped placeholder
+address and had it refused by the postmaster: **nothing is sent unless a
+destination is configured.** Off by default, no fallback recipient, no guess.
 """
 
 from __future__ import annotations
@@ -12,14 +16,19 @@ from __future__ import annotations
 from typing import Any
 
 from windowsill import notify
+from windowsill.config import DEFAULTS
 
 CONFIG: dict[str, Any] = {
     "notify": {
         "default": "email",
         "ntfy": {"url": "https://ntfy.sh", "topic": "ccq-nightly"},
-        "email": {"to": "you@example.org", "from": "noreply@example.org", "sendmail": "/usr/sbin/sendmail"},
+        "email": {"to": "you@real.example", "from": "noreply@real.example", "sendmail": "/usr/sbin/sendmail"},
     }
 }
+
+#: A config that turned a channel on and named nowhere to send -- i.e. the
+#: shipped defaults with `default` flipped.
+NO_DESTINATION: dict[str, Any] = {"notify": {"default": "email", "ntfy": {"url": "https://ntfy.sh"}, "email": {"sendmail": "/usr/sbin/sendmail"}}}
 
 
 class PostSpy:
@@ -119,10 +128,120 @@ def test_email_pipes_a_message_to_sendmail_dash_t() -> None:
     assert result.ok is True
     sendmail, message = mail.calls[0]
     assert sendmail == "/usr/sbin/sendmail"
-    assert "To: you@example.org" in message
-    assert "From: noreply@example.org" in message
+    assert "To: you@real.example" in message
+    assert "From: noreply@real.example" in message
     assert "Subject: Subj" in message
     assert "Line one" in message
+
+
+# ---------------------------------------------------------------------------
+# opt-in, and no destination is ever invented (§8.4)
+# ---------------------------------------------------------------------------
+
+
+def test_notify_is_off_by_default() -> None:
+    """The shipped config sends nothing at all until the user opts in."""
+    assert DEFAULTS["notify"]["default"] == "none"
+    post, mail = PostSpy(), SendmailSpy()
+
+    result = notify.notify(DEFAULTS["notify"]["default"], "t", "b", config={"notify": DEFAULTS["notify"]}, http_post=post, run_sendmail=mail)
+
+    assert result.channel == "none"
+    assert not post.calls and not mail.calls
+
+
+def test_no_placeholder_recipient_ships_in_the_defaults() -> None:
+    # The bug this guards: `you@example.org` was mailed for real and bounced.
+    assert "to" not in DEFAULTS["notify"]["email"]
+    assert "topic" not in DEFAULTS["notify"]["ntfy"]
+
+
+def test_email_with_no_recipient_anywhere_sends_nothing() -> None:
+    mail = SendmailSpy()
+
+    result = notify.notify("email", "t", "b", config=NO_DESTINATION, run_sendmail=mail, http_post=PostSpy())
+
+    assert not mail.calls
+    assert result.ok is False
+    assert result.skipped is True
+    assert "notify.email.to" in result.detail
+
+
+def test_ntfy_with_no_topic_anywhere_sends_nothing() -> None:
+    """A default ntfy topic would be a *public* one -- same bug, louder."""
+    post = PostSpy()
+
+    result = notify.notify("ntfy", "t", "b", config=NO_DESTINATION, http_post=post, run_sendmail=SendmailSpy())
+
+    assert not post.calls
+    assert result.skipped is True
+
+
+def test_email_recipient_from_the_global_config_is_used() -> None:
+    mail = SendmailSpy()
+
+    result = notify.notify("email", "t", "b", config=CONFIG, run_sendmail=mail, http_post=PostSpy())
+
+    assert result.ok is True
+    assert "To: you@real.example" in mail.calls[0][1]
+
+
+def test_email_recipient_from_the_job_file_alone_is_enough() -> None:
+    """§2.3 `--notify email:<address>`: the global config names nobody."""
+    mail = SendmailSpy()
+
+    result = notify.notify("email:me@real.example", "t", "b", config=NO_DESTINATION, run_sendmail=mail, http_post=PostSpy())
+
+    assert result.ok is True
+    assert result.channel == "email"
+    assert "To: me@real.example" in mail.calls[0][1]
+
+
+def test_job_file_recipient_overrides_the_global_config() -> None:
+    mail = SendmailSpy()
+
+    notify.notify("email:job@real.example", "t", "b", config=CONFIG, run_sendmail=mail, http_post=PostSpy())
+
+    message = mail.calls[0][1]
+    assert "To: job@real.example" in message
+    assert "you@real.example" not in message
+
+
+def test_job_file_topic_overrides_the_global_ntfy_topic() -> None:
+    post = PostSpy()
+
+    notify.notify("ntfy:job-topic", "t", "b", config=CONFIG, http_post=post, run_sendmail=SendmailSpy())
+
+    assert post.calls[0][0] == "https://ntfy.sh/job-topic"
+
+
+def test_email_omits_the_from_header_when_unconfigured() -> None:
+    """No placeholder sender either: unset, sendmail stamps the local user."""
+    mail = SendmailSpy()
+
+    notify.notify("email:me@real.example", "Subj", "b", config=NO_DESTINATION, run_sendmail=mail, http_post=PostSpy())
+
+    message = mail.calls[0][1]
+    assert "From:" not in message
+    assert "To: me@real.example" in message
+    assert "Subject: Subj" in message
+
+
+def test_split_channel_splits_channel_from_destination() -> None:
+    assert notify.split_channel("email:me@real.example") == ("email", "me@real.example")
+    assert notify.split_channel("email") == ("email", None)
+    assert notify.split_channel("none") == ("none", None)
+    assert notify.split_channel(None) == ("none", None)
+    assert notify.split_channel("") == ("none", None)
+    assert notify.split_channel("  email : me@real.example ") == ("email", "me@real.example")
+
+
+def test_destination_never_guesses() -> None:
+    assert notify.destination("email", NO_DESTINATION) is None
+    assert notify.destination("email", {}) is None
+    assert notify.destination("carrier-pigeon", CONFIG) is None
+    assert notify.destination("email", CONFIG) == "you@real.example"
+    assert notify.destination("email", CONFIG, "override@real.example") == "override@real.example"
 
 
 # ---------------------------------------------------------------------------

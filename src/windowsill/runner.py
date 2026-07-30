@@ -544,6 +544,11 @@ def _notify_job(
     is written to ``events`` whether it succeeded or not: §8.4's contract is
     that a failed notification is *logged* and never fails the job, and
     :func:`windowsill.notify.notify` already guarantees the second half.
+
+    A channel that was on but had nowhere to send to is neither a send nor a
+    failure, so it gets its own ``notify_skipped`` event: silently dropping the
+    notification a job asked for is exactly the kind of thing you only discover
+    the morning you needed it.
     """
     title, body = notify.compose(
         job_id=job["id"],
@@ -556,11 +561,15 @@ def _notify_job(
     outcome = notify_fn(job["notify"], title, body, config=config or {})
     if outcome.channel == "none":
         return
+    if outcome.skipped:
+        kind = "notify_skipped"
+    else:
+        kind = "notified" if outcome.ok else "notify_failed"
     db.log_event(
         database,
         ts=ts,
         job_id=job["id"],
-        kind="notified" if outcome.ok else "notify_failed",
+        kind=kind,
         detail=f"{outcome.channel}{'' if outcome.ok else ': ' + outcome.detail}",
     )
 

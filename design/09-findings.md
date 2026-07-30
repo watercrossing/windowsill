@@ -31,6 +31,14 @@ Three jobs — one Haiku 4.5, one Sonnet 5 spawning a subagent, one Opus 4.8 hel
 | Is `total_cost_usd` populated for a real run on a subscription? | **Yes.** `0.0259` for the Haiku run, `0.0873` for the Opus one | Answers the open question below it. [§4.3](04-usage-oracle.md)'s Δ% is still the unit that binds — a dollar figure on a subscription is a shadow price, not a budget |
 | Is `--permission-mode auto` enough for an unattended writer? | **No, and not per-model.** Sonnet's writes went through in the same directory where Haiku's were refused | Do not read one job's success as proof the mode is sufficient. [§3.3](03-execution-model.md)'s allowlist is the mechanism; `auto` is a coin toss |
 
+## Settled 2026-07-30
+
+Two jobs run overnight against the live queue by the repo owner, who had configured nothing about notifications.
+
+| Question | Answer | Consequence |
+|---|---|---|
+| What does a shipped default recipient do? | **It gets mailed.** The `you@example.org` in [§8.3](08-interface.md)'s example was the effective default, `[notify].default` was `email`, and both runs mailed it. The postmaster refused it: *"an MX or SRV record indicated no SMTP service"* | Notifications are opt-in and no destination is ever defaulted or guessed ([§8.4](08-interface.md)). The same applies to `[notify.ntfy].topic`: a shipped topic is a *public* one |
+
 ## Still open
 
 - **Rate-limit signal shape:** exit code, a subtype in the JSON, or only a human string? Decides how brittle [§5.4](05-windows.md) is. Only learnable by hitting a real one — which M1 will do within a week of use.

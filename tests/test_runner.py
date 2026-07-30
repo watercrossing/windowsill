@@ -1255,6 +1255,29 @@ def test_requeued_run_does_not_notify(tmp_path: Path) -> None:
     assert sent == []
 
 
+def test_notification_with_no_destination_is_recorded_as_skipped(tmp_path: Path) -> None:
+    """§8.4: notify on with nowhere to send is not a send and not a failure --
+    but it is not silent either, or you find out the morning you needed it."""
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = db.insert_job(
+        conn,
+        name="nightly-lint",
+        state="running",
+        submitted_at="2026-07-21T00:00:00Z",
+        cwd=str(tmp_path),
+        body="please lint the repo",
+        passthrough=[],
+        notify="email",
+    )
+
+    outcome = _run(conn, job_id, tmp_path, notify_fn=lambda *a, **k: notify.NotifyResult(False, "email", "no destination configured", skipped=True))
+
+    assert outcome.outcome == "done"
+    last = db.list_events(conn, job_id=job_id)[-1]
+    assert last["kind"] == "notify_skipped"
+    assert "no destination" in last["detail"]
+
+
 def test_failed_notification_is_logged_and_never_fails_the_job(tmp_path: Path) -> None:
     conn = db.connect(tmp_path / "windowsill.db")
     job_id = db.insert_job(

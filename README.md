@@ -141,7 +141,7 @@ This means a new `claude` flag works the day it ships, with no change here — a
 | `--priority <-20..19>` | `0` | Tie-break within a window; lower runs first |
 | `--isolate <mode>` | config | `none` \| `worktree` |
 | `--allow-dirty` | false | Permit running against a dirty tree |
-| `--notify <channel>` | config | `none` \| `ntfy` \| `email` |
+| `--notify <channel>[:<dest>]` | config (`none`) | `none` \| `ntfy` \| `email`. May carry this job's own recipient or topic: `email:me@example.com` |
 | `--hold` | false | Submit `held`; needs `ccq release` |
 | `--timeout <dur>` | `4h` | Wall-clock kill |
 | `--no-resume-on-limit` | false | On rate-limit requeue, restart from the original body instead of resuming |
@@ -192,6 +192,29 @@ Designed but not implemented yet — do not rely on these:
 
 Correspondingly, the two things those cover — `--isolate worktree` and the dirty-tree refusal — are part of the design but not yet functional.
 Everything else is live: window policies decide dispatch from a `/usage` probe, rate limits requeue instead of failing, `--retry` retries, and finished jobs notify.
+
+## Notifications
+
+Off until you ask for them, and windowsill will not invent an address to send to.
+
+```toml
+# ~/.windowsill/config.toml
+[notify]
+default = "email"          # or "ntfy", or "none" (the default)
+
+[notify.email]
+to       = "you@your-real-domain"
+sendmail = "/usr/sbin/sendmail"
+
+[notify.ntfy]
+url   = "https://ntfy.sh"
+topic = "your-private-topic"
+```
+
+There is no default recipient and no default ntfy topic.
+A channel that is on with nowhere to send to sends nothing and records a `notify_skipped` event — it will not fall back to a placeholder, and it will not guess from `$USER` and your hostname.
+A single job can carry its own destination with `#$ --notify email:me@example.com`, which is the whole configuration if you only want mail from one job.
+`ccq show <id>` prints the address a job would actually reach.
 
 ## Similar tools
 

@@ -66,15 +66,15 @@ default_isolate = "worktree"
 allow_dirty     = false
 
 [notify]
-default = "email"
+default = "none"                  # opt-in; see §8.4
 
 [notify.ntfy]
 url   = "https://ntfy.sh"
-topic = "..."
+# topic = "..."                   # no default: an unset topic sends nothing
 
 [notify.email]
-to       = "you@example.org"
-from     = "noreply@example.org"
+# to     = "you@your-real-domain"     # no default: an unset recipient sends nothing
+# from   = "noreply@your-real-domain" # unset ⇒ sendmail stamps the invoking user
 sendmail = "/usr/sbin/sendmail"
 ```
 
@@ -83,3 +83,5 @@ sendmail = "/usr/sbin/sendmail"
 ## 8.4 Notifications
 
 **ntfy** (POST to `url/topic`; title = job name + state; body = one-line result, Δ%, and `ccq resume <id>`) and **email** via `sendmail -t` from the configured noreply address. Nothing else. A failed notification is logged and never fails the job.
+
+**Opt-in, and never guessed.** `[notify].default` is `none`, and neither channel has a default destination. A channel that is on with nowhere to send to sends nothing — no placeholder recipient, no topic, nothing derived from `$USER`/hostname — and records a `notify_skipped` event, because the alternative is a queue that quietly mails a stranger. (It did: the shipped `you@example.org` was mailed for real on 2026-07-30 and refused by the postmaster, "an MX or SRV record indicated no SMTP service".) `--notify <channel>:<destination>` ([§2.3](02-job-file.md)) carries a per-job address/topic for the case where the global config names nobody; `ccq show` prints the destination a job would actually reach, never just the channel.
