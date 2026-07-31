@@ -10,13 +10,35 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 requires-python = ">=3.13"
+authors = [{ name = "Ingolf Becker" }]
+keywords = ["claude", "claude-code", "batch", "queue", "scheduler", "sge", "llm"]
+# Lower bounds, not pins: a queue that sits between the user and their own
+# toolchain should not dictate the rest of their environment. click 8.1 is the
+# floor for the shell-completion API `windowsill completions` relies on.
 dependencies = [
-    "click",
-    "sqlite-utils",
+    "click>=8.1",
+    "sqlite-utils>=3.36",
+]
+
+# No "License ::" classifier here on purpose -- PyPI rejects a metadata 2.4
+# upload that sets both a SPDX License-Expression and a license classifier.
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Utilities",
+    "Topic :: System :: Systems Administration",
 ]
 
 [project.urls]
+Homepage = "https://github.com/watercrossing/ccq"
 Repository = "https://github.com/watercrossing/ccq"
+Issues = "https://github.com/watercrossing/ccq/issues"
 
 [project.scripts]
 # The SGE-shaped short verbs are the daily interface; `windowsill` stays as
@@ -36,6 +58,11 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/windowsill"]
+
+[tool.hatch.build.targets.sdist]
+# BLOCKED.md is a scratch pad for notes left by an unattended run for the human
+# to read at breakfast. It is repo furniture, not part of the distribution.
+exclude = ["BLOCKED.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
