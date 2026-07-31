@@ -393,6 +393,47 @@ def test_tick_reaps_dead_running_job_with_result_to_done(tmp_path: Path) -> None
     assert (runner.job_dir(tmp_path, job_id, "finished") / "result.json").exists()
 
 
+def test_tick_reaps_a_run_with_live_background_work_to_blocked(tmp_path: Path) -> None:
+    """The reap path and run_job must agree about what an outcome leaves
+    behind -- both read runner.JOB_STATE_FOR_OUTCOME, so "incomplete" is
+    "blocked" here too (§7)."""
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="unfinished", state="running", pid=321)
+    stream = (
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "system", "subtype": "init"},
+                {"type": "system", "subtype": "task_started", "task_id": "aAAA", "description": "d", "task_type": "local_agent"},
+                {"type": "result", "is_error": False, "subtype": "success", "session_id": "sess-live"},
+            ]
+        )
+        + "\n"
+    )
+    _job_dir_with_stream(tmp_path, job_id, "unfinished", stream)
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=SpawnSpy(), alive_check=lambda pid: False)
+
+    assert result.reaped == [job_id]
+    job = db.get_job(conn, job_id)
+    assert job["state"] == "blocked"
+    assert job["state"] not in db.TERMINAL_STATES
+
+
+def test_tick_never_dispatches_a_blocked_job(tmp_path: Path) -> None:
+    """`blocked` is not terminal, so the guard against re-dispatch has to come
+    from the scheduler selecting by explicit state name (§7)."""
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="stuck", state="blocked")
+    spawn = SpawnSpy()
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=spawn)
+
+    assert result.dispatched == []
+    assert spawn.ids == []
+    assert db.get_job(conn, job_id)["state"] == "blocked"
+
+
 def test_tick_leaves_alive_running_job_untouched(tmp_path: Path) -> None:
     conn = make_db(tmp_path)
     job_id = add_job(conn, name="live", state="running", pid=777)

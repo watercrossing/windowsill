@@ -42,7 +42,7 @@ import shlex
 import signal
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
@@ -327,7 +327,12 @@ def parse_result_event(stream_path: Path) -> dict[str, Any] | None:
     return event
 
 
-def outcome_from_result(result_event: dict[str, Any] | None, *, timed_out: bool) -> str:
+def outcome_from_result(
+    result_event: dict[str, Any] | None,
+    *,
+    timed_out: bool,
+    live_tasks: Sequence[Mapping[str, str]] = (),
+) -> str:
     """Derive a ``runs.outcome`` value from a parsed result event.
 
     ``timed_out`` (our own §3.3 enforcement fired) always wins. Otherwise:
@@ -336,12 +341,21 @@ def outcome_from_result(result_event: dict[str, Any] | None, *, timed_out: bool)
     ``is_error`` flag (§3.2) decides ``"done"`` vs. ``"failed"``.
     ``rate_limited`` is not produced here -- that's a later milestone
     (§4/§5 rate-limit handling), deliberately out of scope for this module.
+
+    ``live_tasks`` is :func:`windowsill.transcript.live_background_tasks`'
+    verdict: background work the orchestrator dispatched and did not wait for.
+    A run that would otherwise read ``done`` but left tasks in flight is
+    ``"incomplete"`` instead -- it did not fail, it stopped early, and its own
+    closing summary describes work that had not happened yet. Only ``done`` is
+    downgraded: a run that genuinely errored is better described as ``failed``.
     """
     if timed_out:
         return "timeout"
     if result_event is None:
         return "killed"
-    return "failed" if result_event.get("is_error") else "done"
+    if result_event.get("is_error"):
+        return "failed"
+    return "incomplete" if live_tasks else "done"
 
 
 # ---------------------------------------------------------------------------
@@ -354,6 +368,8 @@ class ReapStatus:
     alive: bool
     outcome: str | None
     result: dict[str, Any] | None
+    #: Background work still in flight when the stream ended (§7 ``blocked``).
+    live_tasks: list[dict[str, str]] = field(default_factory=list)
 
 
 def reap(
@@ -371,21 +387,25 @@ def reap(
     run wrapper itself died uncleanly before finishing that step.
 
     ``result.json`` is trusted verbatim if already present; otherwise it's
-    derived from ``stream.jsonl``'s last event and written out.
+    derived from ``stream.jsonl``'s last event and written out. The live
+    background-task check reads ``stream.jsonl`` either way -- ``result.json``
+    is one event and cannot answer it (§7 ``blocked``).
     """
     if alive_check(pid):
         return ReapStatus(alive=True, outcome=None, result=None)
 
     result_path = dir_ / "result.json"
+    stream_path = dir_ / "stream.jsonl"
     if result_path.exists():
         result_event: dict[str, Any] | None = json.loads(result_path.read_text())
     else:
-        result_event = parse_result_event(dir_ / "stream.jsonl")
+        result_event = parse_result_event(stream_path)
         if result_event is not None:
             write_result_json(dir_, result_event)
 
-    outcome = outcome_from_result(result_event, timed_out=False)
-    return ReapStatus(alive=False, outcome=outcome, result=result_event)
+    live_tasks = list(transcript.live_background_tasks(transcript.iter_events(stream_path))) if stream_path.exists() else []
+    outcome = outcome_from_result(result_event, timed_out=False, live_tasks=live_tasks)
+    return ReapStatus(alive=False, outcome=outcome, result=result_event, live_tasks=live_tasks)
 
 
 # ---------------------------------------------------------------------------
@@ -401,12 +421,18 @@ def _iso_now() -> str:
 # vocabulary from job states (§7): "timeout" and "killed" are run outcomes,
 # never job states, so both map to the terminal job state "failed" -- and a
 # kill -9 mid-run must leave a *failed* job (§11 acceptance #10), not a
-# "killed" one.
-_JOB_STATE_FOR_OUTCOME = {
+# "killed" one. The "incomplete" run outcome is the one that leaves a job
+# needing a human: job state "blocked" (§7).
+#
+# Public, and imported by windowsill.scheduler for its reboot-safety reap path:
+# the two must agree about what an outcome leaves behind, and sharing the dict
+# is the only form of "in lockstep" that cannot drift.
+JOB_STATE_FOR_OUTCOME = {
     "done": "done",
     "failed": "failed",
     "timeout": "failed",
     "killed": "failed",
+    "incomplete": "blocked",
 }
 
 
@@ -430,9 +456,12 @@ class RunOutcome:
     result: dict[str, Any] | None
     #: Δ window % (§4.3), when both probes succeeded.
     delta_pct: int | None = None
-    #: The job state this run left behind: terminal, or ``ready`` when the run
-    #: was requeued for a retry or a rate limit (§5.4).
+    #: The job state this run left behind: terminal, ``ready`` when the run was
+    #: requeued for a retry or a rate limit (§5.4), or ``blocked`` when it ended
+    #: with background work still live (§7).
     job_state: str = ""
+    #: Background work still in flight when the stream ended (§7 ``blocked``).
+    live_tasks: list[dict[str, str]] = field(default_factory=list)
 
 
 def _default_probe() -> "usage.ParsedUsage":
@@ -535,6 +564,7 @@ def _run_facts(
     outcome: str,
     result_event: dict[str, Any] | None,
     events: Sequence[dict[str, Any]],
+    live_tasks: Sequence[Mapping[str, str]],
     delta_pct: int | None,
     permission_denials: int | None,
     conversation_id: str | None,
@@ -558,6 +588,7 @@ def _run_facts(
         outcome=outcome,
         summary=transcript.final_summary(events),
         result=result_event,
+        live_tasks=[dict(task) for task in live_tasks],
         delta_pct=delta_pct,
         permission_denials=permission_denials,
         blocked_until=sched.get("blocked_until"),
@@ -615,6 +646,7 @@ def _notify_job(
         summary=_summary(facts.result),
         delta_pct=facts.delta_pct,
         permission_denials=facts.permission_denials,
+        live_tasks=len(facts.live_tasks),
     )
     outcome = notify_fn(job["notify"], title, body, config=config or {}, message=_compose_email(facts, job["notify"]))
     if outcome.channel == "none":
@@ -718,7 +750,12 @@ def run_job(
     events = list(transcript.iter_events(dir_ / "stream.jsonl")) if (dir_ / "stream.jsonl").exists() else []
     limit = usage.detect_rate_limit(events)
 
-    outcome = "rate_limited" if limit else outcome_from_result(result_event, timed_out=timed_out)
+    # §7 "blocked": the main thread ended while work it dispatched was still in
+    # flight. Nothing in the result envelope says so -- only the `system` task
+    # events do.
+    live_tasks = transcript.live_background_tasks(events)
+
+    outcome = "rate_limited" if limit else outcome_from_result(result_event, timed_out=timed_out, live_tasks=live_tasks)
     finished_at = now()
     conversation_id = result_event.get("session_id") if result_event else None
 
@@ -760,9 +797,12 @@ def run_job(
             finished_at=finished_at,
             window_length=str((config or {}).get("window", {}).get("length", _DEFAULT_WINDOW_LENGTH)),
         )
-    elif outcome != "done" and job["retry_count"] < job["retry_max"]:
+    elif outcome not in ("done", "incomplete") and job["retry_count"] < job["retry_max"]:
         # §2.3: retries are for ordinary failure. A rate limit never consumes
-        # one -- it didn't fail, it ran out of window.
+        # one -- it didn't fail, it ran out of window. Nor does "incomplete":
+        # re-running the body from the top would start a second copy of work
+        # whose first copy may still be live, and the job needs a human
+        # anyway (§7 "blocked"), which is what a retry would paper over.
         job_state = "ready"
         db.update_job(
             database,
@@ -781,7 +821,7 @@ def run_job(
             detail=f"{outcome}; attempt {job['retry_count'] + 1} of {job['retry_max']}",
         )
     else:
-        job_state = _JOB_STATE_FOR_OUTCOME.get(outcome, "failed")
+        job_state = JOB_STATE_FOR_OUTCOME.get(outcome, "failed")
         db.update_job(
             database,
             job_id,
@@ -801,6 +841,7 @@ def run_job(
                 outcome=outcome,
                 result_event=result_event,
                 events=events,
+                live_tasks=live_tasks,
                 delta_pct=delta_pct,
                 permission_denials=permission_denials,
                 conversation_id=conversation_id,
@@ -826,4 +867,5 @@ def run_job(
         result=result_event,
         delta_pct=delta_pct,
         job_state=job_state,
+        live_tasks=live_tasks,
     )

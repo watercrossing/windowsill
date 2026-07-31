@@ -78,6 +78,29 @@ print(json.dumps({"type": "system", "subtype": "init"}))
 # The regression shape from design/09-findings.md, "Settled 2026-07-28, second
 # sitting": subtype "success", is_error False -- an ordinary "done" run -- but
 # two Write calls were refused, visible only in permission_denials.
+#: A run that ends its turn with a subagent still going: a clean success
+#: envelope (this is the point -- job 16's looked exactly like this) preceded by
+#: a task_started that only ever gets a "stopped" notification.
+LIVE_SUBAGENT_SCRIPT = """
+import json, sys
+sys.stdin.read()
+print(json.dumps({"type": "system", "subtype": "init"}))
+print(json.dumps({"type": "system", "subtype": "task_started", "task_id": "aAAA",
+                  "tool_use_id": "toolu_A", "description": "Fix notify defaults",
+                  "subagent_type": "claude", "task_type": "local_agent"}))
+print(json.dumps({"type": "assistant", "parent_tool_use_id": None, "message": {"role": "assistant",
+                  "content": [{"type": "text", "text": "Two agents are running. In flight: the notify work."}]}}))
+print(json.dumps({"type": "system", "subtype": "task_notification", "task_id": "aAAA",
+                  "tool_use_id": "toolu_A", "status": "stopped"}))
+print(json.dumps({
+    "type": "result", "subtype": "success", "is_error": False,
+    "duration_ms": 202468, "duration_api_ms": 202000, "num_turns": 21,
+    "result": "Two agents are running. In flight: the notify work.",
+    "stop_reason": "end_turn", "session_id": "fake-session-live", "total_cost_usd": 0,
+    "usage": {}, "modelUsage": {}, "permission_denials": [], "uuid": "u9",
+}))
+"""
+
 PERMISSION_DENIED_SCRIPT = """
 import json, sys
 sys.stdin.read()
@@ -334,6 +357,26 @@ def test_outcome_timeout_overrides_everything() -> None:
     event = {"type": "result", "is_error": False, "subtype": "success"}
     assert runner.outcome_from_result(event, timed_out=True) == "timeout"
     assert runner.outcome_from_result(None, timed_out=True) == "timeout"
+
+
+def test_outcome_incomplete_when_background_work_was_still_live() -> None:
+    """The envelope is a clean success; only the live-task ledger says the run
+    stopped early (§7 "blocked")."""
+    event = {"type": "result", "is_error": False, "subtype": "success"}
+    live = [{"task_id": "aAAA", "description": "d", "task_type": "local_agent"}]
+    assert runner.outcome_from_result(event, timed_out=False, live_tasks=live) == "incomplete"
+
+
+def test_a_genuinely_failed_run_stays_failed_despite_live_tasks() -> None:
+    """Only "done" is downgraded -- an errored run is better described as
+    failed than as incomplete."""
+    event = {"type": "result", "is_error": True, "subtype": "error_max_turns"}
+    live = [{"task_id": "aAAA", "description": "d", "task_type": "local_agent"}]
+    assert runner.outcome_from_result(event, timed_out=False, live_tasks=live) == "failed"
+
+
+def test_incomplete_maps_to_the_blocked_job_state() -> None:
+    assert runner.JOB_STATE_FOR_OUTCOME["incomplete"] == "blocked"
 
 
 # ---------------------------------------------------------------------------
@@ -758,6 +801,88 @@ def test_run_job_failure_marks_job_failed(tmp_path: Path) -> None:
     job = db.get_job(conn, job_id)
     assert job["state"] == "failed"
     assert job["conversation_id"] == "fake-session-err"
+
+
+def test_run_job_with_live_background_work_is_blocked_not_done(tmp_path: Path) -> None:
+    """§7 "blocked". The result envelope is a clean success -- is_error false,
+    subtype "success", stop_reason "end_turn" -- and the run still is not
+    finished, because a subagent was live when the main thread stopped. This is
+    job 16 exactly, which windowsill recorded as "done" and emailed as such."""
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _make_job(conn, tmp_path)
+    claude_cmd = _write_script(tmp_path, "claude_live.py", LIVE_SUBAGENT_SCRIPT)
+
+    outcome = runner.run_job(
+        conn,
+        job_id,
+        root=tmp_path,
+        claude_cmd=claude_cmd,
+        on_complete=[sys.executable, "-c", "pass"],
+        now=iter(["2026-07-21T02:00:00Z", "2026-07-21T02:01:00Z"]).__next__,
+        sleep=noop_sleep,
+    )
+
+    assert outcome.outcome == "incomplete"
+    assert outcome.job_state == "blocked"
+    assert [task["description"] for task in outcome.live_tasks] == ["Fix notify defaults"]
+
+    job = db.get_job(conn, job_id)
+    assert job["state"] == "blocked"
+    assert job["finished_at"] == "2026-07-21T02:01:00Z"
+    assert db.list_runs(conn, job_id=job_id)[0]["outcome"] == "incomplete"
+
+
+def test_blocked_is_not_terminal_so_ccstat_still_shows_it() -> None:
+    """The morning-after reader must find a blocked job without `-a`; `ccstat`
+    filters on exactly this set. Nothing re-dispatches it either, because the
+    scheduler selects by explicit state name, never by "not terminal"."""
+    assert "blocked" not in db.TERMINAL_STATES
+
+
+def test_a_blocked_job_does_not_consume_a_retry(tmp_path: Path) -> None:
+    """Re-running the body would start a second copy of work whose first copy
+    may still be live, and the job needs a human either way (§7)."""
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _make_job(conn, tmp_path)
+    db.update_job(conn, job_id, retry_max=3)
+    claude_cmd = _write_script(tmp_path, "claude_live.py", LIVE_SUBAGENT_SCRIPT)
+
+    outcome = runner.run_job(
+        conn,
+        job_id,
+        root=tmp_path,
+        claude_cmd=claude_cmd,
+        on_complete=[sys.executable, "-c", "pass"],
+        now=iter(["2026-07-21T02:00:00Z", "2026-07-21T02:01:00Z"]).__next__,
+        sleep=noop_sleep,
+    )
+
+    assert outcome.job_state == "blocked"
+    job = db.get_job(conn, job_id)
+    assert job["state"] == "blocked"
+    assert job["retry_count"] == 0
+
+
+def test_reap_reports_live_background_work_as_incomplete(tmp_path: Path) -> None:
+    """reap() answers from result.json when it exists, but one event cannot
+    say whether background work was live -- so it reads the stream too."""
+    dir_ = tmp_path / "job"
+    dir_.mkdir()
+    (dir_ / "stream.jsonl").write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in [
+                {"type": "system", "subtype": "task_started", "task_id": "aAAA", "description": "d", "task_type": "local_agent"},
+                {"type": "result", "is_error": False, "subtype": "success", "session_id": "s1"},
+            ]
+        )
+        + "\n"
+    )
+
+    status = runner.reap(dir_, pid=123, alive_check=lambda pid: False)
+
+    assert status.outcome == "incomplete"
+    assert [task["task_id"] for task in status.live_tasks] == ["aAAA"]
 
 
 def test_run_job_counts_permission_denials_even_when_envelope_reads_success(tmp_path: Path) -> None:

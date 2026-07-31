@@ -181,6 +181,49 @@ def test_next_action_done_state_says_finished() -> None:
     assert lines[-1] == "To pick the conversation up by hand: ccq resume 9"
 
 
+def _blocked_facts(**overrides: object) -> mail.RunFacts:
+    defaults = dict(
+        job_id=16,
+        name="windowsill-updates-1",
+        job_state="blocked",
+        outcome="incomplete",
+        result={"subtype": "success", "num_turns": 21, "duration_ms": 202468},
+        live_tasks=[{"task_id": "aAAA", "description": "Fix notify defaults and email body", "task_type": "local_agent"}],
+    )
+    defaults.update(overrides)
+    return mail.RunFacts(**defaults)  # type: ignore[arg-type]
+
+
+def test_next_action_blocked_names_the_human_and_the_command() -> None:
+    """§7: nothing in windowsill moves a blocked job, so the mail says so and
+    gives the command. It must never reach the generic state fallback."""
+    lines = mail.next_action(_blocked_facts())
+
+    assert lines[0].startswith("blocked — the run ended while work it had started was still going")
+    assert "Still running at exit (subagent): Fix notify defaults and email body" in lines
+    assert lines[-1] == "Nothing will move this job on its own — pick it up with: ccresume 16"
+    assert not any(line == "state blocked." for line in lines)
+
+
+def test_next_action_blocked_distinguishes_a_background_command() -> None:
+    facts = _blocked_facts(live_tasks=[{"task_id": "bCCC", "description": "uv run pytest -q", "task_type": "local_bash"}])
+    assert "Still running at exit (background command): uv run pytest -q" in mail.next_action(facts)
+
+
+def test_outcome_line_states_the_live_tasks_next_to_the_success_subtype() -> None:
+    """The envelope of a blocked run reads "success"; unqualified, the line
+    says the opposite of what happened."""
+    line = mail.outcome_line(_blocked_facts())
+    assert "success" in line
+    assert "1 background task still running" in line
+
+
+def test_subject_of_a_blocked_run_does_not_end_on_the_word_success() -> None:
+    subject = mail.subject(_blocked_facts())
+    assert "blocked" in subject
+    assert "1 still running" in subject
+
+
 def test_next_action_no_conversation_points_at_ccq_show() -> None:
     facts = mail.RunFacts(job_id=9, name="n", job_state="failed", outcome="error", has_conversation=False)
     lines = mail.next_action(facts)

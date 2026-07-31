@@ -302,10 +302,12 @@ def tick(
             status = runner.reap(dir_, pid, alive_check=alive_check)
             if status.alive:
                 continue
-            # "killed"/"timeout"/"failed" run outcomes are all the terminal
-            # job state "failed" (§7); only "done" is "done" -- mirrors
-            # runner._JOB_STATE_FOR_OUTCOME.
-            job_state = "done" if status.outcome == "done" else "failed"
+            # "killed"/"timeout"/"failed" run outcomes are all the terminal job
+            # state "failed" (§7); "done" is "done"; "incomplete" (background
+            # work still live) is "blocked". Read straight off the runner's
+            # table rather than restated here -- a second copy of this mapping
+            # is a second thing to forget to update.
+            job_state = runner.JOB_STATE_FOR_OUTCOME.get(status.outcome or "", "failed")
             conversation_id = status.result.get("session_id") if status.result else None
             transcript.write_transcript(
                 dir_,

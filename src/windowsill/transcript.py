@@ -156,6 +156,80 @@ def is_subagent(event: Mapping[str, Any]) -> bool:
     return event.get("parent_tool_use_id") is not None
 
 
+#: A ``task_notification`` status that means the background task actually
+#: finished its work. **Only this one.** Real streams also carry ``"stopped"``
+#: -- job 16's last subagent was notified ``stopped`` one line before the final
+#: result event, because the orchestrator ended its turn and the CLI tore the
+#: agent down. "Notified" is therefore not the test; "notified *completed*" is.
+_TASK_COMPLETED = "completed"
+
+
+def live_background_tasks(events: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
+    """The background tasks still running when the stream ended (§7 ``blocked``).
+
+    An orchestrator can end its turn while work it dispatched is still in
+    flight -- a ``Task`` subagent, or a backgrounded ``Bash``. Nothing in the
+    ``result`` envelope says so: job 16's first result event reads ``subtype:
+    "success"``, ``is_error: false``, ``stop_reason: "end_turn"`` -- envelope-
+    identical to a clean finish -- while its own ``result`` text reads "Two
+    agents are running... In flight:". The discriminator lives in the
+    ``system`` events instead, and this is the only thing that reads them.
+
+    The ledger, from the two signals real streams carry:
+
+    - ``task_started`` announces a task by ``task_id``; ``background_tasks_changed``
+      carries the *current whole set* under ``tasks``. Both add to the live set.
+    - ``task_notification`` with ``status == "completed"`` removes it. Any other
+      status does not -- see :data:`_TASK_COMPLETED`.
+
+    Whatever is left when the stream ends was live when the main thread stopped.
+    Checked against every real capture in ``~/.windowsill/jobs``: jobs 1, 2, 4,
+    13, 14, 15 end with an empty set (every task completed; job 14's trailing
+    ``background_tasks_changed`` independently reports ``tasks: []``); job 16
+    ends with one (``a5d6a37b1f1803ef2``, the subagent notified ``stopped``,
+    which its trailing ``background_tasks_changed`` also still lists); job 18
+    ends with two, never notified at all. The two signals agree on all seven.
+
+    Backgrounded ``Bash`` (``task_type: "local_bash"``) counts the same as a
+    subagent: the orchestrator dispatched work and ended without reading the
+    result either way. In the real captures all 47 of them completed, so this
+    costs nothing in practice -- ``task_type`` is reported so the mail can say
+    which kind was left hanging.
+
+    **Not** a signal for "the agent stopped to ask a question." There is none:
+    ``stop_reason`` took only ``end_turn``/``tool_use`` across every real
+    sample, and guessing from trailing punctuation would misfire on every run
+    that ends on a rhetorical question. ``blocked`` is deliberately built so a
+    real signal can set it later; today only this function does.
+    """
+    live: dict[str, dict[str, str]] = {}
+
+    def remember(task: Mapping[str, Any]) -> None:
+        task_id = task.get("task_id")
+        if not task_id or task_id in live:
+            return
+        live[str(task_id)] = {
+            "task_id": str(task_id),
+            "description": str(task.get("description") or ""),
+            "task_type": str(task.get("task_type") or ""),
+        }
+
+    for event in events:
+        if not isinstance(event, dict) or event.get("type") != "system":
+            continue
+        subtype = event.get("subtype")
+        if subtype == "task_started":
+            remember(event)
+        elif subtype == "background_tasks_changed":
+            for task in event.get("tasks") or []:
+                if isinstance(task, dict):
+                    remember(task)
+        elif subtype == "task_notification" and event.get("status") == _TASK_COMPLETED:
+            live.pop(str(event.get("task_id")), None)
+
+    return list(live.values())
+
+
 def final_summary(events: Iterable[dict[str, Any]]) -> str:
     """The run's closing prose: the text of the last *orchestrator* turn that
     said anything (§8.4's email body).

@@ -272,6 +272,10 @@ _NEXT_ACTION: dict[str, str] = {
     "queued": "queued; a tick will promote it when it is due.",
     "held": "held — needs `ccq release` before it runs again.",
     "running": "still running.",
+    # §7 "blocked": the main thread ended while work it dispatched was still
+    # running, so its closing summary describes work that had not happened.
+    # Nothing moves this job on its own -- :func:`next_action` names the human.
+    "blocked": "blocked — the run ended while work it had started was still going, so it is not finished.",
 }
 
 
@@ -300,6 +304,10 @@ class RunFacts:
     blocked_reason: str | None = None
     #: Whether ``ccq resume <id>`` has a conversation to resume.
     has_conversation: bool = False
+    #: Background work still in flight when the run's stream ended -- what put
+    #: the job in §7's ``blocked`` state. ``task_id`` / ``description`` /
+    #: ``task_type``, from :func:`windowsill.transcript.live_background_tasks`.
+    live_tasks: list[dict[str, str]] = field(default_factory=list)
     #: The window reading (§4) behind the usage block, as label/value pairs.
     usage: list[tuple[str, str]] = field(default_factory=list)
 
@@ -312,6 +320,12 @@ def outcome_line(facts: RunFacts) -> str:
     second opinion about how the run went.
     """
     parts = list(transcript.result_parts(facts.result)) if facts.result else [facts.outcome]
+    # The envelope of an "incomplete" run reads "success" -- that is the whole
+    # problem it names (§7 "blocked"), so the count has to be stated next to it
+    # or the line says the opposite of what happened.
+    if facts.live_tasks:
+        count = len(facts.live_tasks)
+        parts.append(f"{count} background task{'s' if count != 1 else ''} still running")
     if facts.delta_pct is not None:
         parts.append(f"Δ {facts.delta_pct}% of the window")
     if facts.permission_denials:
@@ -329,9 +343,22 @@ def next_action(facts: RunFacts) -> list[str]:
 
     The last line is always the manual path (§8.1's ``ccq resume``), because
     the point of the mail is that the reader never has to go looking for it.
+
+    ``blocked`` (§7) is the state where that last line stops being a footnote
+    and becomes the instruction: nothing in windowsill will move the job, so
+    the mail names the human's command outright and lists what was still
+    running when the run stopped.
     """
     lines: list[str] = []
     blocked = bool(facts.blocked_until)
+    if facts.job_state == "blocked":
+        lines.append(_NEXT_ACTION["blocked"])
+        for task in facts.live_tasks:
+            what = task.get("description") or task.get("task_id") or "?"
+            kind = "subagent" if task.get("task_type") == "local_agent" else "background command"
+            lines.append(f"Still running at exit ({kind}): {what}")
+        lines.append(f"Nothing will move this job on its own — pick it up with: ccresume {facts.job_id}")
+        return lines
     if facts.job_state == "ready" and blocked:
         limit = facts.blocked_reason and "rate limit" in facts.blocked_reason
         what = "will resume automatically in the next window" if limit else "queued, blocked"
@@ -393,6 +420,10 @@ def subject(facts: RunFacts) -> str:
     a subject is the only part of the mail a phone shows.
     """
     detail = list(transcript.result_parts(facts.result)) if facts.result else [facts.outcome]
+    # A blocked run's envelope subtype is "success" (§7); on a phone that is
+    # the only word the reader sees, so it must not be the last one.
+    if facts.live_tasks:
+        detail.append(f"{len(facts.live_tasks)} still running")
     if facts.permission_denials:
         detail.append(f"{facts.permission_denials} denied")
     return f"[ccq {facts.job_id}] {facts.name}: {facts.job_state} ({', '.join(detail)})"

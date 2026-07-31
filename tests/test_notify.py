@@ -100,6 +100,25 @@ def test_compose_body_omits_permission_denials_when_absent() -> None:
     assert "permission denial" not in body
 
 
+def test_compose_flags_live_background_work_on_a_blocked_job() -> None:
+    """§7 "blocked": the summary above this line is the run's own closing
+    message, which describes work that had not finished."""
+    title, body = notify.compose(job_id=16, name="windowsill-updates-1", state="blocked", summary="Two agents are running.", live_tasks=2)
+    assert title == "windowsill-updates-1: blocked"
+    assert "2 background tasks still running" in body
+
+
+def test_compose_body_singular_for_one_live_task() -> None:
+    _, body = notify.compose(job_id=16, name="j", state="blocked", live_tasks=1)
+    assert "1 background task still running" in body
+    assert "1 background tasks" not in body
+
+
+def test_compose_body_omits_live_tasks_when_none() -> None:
+    _, body = notify.compose(job_id=42, name="j", state="done", live_tasks=0)
+    assert "background task" not in body
+
+
 # ---------------------------------------------------------------------------
 # channel dispatch
 # ---------------------------------------------------------------------------

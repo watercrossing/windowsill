@@ -233,6 +233,58 @@ def test_subagent_turns_are_marked_in_the_transcript() -> None:
     assert "## 🤖 Assistant\n" in out
 
 
+# ---------------------------------------------------------------------------
+# live_background_tasks -- the §7 "blocked" discriminator
+# ---------------------------------------------------------------------------
+
+
+def test_live_background_tasks_finds_what_never_completed() -> None:
+    """The fixture's envelope is a clean success -- subtype "success",
+    is_error false, stop_reason "end_turn" -- exactly like job 16's. Only the
+    system events say a subagent was still going."""
+    events = list(transcript.iter_events(FIXTURES / "live_background_tasks.jsonl"))
+    live = transcript.live_background_tasks(events)
+
+    assert [task["task_id"] for task in live] == ["aAAA"]
+    assert live[0]["description"] == "Fix notify defaults and email body"
+    assert live[0]["task_type"] == "local_agent"
+
+
+def test_a_stopped_notification_is_not_a_completion() -> None:
+    """Job 16's last subagent was notified ``stopped`` one line before the
+    final result -- the orchestrator quit out from under it. Treating any
+    notification as terminal would call that run clean."""
+    events = [
+        {"type": "system", "subtype": "task_started", "task_id": "aAAA", "description": "d", "task_type": "local_agent"},
+        {"type": "system", "subtype": "task_notification", "task_id": "aAAA", "status": "stopped"},
+    ]
+    assert [task["task_id"] for task in transcript.live_background_tasks(events)] == ["aAAA"]
+
+
+def test_live_background_tasks_empty_when_everything_completed() -> None:
+    events = list(transcript.iter_events(FIXTURES / "basic.jsonl"))
+    assert transcript.live_background_tasks(events) == []
+
+
+def test_background_tasks_changed_alone_announces_a_live_task() -> None:
+    """The two signals are redundant on real streams but not identical: some
+    captures carry ``background_tasks_changed`` and some don't, so either one
+    announcing a task is enough."""
+    events = [
+        {"type": "system", "subtype": "background_tasks_changed", "tasks": [{"task_id": "aAAA", "description": "d", "task_type": "local_agent"}]},
+    ]
+    assert [task["task_id"] for task in transcript.live_background_tasks(events)] == ["aAAA"]
+
+
+def test_a_completed_task_is_cleared_even_if_it_was_announced_twice() -> None:
+    events = [
+        {"type": "system", "subtype": "background_tasks_changed", "tasks": [{"task_id": "aAAA", "description": "d", "task_type": "local_agent"}]},
+        {"type": "system", "subtype": "task_started", "task_id": "aAAA", "description": "d", "task_type": "local_agent"},
+        {"type": "system", "subtype": "task_notification", "task_id": "aAAA", "status": "completed"},
+    ]
+    assert transcript.live_background_tasks(events) == []
+
+
 def test_result_parts_are_the_footers_fields_in_print_order() -> None:
     events = list(transcript.iter_events(FIXTURES / "basic.jsonl"))
     result = next(event for event in events if event["type"] == "result")

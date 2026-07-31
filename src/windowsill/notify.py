@@ -64,6 +64,7 @@ def compose(
     summary: str | None = None,
     delta_pct: int | None = None,
     permission_denials: int | None = None,
+    live_tasks: int = 0,
 ) -> tuple[str, str]:
     """Build the ``(title, body)`` for a job's completion notification.
 
@@ -76,11 +77,17 @@ def compose(
     "done"`` while having written nothing because every ``Write``/``Edit`` was
     refused, and that is exactly the case the morning-after reader must not
     breeze past.
+
+    ``live_tasks`` earns a line for the same reason: a ``blocked`` job (§7)
+    stopped with work still in flight, and the ``summary`` above it is the
+    run's own closing message, which describes work that had not finished.
     """
     title = f"{name}: {state}"
     lines: list[str] = []
     if summary:
         lines.append(summary)
+    if live_tasks:
+        lines.append(f"{live_tasks} background task{'s' if live_tasks != 1 else ''} still running")
     if delta_pct is not None:
         lines.append(f"Δ {delta_pct}%")
     if permission_denials:

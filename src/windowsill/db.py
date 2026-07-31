@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS runs (      -- one row per execution attempt
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   job_id        INTEGER NOT NULL REFERENCES jobs(id),
   started_at    TEXT NOT NULL, finished_at TEXT,
-  outcome       TEXT,                 -- done | failed | rate_limited | timeout | killed
+  outcome       TEXT,                 -- done | failed | rate_limited | timeout | killed | incomplete
   pct_before    INTEGER, pct_after INTEGER,   -- §4.3
   num_turns     INTEGER, duration_ms INTEGER,
   permission_denials INTEGER,        -- count of the result envelope's permission_denials (§9 2026-07-28)
@@ -100,6 +100,16 @@ CREATE TABLE IF NOT EXISTS events (    -- audit trail; feeds ccq report
 # terminal set from the design/07-lifecycle.md §7 lifecycle exactly -- note "killed" and
 # "timeout" are run *outcomes* (§6 runs.outcome), not job states, so they are
 # not here; a killed/timed-out run leaves a "failed" job.
+#
+# "blocked" (§7) is deliberately **not** here even though nothing moves it on
+# its own. It means "needs a human", and every consequence of this set is one
+# a blocked job wants the non-terminal side of: `ccstat` without `-a` filters
+# on exactly this set, and the blocked job is precisely the one the reader
+# must find in the morning; `ccq del` will cancel it; `resolve_identifier`
+# still resolves it by name, so `ccq resume <name>` works. The re-dispatch
+# worry membership would have answered is handled structurally instead --
+# the scheduler selects by explicit state name ("queued", "ready", "running"),
+# never by "not terminal", so a blocked job is never picked up again.
 TERMINAL_STATES: frozenset[str] = frozenset({"done", "failed", "expired", "skipped", "cancelled"})
 
 _JOB_JSON_FIELDS = ("passthrough", "hold_jid")
