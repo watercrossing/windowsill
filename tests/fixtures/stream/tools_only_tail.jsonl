@@ -1,0 +1,5 @@
+{"type": "system", "subtype": "init", "session_id": "abc-123"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Here is what I did: renamed the module and fixed both call sites."}]}, "session_id": "abc-123"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "name": "Write", "input": {"file_path": "NOTES.md", "content": "done"}}]}, "session_id": "abc-123"}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "File created successfully."}]}, "session_id": "abc-123"}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 4, "duration_ms": 12345, "total_cost_usd": 0.42, "session_id": "abc-123"}

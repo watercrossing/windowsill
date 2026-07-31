@@ -1186,14 +1186,14 @@ def test_successful_run_notifies_on_the_jobs_channel(tmp_path: Path) -> None:
     )
     sent: list[tuple] = []
 
-    def fake_notify(channel, title, body, *, config):
-        sent.append((channel, title, body))
+    def fake_notify(channel, title, body, *, config, message=None):
+        sent.append((channel, title, body, message))
         return notify.NotifyResult(True, channel)
 
     _run(conn, job_id, tmp_path, notify_fn=fake_notify, probe=FakeProbe(_reading(10), _reading(13)))
 
     assert len(sent) == 1
-    channel, title, body = sent[0]
+    channel, title, body, _message = sent[0]
     assert channel == "ntfy"
     assert title == "nightly-lint: done"
     assert f"ccq resume {job_id}" in body
@@ -1217,14 +1217,14 @@ def test_notification_flags_nonzero_permission_denials(tmp_path: Path) -> None:
     )
     sent: list[tuple] = []
 
-    def fake_notify(channel, title, body, *, config):
-        sent.append((channel, title, body))
+    def fake_notify(channel, title, body, *, config, message=None):
+        sent.append((channel, title, body, message))
         return notify.NotifyResult(True, channel)
 
     _run(conn, job_id, tmp_path, script=PERMISSION_DENIED_SCRIPT, notify_fn=fake_notify)
 
     assert len(sent) == 1
-    _, _, body = sent[0]
+    _, _, body, _message = sent[0]
     assert "2 permission denials" in body
 
 

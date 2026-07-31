@@ -32,6 +32,7 @@ from __future__ import annotations
 import subprocess
 import urllib.request
 from dataclasses import dataclass
+from email.message import EmailMessage
 from typing import Any, Callable, Mapping
 
 
@@ -153,16 +154,38 @@ def _send_ntfy(cfg: Mapping[str, Any], title: str, body: str, *, topic: str, htt
     http_post(endpoint, body.encode("utf-8"), {"Title": title})
 
 
-def _send_email(cfg: Mapping[str, Any], title: str, body: str, *, to: str, run_sendmail: Callable[[str, str], None]) -> None:
+def _send_email(
+    cfg: Mapping[str, Any],
+    title: str,
+    body: str,
+    *,
+    to: str,
+    message: EmailMessage | None = None,
+    run_sendmail: Callable[[str, str], None],
+) -> None:
+    """Pipe one message to ``sendmail -t``.
+
+    ``message`` is a body someone else already composed -- the
+    ``multipart/alternative`` completion mail from :mod:`windowsill.mail`
+    (§8.4). Without one, ``title``/``body`` become a plain text message, which
+    is what the ntfy-shaped one-liner degrades to.
+
+    Addressing is this module's business either way: the caller composes the
+    content, the transport decides where it goes.
+    """
+    if message is None:
+        message = EmailMessage()
+        message["Subject"] = title
+        message.set_content(body if body.endswith("\n") else body + "\n")
+    del message["To"], message["From"]
+    message["To"] = to
     # `From` is optional: unset, sendmail stamps the invoking user's own
     # address, which is the one address on the machine guaranteed to exist --
     # strictly better than a placeholder domain an MTA may refuse outright.
-    headers = [f"To: {to}"]
     sender = cfg.get("from")
     if sender:
-        headers.append(f"From: {sender}")
-    headers.append(f"Subject: {title}")
-    run_sendmail(cfg["sendmail"], "\n".join(headers) + f"\n\n{body}\n")
+        message["From"] = sender
+    run_sendmail(cfg["sendmail"], message.as_string())
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +199,7 @@ def notify(
     body: str,
     *,
     config: Mapping[str, Any],
+    message: EmailMessage | None = None,
     http_post: Callable[[str, bytes, dict], None] = _default_http_post,
     run_sendmail: Callable[[str, str], None] = _default_run_sendmail,
 ) -> NotifyResult:
@@ -188,6 +212,10 @@ def notify(
     destination anywhere sends nothing and comes back ``skipped``. Any
     transport failure -- unreachable ntfy, missing sendmail -- comes back as
     ``ok=False`` with the reason in ``detail``.
+
+    ``message`` is the composed email body for the ``email`` channel (§8.4,
+    :func:`windowsill.mail.build_message`); ``title``/``body`` are the ntfy
+    one-liner and the fallback when no message was composed.
     """
     name, override = split_channel(channel)
     if name == "none":
@@ -205,7 +233,7 @@ def notify(
         if name == "ntfy":
             _send_ntfy(notify_cfg.get("ntfy", {}) or {}, title, body, topic=str(where), http_post=http_post)
         elif name == "email":
-            _send_email(notify_cfg.get("email", {}) or {}, title, body, to=str(where), run_sendmail=run_sendmail)
+            _send_email(notify_cfg.get("email", {}) or {}, title, body, to=str(where), message=message, run_sendmail=run_sendmail)
         else:
             return NotifyResult(False, name, f"unknown channel {name!r}")
     except Exception as exc:  # noqa: BLE001 -- a notification must never fail the job (§8.4)

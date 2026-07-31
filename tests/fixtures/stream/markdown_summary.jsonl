@@ -1,0 +1,6 @@
+{"type": "system", "subtype": "init", "session_id": "abc-123"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": "Not addressed to the reader."}]}, "session_id": "abc-123"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Starting now."}, {"type": "tool_use", "name": "Read", "input": {"file_path": "src/windowsill/cli.py"}}]}, "session_id": "abc-123"}
+{"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "content": "...file contents..."}]}, "session_id": "abc-123"}
+{"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Done. Summary:\n\n## What changed\n\nRenamed the package and fixed **both** call sites. See `src/windowsill/cli.py`.\n\n| job | model | result |\n|---|---|---|\n| `haiku-hello` | Haiku 4.5 | done, 20s |\n| `opus-summary` | Opus 4.8 | done, 14s |\n\nTwo things worth your attention:\n\n1. The repo is still named `ccq`.\n2. No LICENSE file yet.\n\nVerified live:\n\n```\n5     denied-writer2       done    00:00:07\n```\n\n> Nothing else is outstanding.\n"}]}, "session_id": "abc-123"}
+{"type": "result", "subtype": "success", "is_error": false, "num_turns": 109, "duration_ms": 742143, "total_cost_usd": 3.3201, "session_id": "abc-123"}

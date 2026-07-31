@@ -115,6 +115,77 @@ def test_blank_and_malformed_lines_skipped(tmp_path: Path) -> None:
     assert "hello" in md
 
 
+# ---------------------------------------------------------------------------
+# final_summary + result_parts -- shared with the completion email (§8.4)
+# ---------------------------------------------------------------------------
+
+
+def test_final_summary_is_the_last_assistant_prose() -> None:
+    events = list(transcript.iter_events(FIXTURES / "basic.jsonl"))
+    assert transcript.final_summary(events) == "Migration complete. Tests are green."
+
+
+def test_final_summary_skips_a_tool_only_final_turn() -> None:
+    """A run's literal last turn is often a bare Write; the message the reader
+    wants is the last one addressed to them."""
+    events = list(transcript.iter_events(FIXTURES / "tools_only_tail.jsonl"))
+    summary = transcript.final_summary(events)
+    assert summary == "Here is what I did: renamed the module and fixed both call sites."
+    assert "NOTES.md" not in summary
+
+
+def test_final_summary_is_empty_with_no_assistant_message_at_all() -> None:
+    events = list(transcript.iter_events(FIXTURES / "no_assistant.jsonl"))
+    assert transcript.final_summary(events) == ""
+
+
+def test_final_summary_excludes_thinking() -> None:
+    events = list(transcript.iter_events(FIXTURES / "markdown_summary.jsonl"))
+    summary = transcript.final_summary(events)
+    assert "Not addressed to the reader" not in summary
+    assert summary.startswith("Done. Summary:")
+
+
+def test_final_summary_keeps_a_very_long_message_whole(tmp_path: Path) -> None:
+    """The transcript truncates tool output; the closing summary is the point
+    of the email and is never trimmed."""
+    stream = tmp_path / "stream.jsonl"
+    long_text = "This is the summary. " * 1000
+    stream.write_text(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": long_text}]}}) + "\n")
+
+    summary = transcript.final_summary(transcript.iter_events(stream))
+
+    assert summary == long_text.strip()
+    assert "truncated" not in summary
+
+
+def test_final_summary_joins_multiple_text_blocks_of_one_turn(tmp_path: Path) -> None:
+    stream = tmp_path / "stream.jsonl"
+    content = [{"type": "text", "text": "first half"}, {"type": "tool_use", "name": "Read", "input": {}}, {"type": "text", "text": "second half"}]
+    stream.write_text(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": content}}) + "\n")
+
+    assert transcript.final_summary(transcript.iter_events(stream)) == "first half\nsecond half"
+
+
+def test_result_parts_are_the_footers_fields_in_print_order() -> None:
+    events = list(transcript.iter_events(FIXTURES / "basic.jsonl"))
+    result = next(event for event in events if event["type"] == "result")
+
+    assert transcript.result_parts(result) == ["success", "3 turns", "8.4s", "$0.0800"]
+
+
+def test_result_parts_omit_what_the_envelope_does_not_carry() -> None:
+    assert transcript.result_parts({"subtype": "error_during_execution"}) == ["error_during_execution"]
+    assert transcript.result_parts({}) == ["?"]
+
+
+def test_transcript_footer_and_result_parts_agree() -> None:
+    """One description of "how the run went", rendered twice."""
+    md = transcript.render_stream(FIXTURES / "basic.jsonl")
+    for part in transcript.result_parts({"subtype": "success", "num_turns": 3, "duration_ms": 8411, "total_cost_usd": 0.08}):
+        assert part in md
+
+
 def test_write_transcript_writes_file_and_returns_path(tmp_path: Path) -> None:
     (tmp_path / "stream.jsonl").write_text(
         json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "done"}]}}) + "\n"

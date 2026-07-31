@@ -18,6 +18,12 @@ noise. A ``rate_limit_event`` renders **only** when it reports an actual
 limit: the informational one (``status: "allowed"``) fires on every run and
 is suppressed.
 
+Two pieces of that reading are shared rather than re-derived: :func:`final_summary`
+(the last assistant turn that said something -- the body of the completion email,
+§8.4) and :func:`result_parts` (the footer fields of the ``result`` event). Both
+consume the same events the Markdown renderer does, so this module stays the only
+parser of the stream.
+
 Pure and I/O-light: :func:`render_events` is string-in/string-out;
 :func:`render_stream` only reads a path; :func:`write_transcript` reads
 ``stream.jsonl`` and writes ``transcript.md`` beside it. Malformed or blank
@@ -28,7 +34,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 #: Tool inputs and results are truncated to keep a transcript readable --
 #: same limit the standalone transcripts/render.py uses.
@@ -103,10 +109,14 @@ def _render_rate_limit(event: dict[str, Any]) -> list[str]:
     return [f"> ⛔ **rate limit**: {status} ({kind})", ""]
 
 
-def _render_result(event: dict[str, Any]) -> list[str]:
-    icon = "❌" if event.get("is_error") else "✅"
-    subtype = event.get("subtype", "?")
-    parts = [f"**{icon} {subtype}**"]
+def result_parts(event: Mapping[str, Any]) -> list[str]:
+    """The footer fields of a ``result`` event, in print order: the subtype,
+    then turns, duration and cost where the envelope carries them.
+
+    Shared with the email body (§8.4), which reports the same run in the same
+    terms -- one description of "how the run went", rendered twice.
+    """
+    parts = [str(event.get("subtype", "?"))]
     if event.get("num_turns") is not None:
         parts.append(f"{event['num_turns']} turns")
     duration_ms = event.get("duration_ms")
@@ -115,7 +125,37 @@ def _render_result(event: dict[str, Any]) -> list[str]:
     cost = event.get("total_cost_usd")
     if cost:
         parts.append(f"${cost:.4f}")
-    return ["---", "", " · ".join(parts), ""]
+    return parts
+
+
+def _render_result(event: dict[str, Any]) -> list[str]:
+    icon = "❌" if event.get("is_error") else "✅"
+    subtype, *rest = result_parts(event)
+    return ["---", "", " · ".join([f"**{icon} {subtype}**", *rest]), ""]
+
+
+def final_summary(events: Iterable[dict[str, Any]]) -> str:
+    """The run's closing prose: the text of the last assistant turn that said
+    anything (§8.4's email body).
+
+    Turns carrying only ``tool_use`` blocks are skipped -- a run's literal last
+    assistant message is often a lone ``Write``, and the message a reader wants
+    is the one addressed to *them*. ``thinking`` is excluded for the same
+    reason. Returns ``""`` when the stream has no assistant prose at all (a run
+    that died before its first turn, or one that only ever called tools).
+
+    Reads the same events :func:`render_events` does, so there is exactly one
+    parser of the stream in this codebase.
+    """
+    summary = ""
+    for event in events:
+        if not isinstance(event, dict) or event.get("type") != "assistant":
+            continue
+        blocks = (event.get("message") or {}).get("content") or []
+        text = "\n".join(block.get("text", "") for block in blocks if isinstance(block, dict) and block.get("type") == "text").strip()
+        if text:
+            summary = text
+    return summary
 
 
 def render_events(events: Iterable[dict[str, Any]], *, prompt: str | None = None) -> str:

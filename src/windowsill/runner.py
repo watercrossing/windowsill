@@ -44,10 +44,11 @@ import subprocess
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from email.message import EmailMessage
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from windowsill import db, notify, transcript, usage, window
+from windowsill import db, mail, notify, transcript, usage, window
 
 # ---------------------------------------------------------------------------
 # job directory layout (§6.2)
@@ -526,14 +527,71 @@ def _requeue_after_limit(
     return "ready"
 
 
-def _notify_job(
+def _run_facts(
     database: "db.sqlite_utils.Database",
     job: dict[str, Any],
     job_state: str,
     *,
-    summary: str,
+    outcome: str,
+    result_event: dict[str, Any] | None,
+    events: Sequence[dict[str, Any]],
     delta_pct: int | None,
     permission_denials: int | None,
+    conversation_id: str | None,
+    reading: "usage.ParsedUsage | None",
+    finished_at: str,
+    config: Mapping[str, Any] | None,
+) -> "mail.RunFacts":
+    """Assemble what the completion email reports (§8.4).
+
+    Everything here is already in hand or one cheap read away: the ``events``
+    the rate-limit check just walked (so the final summary costs no second
+    parse of ``stream.jsonl``), the post-run ``/usage`` reading (§4.3), the
+    ``sched`` block gate (§5.4), and the §5.3 ledger count.
+    """
+    sched = db.get_sched(database)
+    settings = config or {}
+    return mail.RunFacts(
+        job_id=job["id"],
+        name=job["name"],
+        job_state=job_state,
+        outcome=outcome,
+        summary=transcript.final_summary(events),
+        result=result_event,
+        delta_pct=delta_pct,
+        permission_denials=permission_denials,
+        blocked_until=sched.get("blocked_until"),
+        blocked_reason=sched.get("blocked_reason"),
+        has_conversation=bool(conversation_id),
+        usage=mail.usage_rows(
+            reading,
+            windows_in_30d=window.windows_in_last_30d(database, datetime.fromisoformat(finished_at.replace("Z", "+00:00"))),
+            max_sessions=settings.get("queue", {}).get("max_sessions_per_month"),
+        ),
+    )
+
+
+def _compose_email(facts: "mail.RunFacts", channel: str | None) -> "EmailMessage | None":
+    """The ``multipart/alternative`` completion mail, for the email channel only.
+
+    ``None`` for every other channel (ntfy sends the one-liner, "none" sends
+    nothing), and ``None`` again if composing it raises: a body that would not
+    render must not take down a run that already happened, which is the same
+    rule §8.4 sets for the send itself. The plain title/body then goes instead.
+    """
+    if notify.split_channel(channel)[0] != "email":
+        return None
+    try:
+        return mail.build_message(facts)
+    except Exception:  # noqa: BLE001 -- a notification must never fail the job (§8.4)
+        return None
+
+
+def _notify_job(
+    database: "db.sqlite_utils.Database",
+    job: dict[str, Any],
+    facts: "mail.RunFacts",
+    *,
     ts: str,
     config: Mapping[str, Any] | None,
     notify_fn: Callable[..., "notify.NotifyResult"],
@@ -551,14 +609,14 @@ def _notify_job(
     the morning you needed it.
     """
     title, body = notify.compose(
-        job_id=job["id"],
-        name=job["name"],
-        state=job_state,
-        summary=summary,
-        delta_pct=delta_pct,
-        permission_denials=permission_denials,
+        job_id=facts.job_id,
+        name=facts.name,
+        state=facts.job_state,
+        summary=_summary(facts.result),
+        delta_pct=facts.delta_pct,
+        permission_denials=facts.permission_denials,
     )
-    outcome = notify_fn(job["notify"], title, body, config=config or {})
+    outcome = notify_fn(job["notify"], title, body, config=config or {}, message=_compose_email(facts, job["notify"]))
     if outcome.channel == "none":
         return
     if outcome.skipped:
@@ -736,10 +794,20 @@ def run_job(
         _notify_job(
             database,
             job,
-            job_state,
-            summary=_summary(result_event),
-            delta_pct=delta_pct,
-            permission_denials=permission_denials,
+            _run_facts(
+                database,
+                job,
+                job_state,
+                outcome=outcome,
+                result_event=result_event,
+                events=events,
+                delta_pct=delta_pct,
+                permission_denials=permission_denials,
+                conversation_id=conversation_id,
+                reading=after,
+                finished_at=finished_at,
+                config=config,
+            ),
             ts=finished_at,
             config=config,
             notify_fn=notify_fn,
