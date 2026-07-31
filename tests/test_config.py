@@ -41,7 +41,7 @@ def test_defaults_used_when_no_file_exists(tmp_path: Path) -> None:
     }
 
     assert cfg["safety"] == {
-        "allowed_tools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash"],
+        "allowed_tools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash", "Task", "TodoWrite", "WebFetch", "WebSearch", "NotebookEdit"],
         "default_isolate": "worktree",
         "allow_dirty": False,
     }
@@ -64,10 +64,34 @@ def test_defaults_are_not_shared_mutable_state(tmp_path: Path) -> None:
 
     cfg2 = load_config(tmp_path / "config.toml")
     assert cfg2["queue"]["max_parallel"] == 1
-    assert cfg2["safety"]["allowed_tools"] == ["Read", "Edit", "Write", "Grep", "Glob", "Bash"]
+    assert cfg2["safety"]["allowed_tools"] == [
+        "Read",
+        "Edit",
+        "Write",
+        "Grep",
+        "Glob",
+        "Bash",
+        "Task",
+        "TodoWrite",
+        "WebFetch",
+        "WebSearch",
+        "NotebookEdit",
+    ]
 
     assert DEFAULTS["queue"]["max_parallel"] == 1
-    assert DEFAULTS["safety"]["allowed_tools"] == ["Read", "Edit", "Write", "Grep", "Glob", "Bash"]
+    assert DEFAULTS["safety"]["allowed_tools"] == [
+        "Read",
+        "Edit",
+        "Write",
+        "Grep",
+        "Glob",
+        "Bash",
+        "Task",
+        "TodoWrite",
+        "WebFetch",
+        "WebSearch",
+        "NotebookEdit",
+    ]
 
 
 def test_returns_config_instance(tmp_path: Path) -> None:

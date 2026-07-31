@@ -255,6 +255,86 @@ def test_build_argv_claude_cmd_is_injectable() -> None:
 
 
 # ---------------------------------------------------------------------------
+# build_argv: §3.3 safety.allowed_tools default, and the yield rule
+# ---------------------------------------------------------------------------
+
+
+def test_build_argv_omits_allowed_tools_when_not_given() -> None:
+    """Unset/empty allowed_tools injects nothing -- the pre-existing default
+    behaviour, unchanged for a caller that doesn't pass it at all."""
+    argv = runner.build_argv(["--max-turns", "10"])
+    assert "--allowed-tools" not in argv
+
+
+def test_build_argv_omits_allowed_tools_when_empty_list() -> None:
+    argv = runner.build_argv(["--max-turns", "10"], allowed_tools=[])
+    assert "--allowed-tools" not in argv
+
+
+def test_build_argv_injects_allowed_tools_as_single_comma_joined_token() -> None:
+    argv = runner.build_argv(["--max-turns", "10"], allowed_tools=["Read", "Edit", "Bash"])
+    assert "--allowed-tools" in argv
+    i = argv.index("--allowed-tools")
+    assert argv[i + 1] == "Read,Edit,Bash"
+    # Injected ahead of the job's own pass-through directives, same
+    # placement rule as --resume.
+    assert argv[i + 2 :] == ["--max-turns", "10"]
+
+
+def test_build_argv_injects_allowed_tools_after_resume() -> None:
+    argv = runner.build_argv([], resume="conv-abc", allowed_tools=["Read"])
+    assert argv[-4:] == ["--resume", "conv-abc", "--allowed-tools", "Read"]
+
+
+def test_build_argv_yields_when_passthrough_names_allowed_tools() -> None:
+    argv = runner.build_argv(["--allowed-tools", "Bash"], allowed_tools=["Read", "Edit"])
+    assert argv.count("--allowed-tools") == 1
+    assert argv[-2:] == ["--allowed-tools", "Bash"]
+
+
+def test_build_argv_yields_when_passthrough_names_allowed_tools_camel_case() -> None:
+    argv = runner.build_argv(["--allowedTools", "Bash"], allowed_tools=["Read", "Edit"])
+    assert "--allowed-tools" not in argv
+    assert argv[-2:] == ["--allowedTools", "Bash"]
+
+
+def test_build_argv_yields_when_passthrough_names_disallowed_tools() -> None:
+    argv = runner.build_argv(["--disallowed-tools", "Bash"], allowed_tools=["Read"])
+    assert "--allowed-tools" not in argv
+
+
+def test_build_argv_yields_when_passthrough_names_permission_mode() -> None:
+    argv = runner.build_argv(["--permission-mode", "plan"], allowed_tools=["Read"])
+    assert "--allowed-tools" not in argv
+
+
+def test_build_argv_yields_when_passthrough_names_dangerously_skip_permissions() -> None:
+    argv = runner.build_argv(["--dangerously-skip-permissions"], allowed_tools=["Read"])
+    assert "--allowed-tools" not in argv
+
+
+def test_build_argv_yields_on_equals_form() -> None:
+    """``--flag=value`` is a form the CLI accepts too, not just ``--flag value``."""
+    argv = runner.build_argv(["--permission-mode=plan"], allowed_tools=["Read"])
+    assert "--allowed-tools" not in argv
+
+
+def test_build_argv_does_not_yield_on_unrelated_flags() -> None:
+    argv = runner.build_argv(["--model", "claude-opus-4-8", "--max-turns", "10"], allowed_tools=["Read"])
+    assert "--allowed-tools" in argv
+
+
+def test_names_tool_permission_flag_true_for_every_recognised_flag() -> None:
+    for flag in runner.TOOL_PERMISSION_FLAGS:
+        assert runner.names_tool_permission_flag([flag, "x"]) is True
+
+
+def test_names_tool_permission_flag_false_for_empty_or_unrelated() -> None:
+    assert runner.names_tool_permission_flag([]) is False
+    assert runner.names_tool_permission_flag(["--model", "claude-opus-4-8"]) is False
+
+
+# ---------------------------------------------------------------------------
 # cmd.json / resume.sh: §6.2 artifacts the runner writes
 # ---------------------------------------------------------------------------
 
@@ -673,7 +753,14 @@ def test_log_destination_relative_directory_resolves_against_job_cwd(tmp_path: P
 # ---------------------------------------------------------------------------
 
 
-def _make_job(conn, tmp_path: Path, *, timeout: str | None = None, log_path: str | None = None) -> int:
+def _make_job(
+    conn,
+    tmp_path: Path,
+    *,
+    timeout: str | None = None,
+    log_path: str | None = None,
+    passthrough: list[str] | None = None,
+) -> int:
     return db.insert_job(
         conn,
         name="nightly-lint",
@@ -681,7 +768,7 @@ def _make_job(conn, tmp_path: Path, *, timeout: str | None = None, log_path: str
         submitted_at="2026-07-21T00:00:00Z",
         cwd=str(tmp_path),
         body="please lint the repo",
-        passthrough=["--max-turns", "10"],
+        passthrough=passthrough if passthrough is not None else ["--max-turns", "10"],
         timeout=timeout,
         log_path=log_path,
     )
@@ -734,6 +821,86 @@ def test_run_job_success_updates_db_and_writes_artifacts(tmp_path: Path) -> None
     assert "--resume fake-session-123" in (dir_ / "resume.sh").read_text()
 
     _wait_for_file(marker)
+
+
+# ---------------------------------------------------------------------------
+# run_job: §3.3 safety.allowed_tools -- injection and the yield rule
+# ---------------------------------------------------------------------------
+
+
+def test_run_job_injects_allowed_tools_from_config(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _make_job(conn, tmp_path)
+    config = {"safety": {"allowed_tools": ["Read", "Edit", "Bash"]}}
+
+    runner.run_job(
+        conn,
+        job_id,
+        root=tmp_path,
+        claude_cmd=_write_script(tmp_path, "claude_ok.py", SUCCESS_SCRIPT),
+        on_complete=[sys.executable, "-c", "pass"],
+        now=iter(["2026-07-21T02:00:00Z", "2026-07-21T02:05:00Z"]).__next__,
+        sleep=noop_sleep,
+        config=config,
+    )
+
+    dir_ = runner.job_dir(tmp_path, job_id, "nightly-lint")
+    argv = json.loads((dir_ / "cmd.json").read_text())["argv"]
+    assert "--allowed-tools" in argv
+    assert argv[argv.index("--allowed-tools") + 1] == "Read,Edit,Bash"
+
+    # Nothing to yield -- the job named no tool-permission flag of its own --
+    # so no yield event is logged.
+    kinds = [e["kind"] for e in db.list_events(conn, job_id=job_id)]
+    assert "allowed_tools_yielded" not in kinds
+
+
+def test_run_job_yields_and_logs_when_job_names_its_own_permission_mode(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _make_job(conn, tmp_path, passthrough=["--permission-mode", "plan"])
+    config = {"safety": {"allowed_tools": ["Read", "Edit", "Bash"]}}
+
+    runner.run_job(
+        conn,
+        job_id,
+        root=tmp_path,
+        claude_cmd=_write_script(tmp_path, "claude_ok.py", SUCCESS_SCRIPT),
+        on_complete=[sys.executable, "-c", "pass"],
+        now=iter(["2026-07-21T02:00:00Z", "2026-07-21T02:05:00Z"]).__next__,
+        sleep=noop_sleep,
+        config=config,
+    )
+
+    dir_ = runner.job_dir(tmp_path, job_id, "nightly-lint")
+    argv = json.loads((dir_ / "cmd.json").read_text())["argv"]
+    assert "--allowed-tools" not in argv
+    assert "--permission-mode" in argv
+
+    events = db.list_events(conn, job_id=job_id)
+    assert [e["kind"] for e in events] == ["allowed_tools_yielded", "dispatched", "done"]
+    assert "tool-permission flag" in events[0]["detail"]
+
+
+def test_run_job_does_not_log_yield_when_config_has_no_allowed_tools(tmp_path: Path) -> None:
+    """A job naming its own --permission-mode with no configured allowed_tools
+    isn't "yielding" anything -- there was nothing windowsill would have
+    injected either way, so no event is logged."""
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _make_job(conn, tmp_path, passthrough=["--permission-mode", "plan"])
+
+    runner.run_job(
+        conn,
+        job_id,
+        root=tmp_path,
+        claude_cmd=_write_script(tmp_path, "claude_ok.py", SUCCESS_SCRIPT),
+        on_complete=[sys.executable, "-c", "pass"],
+        now=iter(["2026-07-21T02:00:00Z", "2026-07-21T02:05:00Z"]).__next__,
+        sleep=noop_sleep,
+        config={"safety": {"allowed_tools": []}},
+    )
+
+    kinds = [e["kind"] for e in db.list_events(conn, job_id=job_id)]
+    assert kinds == ["dispatched", "done"]
 
 
 def test_run_job_copies_transcript_to_log_destination(tmp_path: Path) -> None:

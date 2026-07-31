@@ -49,7 +49,33 @@ DEFAULTS: dict[str, Any] = {
         "body": "Reply with the single word: ok",
     },
     "safety": {
-        "allowed_tools": ["Read", "Edit", "Write", "Grep", "Glob", "Bash"],
+        # design/09-findings.md, "Settled 2026-07-31": `--allowed-tools` was
+        # found by experiment to be an *additive* auto-approve list -- it does
+        # not remove or bound anything (`--disallowed-tools` is the flag that
+        # actually narrows the surface, and windowsill does not set it). So
+        # naming a tool here costs nothing in restriction, and *omitting* one
+        # an unattended orchestrator needs is a loaded gun: it does nothing
+        # today, but the day permission prompting actually engages (a
+        # `--permission-mode` change, a future CLI default, a sandboxed
+        # environment), every job missing it starts getting denied. `Task` is
+        # the one that matters most and is not obviously "a tool" to trim as
+        # unused -- it's how an orchestrator spawns the subagents this queue
+        # exists to run unattended (see: the run that wrote this comment).
+        # `TodoWrite`, `WebFetch`, `WebSearch`, `NotebookEdit` fill out the
+        # rest of what an unattended orchestrator routinely reaches for.
+        "allowed_tools": [
+            "Read",
+            "Edit",
+            "Write",
+            "Grep",
+            "Glob",
+            "Bash",
+            "Task",
+            "TodoWrite",
+            "WebFetch",
+            "WebSearch",
+            "NotebookEdit",
+        ],
         "default_isolate": "worktree",
         "allow_dirty": False,
     },

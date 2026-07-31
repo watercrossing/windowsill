@@ -19,6 +19,27 @@ crontab was updated in the same step:
 
 To roll back: `crontab ~/.windowsill/crontab.bak.20260731`.
 
+## §2 turned up a real finding: `--allowed-tools` does not restrict anything
+
+§3.3 assumed an `--allowed-tools` allowlist bounds a job's tool surface. It does not.
+Established by experiment here on 2026-07-31 against `claude` 2.1.218, with no ambient
+permission rules anywhere on this machine:
+
+- `claude -p "run bash echo ..." --allowed-tools Read` → **Bash ran anyway**, exit
+  success, `permission_denials: []`. It is an additive *auto-approve* list.
+- `claude -p "run bash echo ..." --disallowed-tools Bash` → Bash was **absent from the
+  session's tool set entirely**. That is the flag that actually bounds.
+
+So `safety.allowed_tools` is now implemented and no longer dead config, but it buys
+pre-approval, not a sandbox. `safety.disallowed_tools` would be the real lever and is
+deliberately **not** built — that is a decision for you, not something to land unattended
+overnight. The docs no longer claim the boundary exists.
+
+Related: the shipped default omitted `Task`. Harmless today precisely because the flag
+does not restrict, but it would have silently broken every subagent-spawning job the
+moment permission prompting engaged. Default widened, with a comment saying why `Task` is
+load-bearing.
+
 ## Note for later: the GitHub remote is still `watercrossing/ccq`
 
 `pyproject.toml`'s `Repository` URL points at `https://github.com/watercrossing/ccq`,

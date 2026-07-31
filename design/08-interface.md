@@ -61,7 +61,7 @@ model   = "claude-haiku-4-5"
 body    = "Reply with the single word: ok"
 
 [safety]
-allowed_tools   = ["Read", "Edit", "Write", "Grep", "Glob", "Bash"]
+allowed_tools   = ["Read", "Edit", "Write", "Grep", "Glob", "Bash", "Task", "TodoWrite", "WebFetch", "WebSearch", "NotebookEdit"]
 default_isolate = "worktree"
 allow_dirty     = false
 

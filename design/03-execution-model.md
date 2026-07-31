@@ -28,6 +28,7 @@ Runs are spawned detached (own process group, output to the job dir), tracked by
 cd <cwd> && claude -p \
   --output-format stream-json --verbose \
   [--resume <conversation_id>] \
+  [--allowed-tools <comma-separated tools>] \
   <pass-through directives...> \
   < body
 ```
@@ -53,7 +54,7 @@ The body goes on **stdin**, never argv. Bodies will exceed `ARG_MAX` and will co
 
 Unattended means no permission prompts, so blast radius must be bounded by construction:
 
-- Default to an explicit `--allowedTools` allowlist from config, **not** blanket permission bypass. A job wanting bypass must say so in its own header.
+- `safety.allowed_tools` (§8.3) is rendered as `claude`'s `--allowed-tools` flag in `runner.build_argv`: the configured list becomes one `--allowed-tools` argv token holding a comma-separated tool list (confirmed spelling and argument shape against the installed CLI, `claude --help`, v2.1.218 — the CLI also accepts `--allowedTools`, kept as an alias only). **This pre-approves; it is not a sandbox.** [§9](09-findings.md) "Settled 2026-07-31": `--allowed-tools` was found by experiment to be *additive* — a tool named in it skips its permission prompt, but a tool left out of it is not blocked, denied, or even absent from the model's tool set. `--disallowed-tools` is the flag that actually narrows what the model can call at all (confirmed by the same experiment: a `Bash`-disallowed run reported Bash not present in its tools), and it is **not implemented** — `windowsill` sets no `safety.disallowed_tools` and has no config key for one. So today, an unattended job's blast radius is bounded by whatever `claude`'s own permission defaults are for an unlisted tool, not by this config. An empty/unset `safety.allowed_tools` injects nothing (the same "no restriction, no auto-approval" state as before this feature existed). Injection is also skipped — silently but visibly, via a logged `allowed_tools_yielded` event — when the job's own pass-through directives already name a tool-permission flag of their own: `--allowed-tools`/`--allowedTools`, `--disallowed-tools`/`--disallowedTools`, `--permission-mode`, `--dangerously-skip-permissions`, `--allow-dangerously-skip-permissions`, or `--tools` (`runner.TOOL_PERMISSION_FLAGS`) — the job's own flag always wins.
 - `--isolate worktree` → `git worktree add ~/.windowsill/worktrees/<id>-<name> -b windowsill/<name>`, run there, leave the branch for morning review. Default for anything that writes code.
 - Refuse to dispatch into a dirty tree unless `--allow-dirty`.
 - Enforce `--timeout` with SIGTERM to the process group, then SIGKILL after 30s. Record the partial transcript.

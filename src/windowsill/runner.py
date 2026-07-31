@@ -119,11 +119,53 @@ def write_resume_sh(dir_: Path, *, cwd: str, claude_cmd: Sequence[str], conversa
 # ---------------------------------------------------------------------------
 
 
+#: Every ``claude`` flag (confirmed via ``claude --help``, v2.1.218) that
+#: names, restricts, or bypasses tool permissions. A job whose own
+#: pass-through directives (§2.2) name any of these has an opinion of its
+#: own about tool permissions, so §3.3's ``safety.allowed_tools`` default
+#: must yield to it rather than injecting an allowlist on top -- the job's
+#: own flag always wins; windowsill supplies a default, not a policy
+#: override (§0.4 "pass-through beats validation", extended to defaults).
+#:
+#: ``--allowed-tools``/``--allowedTools`` and ``--disallowed-tools``/
+#: ``--disallowedTools`` are the CLI's own two spellings for the same
+#: flags. ``--permission-mode`` and both `--dangerously-skip-permissions``
+#: and ``--allow-dangerously-skip-permissions`` bypass or reshape the
+#: permission system entirely, which would make an injected allowlist
+#: meaningless. ``--tools`` is a different mechanism (it restricts which
+#: tools *exist* at all, not which are pre-approved) but a job naming it
+#: has equally made its own decision about tool availability.
+TOOL_PERMISSION_FLAGS = frozenset(
+    {
+        "--allowed-tools",
+        "--allowedTools",
+        "--disallowed-tools",
+        "--disallowedTools",
+        "--permission-mode",
+        "--dangerously-skip-permissions",
+        "--allow-dangerously-skip-permissions",
+        "--tools",
+    }
+)
+
+
+def names_tool_permission_flag(passthrough: Sequence[str]) -> bool:
+    """Whether ``passthrough`` already names a flag in :data:`TOOL_PERMISSION_FLAGS`.
+
+    Recognises both ``--flag value`` and ``--flag=value`` forms. Used by
+    :func:`build_argv` to decide whether to yield, and by callers that need
+    to log the yield (§3.3's "silent-but-visible": no error, but the run's
+    event log makes clear windowsill did not inject).
+    """
+    return any(token.split("=", 1)[0] in TOOL_PERMISSION_FLAGS for token in passthrough)
+
+
 def build_argv(
     passthrough: Sequence[str],
     *,
     resume: str | None = None,
     claude_cmd: Sequence[str] = ("claude",),
+    allowed_tools: Sequence[str] = (),
 ) -> list[str]:
     """The argv for §3.2's invocation, minus ``cd <cwd> &&`` (that's the
     subprocess ``cwd=`` kwarg) and minus the body (goes on stdin, never
@@ -132,10 +174,26 @@ def build_argv(
     ``claude_cmd`` is the injectable command seam: production passes
     ``("claude",)``; tests substitute a fake executable/argv that writes a
     canned stream + result and exits.
+
+    ``allowed_tools`` is config's ``safety.allowed_tools`` default (§3.3,
+    design/08-interface.md §8.3), rendered as a single ``--allowed-tools``
+    argv token holding a comma-separated list (confirmed spelling and
+    argument shape: ``claude --help``, v2.1.218 -- "Comma or
+    space-separated list of tool names to allow"; the CLI also accepts
+    ``--allowedTools``, but this file otherwise uses kebab-case flags
+    throughout, so ``--allowed-tools`` is used here for consistency).
+    Empty/unset ``allowed_tools`` injects nothing -- the pre-existing
+    default behaviour, unchanged for any caller that doesn't pass it.
+    Injection is also skipped -- silently, from this function's point of
+    view -- when ``passthrough`` already names a tool-permission flag of
+    its own (:func:`names_tool_permission_flag`); ``run_job`` is
+    responsible for logging that yield (§3.3).
     """
     argv = list(claude_cmd) + ["-p", "--output-format", "stream-json", "--verbose"]
     if resume:
         argv += ["--resume", resume]
+    if allowed_tools and not names_tool_permission_flag(passthrough):
+        argv += ["--allowed-tools", ",".join(allowed_tools)]
     argv += list(passthrough)
     return argv
 
@@ -703,10 +761,24 @@ def run_job(
     dir_ = job_dir(root, job_id, job["name"])
     dir_.mkdir(parents=True, exist_ok=True)
 
-    argv = build_argv(job["passthrough"], resume=job.get("resume_id"), claude_cmd=claude_cmd)
+    # §3.3: safety.allowed_tools is a default, not a policy override -- a job
+    # naming its own tool-permission flag in its pass-through directives wins,
+    # and build_argv silently omits the injection in that case. Log the yield
+    # here (§3.3 "silent-but-visible") so the run's own record shows why no
+    # allowlist went in, using the same idiom as every other run event.
+    allowed_tools = list((config or {}).get("safety", {}).get("allowed_tools") or [])
+    argv = build_argv(job["passthrough"], resume=job.get("resume_id"), claude_cmd=claude_cmd, allowed_tools=allowed_tools)
     write_cmd_json(dir_, argv=argv, cwd=job["cwd"], env=env)
 
     started_at = now()
+    if allowed_tools and names_tool_permission_flag(job["passthrough"]):
+        db.log_event(
+            database,
+            ts=started_at,
+            job_id=job_id,
+            kind="allowed_tools_yielded",
+            detail="pass-through already names a tool-permission flag; safety.allowed_tools not injected",
+        )
 
     # §4.3: probe immediately before and after the run; the delta is what the
     # job cost in the only unit that binds. The "before" reading doubles as the

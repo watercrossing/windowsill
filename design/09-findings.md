@@ -39,6 +39,17 @@ Two jobs run overnight against the live queue by the repo owner, who had configu
 |---|---|---|
 | What does a shipped default recipient do? | **It gets mailed.** The `you@example.org` in [§8.3](08-interface.md)'s example was the effective default, `[notify].default` was `email`, and both runs mailed it. The postmaster refused it: *"an MX or SRV record indicated no SMTP service"* | Notifications are opt-in and no destination is ever defaulted or guessed ([§8.4](08-interface.md)). The same applies to `[notify.ntfy].topic`: a shipped topic is a *public* one |
 
+## Settled 2026-07-31
+
+`safety.allowed_tools` ([§3.3](03-execution-model.md), [§8.3](08-interface.md)) had just been wired up as `claude`'s `--allowed-tools` flag, on the plausible assumption that it bounds the tool surface. Two commands against `claude` 2.1.218, with no ambient permission rules anywhere (`~/.claude/settings.json` has no `permissions` key; no project `.claude/settings*.json` exists), say otherwise:
+
+| Question | Answer | Consequence |
+|---|---|---|
+| Does `claude -p "run bash echo ..." --allowed-tools Read` block Bash? | **No.** Bash ran anyway, `permission_denials: []`, exit success | `--allowed-tools` is an *additive* auto-approve list, not a boundary — [§3.3](03-execution-model.md)'s allowlist bullet was rewritten to stop implying otherwise |
+| Does `claude -p "run bash echo ..." --disallowed-tools Bash` block Bash? | **Yes.** The model reported Bash was not present in its tool set at all | `--disallowed-tools` is the flag that actually narrows the surface. Not implemented — `safety.allowed_tools` still names only an auto-approve list |
+
+Consequence for the default itself: because `--allowed-tools` never restricted anything, the pre-existing default list's omission of `Task` was harmless by accident, not by design — and it was a loaded gun for the day permission prompting actually engages (a `--permission-mode` change, a future CLI default, a sandboxed environment). Widened to add `Task`, `TodoWrite`, `WebFetch`, `WebSearch`, `NotebookEdit` ([§8.3](08-interface.md)).
+
 ## Still open
 
 - **Rate-limit signal shape:** exit code, a subtype in the JSON, or only a human string? Decides how brittle [§5.4](05-windows.md) is. Only learnable by hitting a real one — which M1 will do within a week of use.
