@@ -18,9 +18,14 @@ noise. A ``rate_limit_event`` renders **only** when it reports an actual
 limit: the informational one (``status: "allowed"``) fires on every run and
 is suppressed.
 
+A ``Task`` dispatch nests a whole subagent conversation into this same flat
+stream, tagging its events with a top-level ``parent_tool_use_id``. Everything
+that speaks *for the run* -- :func:`final_summary` above all -- has to filter
+those out (:func:`is_subagent`), and the Markdown marks them.
+
 Two pieces of that reading are shared rather than re-derived: :func:`final_summary`
-(the last assistant turn that said something -- the body of the completion email,
-§8.4) and :func:`result_parts` (the footer fields of the ``result`` event). Both
+(the last *orchestrator* turn that said something -- the body of the completion
+email, §8.4) and :func:`result_parts` (the footer fields of the ``result`` event). Both
 consume the same events the Markdown renderer does, so this module stays the only
 parser of the stream.
 
@@ -134,9 +139,26 @@ def _render_result(event: dict[str, Any]) -> list[str]:
     return ["---", "", " · ".join([f"**{icon} {subtype}**", *rest]), ""]
 
 
+def is_subagent(event: Mapping[str, Any]) -> bool:
+    """Whether a message event belongs to a nested subagent rather than to the
+    orchestrator.
+
+    A ``Task`` dispatch runs its subagent inside the same stream: the
+    subagent's own ``assistant``/``user`` events are emitted alongside the
+    orchestrator's, tagged at the *top level* of the envelope with
+    ``parent_tool_use_id`` -- the ``tool_use_id`` of the ``Task`` call that
+    dispatched them. The orchestrator's own turns carry the same key with a
+    ``null`` value, so "absent or null" is the test, not "absent".
+
+    Observed on real runs: of the 251 ``assistant`` events in job 16's stream,
+    205 were subagent turns.
+    """
+    return event.get("parent_tool_use_id") is not None
+
+
 def final_summary(events: Iterable[dict[str, Any]]) -> str:
-    """The run's closing prose: the text of the last assistant turn that said
-    anything (§8.4's email body).
+    """The run's closing prose: the text of the last *orchestrator* turn that
+    said anything (§8.4's email body).
 
     Turns carrying only ``tool_use`` blocks are skipped -- a run's literal last
     assistant message is often a lone ``Write``, and the message a reader wants
@@ -144,12 +166,22 @@ def final_summary(events: Iterable[dict[str, Any]]) -> str:
     reason. Returns ``""`` when the stream has no assistant prose at all (a run
     that died before its first turn, or one that only ever called tools).
 
+    Subagent turns are excluded (:func:`is_subagent`). A subagent narrates to
+    *its own* dispatcher, not to the reader of the email, and it finishes after
+    the orchestrator's closing message in every stream where the last `Task` is
+    still winding down -- so without the filter the mail body is whatever some
+    nested agent happened to say last. Real case: job 16's completion email
+    said "Now the mail tests." -- a subagent's aside -- in place of the
+    orchestrator's actual closing report.
+
     Reads the same events :func:`render_events` does, so there is exactly one
     parser of the stream in this codebase.
     """
     summary = ""
     for event in events:
         if not isinstance(event, dict) or event.get("type") != "assistant":
+            continue
+        if is_subagent(event):
             continue
         blocks = (event.get("message") or {}).get("content") or []
         text = "\n".join(block.get("text", "") for block in blocks if isinstance(block, dict) and block.get("type") == "text").strip()
@@ -176,7 +208,12 @@ def render_events(events: Iterable[dict[str, Any]], *, prompt: str | None = None
         if kind == "assistant":
             rendered = _render_assistant(event.get("message") or {})
             if rendered:
-                lines += ["## 🤖 Assistant", "", *rendered]
+                # A subagent's turns are interleaved with the orchestrator's in
+                # one flat stream, so an unmarked heading attributes a nested
+                # agent's prose to the run itself -- on a Task-heavy run that is
+                # most of the transcript (205 of job 16's 251 assistant turns).
+                heading = "## 🤖 Assistant — subagent" if is_subagent(event) else "## 🤖 Assistant"
+                lines += [heading, "", *rendered]
         elif kind == "user":
             lines += _render_tool_results(event.get("message") or {})
         elif kind == "rate_limit_event":

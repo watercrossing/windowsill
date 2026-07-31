@@ -205,6 +205,34 @@ def test_final_summary_joins_multiple_text_blocks_of_one_turn(tmp_path: Path) ->
     assert transcript.final_summary(transcript.iter_events(stream)) == "first half\nsecond half"
 
 
+def test_final_summary_ignores_subagent_turns() -> None:
+    """A Task dispatch runs its subagent in the same stream, tagged with
+    ``parent_tool_use_id``; its narration is addressed to the orchestrator, not
+    to the reader of the email. The fixture's literal last assistant turn is a
+    subagent's, so an unfiltered scan returns that instead of the run's own
+    closing report -- which is what job 16's completion email actually said.
+    """
+    events = list(transcript.iter_events(FIXTURES / "subagent_turns.jsonl"))
+    summary = transcript.final_summary(events)
+    assert summary == "The agent is running. Meanwhile I fixed the licence metadata and pushed 27baa1e."
+    assert "Now the mail tests." not in summary
+
+
+def test_is_subagent_treats_a_null_parent_tool_use_id_as_the_orchestrator() -> None:
+    """The orchestrator's own events carry the key with a ``null`` value, not
+    no key at all -- so "absent or null" is the test."""
+    assert not transcript.is_subagent({"type": "assistant", "parent_tool_use_id": None})
+    assert not transcript.is_subagent({"type": "assistant"})
+    assert transcript.is_subagent({"type": "assistant", "parent_tool_use_id": "toolu_TASK1"})
+
+
+def test_subagent_turns_are_marked_in_the_transcript() -> None:
+    out = transcript.render_stream(FIXTURES / "subagent_turns.jsonl")
+    assert "## 🤖 Assistant — subagent" in out
+    # the orchestrator's own turns keep the plain heading
+    assert "## 🤖 Assistant\n" in out
+
+
 def test_result_parts_are_the_footers_fields_in_print_order() -> None:
     events = list(transcript.iter_events(FIXTURES / "basic.jsonl"))
     result = next(event for event in events if event["type"] == "result")
