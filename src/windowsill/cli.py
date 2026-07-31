@@ -28,6 +28,22 @@ and ``sub -e`` are M3 and are intentionally absent.
 Every timestamp this module prints goes through :func:`_local` (§8.1):
 stored UTC, displayed as bare system local time, with ``--with-timezone``
 as the opt-in for the offset-bearing form.
+
+This module is imported on *every* ``windowsill`` invocation -- and will soon
+be imported on every TAB press too, once Click shell completion ships (it
+re-invokes the program per keystroke to list completions). ``sqlite_utils``
+and the sibling ``windowsill`` modules above are not free to import
+(``sqlite_utils`` alone costs tens of ms; ``windowsill.runner`` and
+``windowsill.scheduler`` each transitively pull in ``windowsill.notify``'s
+``urllib.request`` and ``windowsill.usage``'s ``zoneinfo``), so none of them
+are imported here at module scope. Instead, every command (and helper)
+imports exactly what it needs at the top of its own body -- a plain
+``from windowsill import db`` costs nothing once something else has already
+imported it, so the repetition below is not wasted work. The three
+production defaults that used to be bound directly (``_spawn_run``,
+``_run_job``, ``_probe``) are ``None`` sentinels for the same reason; the
+``_resolve_*`` functions next to them are where the deferred import and the
+"nothing monkeypatched it" fallback both happen.
 """
 
 from __future__ import annotations
@@ -39,12 +55,18 @@ from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from functools import partial
 from pathlib import Path
-from typing import Iterator, Mapping
+from typing import TYPE_CHECKING, Iterator, Mapping
 
 import click
-import sqlite_utils
 
-from windowsill import config, db, jobfile, notify, runner, scheduler, window
+if TYPE_CHECKING:
+    # Only used in type annotations, which `from __future__ import
+    # annotations` above turns into unevaluated strings -- a real import
+    # here would undo the whole point of deferring everything else (see
+    # module docstring).
+    import sqlite_utils
+
+    from windowsill import config
 
 # ---------------------------------------------------------------------------
 # injectable seams -- see module docstring. Production defaults here;
@@ -88,19 +110,50 @@ def _default_exec(argv: list[str], cwd: str) -> None:
 _exec = _default_exec
 
 #: Production ``spawn_run`` handed to :func:`windowsill.scheduler.tick` -- Popens
-#: ``windowsill run <id>`` detached. Tests replace this wholesale with a spy so
-#: no real process is ever spawned.
-_spawn_run = scheduler._default_spawn_run
+#: ``windowsill run <id>`` detached. ``None`` means "nothing has monkeypatched this
+#: yet"; binding ``scheduler._default_spawn_run`` here directly (as before)
+#: would force importing :mod:`windowsill.scheduler` at module load (see
+#: module docstring). ``_resolve_spawn_run`` below does the deferred import
+#: and picks the real default when this is still ``None``. Tests replace
+#: ``_spawn_run`` wholesale with a spy so no real process is ever spawned.
+_spawn_run = None
+
+
+def _resolve_spawn_run():
+    if _spawn_run is not None:
+        return _spawn_run
+    from windowsill import scheduler  # deferred: see module docstring
+
+    return scheduler._default_spawn_run
+
 
 #: The per-job run entrypoint ``windowsill run`` drives (:func:`windowsill.runner.run_job`).
-#: Same module-attribute seam style as ``_spawn_run``/``_exec``: tests
-#: monkeypatch it so a fake ``claude`` (via ``_claude_cmd``) is spawned
-#: instead of the real binary, and no chained ``windowsill tick`` is ever Popened.
-_run_job = runner.run_job
+#: Same ``None``-sentinel seam style as ``_spawn_run``: tests monkeypatch it
+#: so a fake ``claude`` (via ``_claude_cmd``) is spawned instead of the real
+#: binary, and no chained ``windowsill tick`` is ever Popened.
+_run_job = None
 
-#: The ``/usage`` oracle handed to :func:`windowsill.scheduler.tick` (§4). Same seam
-#: style again: tests replace it so no real ``claude`` is ever probed.
-_probe = runner._default_probe
+
+def _resolve_run_job():
+    if _run_job is not None:
+        return _run_job
+    from windowsill import runner  # deferred: see module docstring
+
+    return runner.run_job
+
+
+#: The ``/usage`` oracle handed to :func:`windowsill.scheduler.tick` (§4) and read
+#: directly by ``windowsill usage --probe``. Same ``None``-sentinel seam style
+#: again: tests replace it so no real ``claude`` is ever probed.
+_probe = None
+
+
+def _resolve_probe():
+    if _probe is not None:
+        return _probe
+    from windowsill import runner  # deferred: see module docstring
+
+    return runner._default_probe
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +198,8 @@ def _session(home: Path | None) -> Iterator[tuple[sqlite_utils.Database, config.
     ``None`` means the real ``Path.home()``, mirroring how
     :mod:`windowsill.config` / :mod:`windowsill.db` resolve it themselves.
     """
+    from windowsill import config, db  # deferred: see module docstring
+
     root = config.state_dir(home)
     root.mkdir(parents=True, exist_ok=True)
     (root / "logs").mkdir(exist_ok=True)  # cron redirects tick output here (README)
@@ -157,6 +212,8 @@ def _session(home: Path | None) -> Iterator[tuple[sqlite_utils.Database, config.
 
 
 def _resolve(database: sqlite_utils.Database, identifier: str) -> int:
+    from windowsill import db  # deferred: see module docstring
+
     try:
         return db.resolve_identifier(database, identifier)
     except db.IdentifierError as exc:
@@ -247,6 +304,8 @@ def _notify_display(value: str | None, cfg: Mapping[str, object]) -> str:
     prints the channel and stops reads as if it were. Resolve it here instead:
     either the address/topic, or the fact that there isn't one.
     """
+    from windowsill import notify  # deferred: see module docstring
+
     channel, override = notify.split_channel(value)
     if channel == "none":
         return "none"
@@ -337,6 +396,8 @@ def main(ctx: click.Context, home: Path | None) -> None:
 @click.pass_context
 def sub(ctx: click.Context, file, run_now: bool, home: Path | None) -> None:
     """Submit a job file. ``-`` reads stdin. Prints the new job id."""
+    from windowsill import db, jobfile, runner  # deferred: see module docstring
+
     with _session(_home(ctx, home)) as (database, cfg, root):
         text = file.read()
         jf = jobfile.parse_jobfile(text)
@@ -406,6 +467,8 @@ def sub(ctx: click.Context, file, run_now: bool, home: Path | None) -> None:
 @click.pass_context
 def stat(ctx: click.Context, show_all: bool, with_timezone: bool, home: Path | None) -> None:
     """id, name, state, model, when, cwd, elapsed. Plus window state and 30d count."""
+    from windowsill import db  # deferred: see module docstring
+
     with _session(_home(ctx, home)) as (database, _cfg, _root):
         now_str = _iso_now()
         jobs = db.list_jobs(database)
@@ -448,6 +511,8 @@ PROBE_MIN_INTERVAL_SECONDS = 10
 @click.pass_context
 def usage_(ctx: click.Context, force_probe: bool, with_timezone: bool) -> None:
     """Cached window state. ``--probe`` forces a fresh read."""
+    from windowsill import db  # deferred: see module docstring
+
     with _session(_home(ctx)) as (database, cfg, _root):
         now_str = _iso_now()
         window_row = db.current_window(database, now_str)
@@ -457,7 +522,9 @@ def usage_(ctx: click.Context, force_probe: bool, with_timezone: bool) -> None:
             last = (window_row or {}).get("probed_at")
             if last and (_parse_iso(now_str) - _parse_iso(last)).total_seconds() < PROBE_MIN_INTERVAL_SECONDS:
                 raise click.ClickException(f"probed less than {PROBE_MIN_INTERVAL_SECONDS}s ago; showing cache is `windowsill usage`")
-            parsed = _probe()
+            from windowsill import window  # deferred: only needed when actually probing
+
+            parsed = _resolve_probe()()
             window.record_probe(database, parsed, now_str=now_str)
             window_row = db.current_window(database, now_str)
 
@@ -489,6 +556,8 @@ def usage_(ctx: click.Context, force_probe: bool, with_timezone: bool) -> None:
 
 def _since_cutoff(now_str: str, since: str) -> str:
     """``--since 24h`` as an absolute timestamp comparable with the DB's."""
+    from windowsill import runner  # deferred: see module docstring
+
     seconds = runner.parse_timeout_seconds(since)
     if seconds is None:
         raise click.ClickException(f"unparseable --since: {since!r}")
@@ -497,6 +566,8 @@ def _since_cutoff(now_str: str, since: str) -> str:
 
 def _delta_pct(database: sqlite_utils.Database, job_id: int) -> int | None:
     """Δ window % of a job's last run (§4.3), when both probes landed."""
+    from windowsill import db  # deferred: see module docstring
+
     runs = db.list_runs(database, job_id=job_id)
     if not runs:
         return None
@@ -511,6 +582,8 @@ def _permission_denials(database: sqlite_utils.Database, job_id: int) -> int | N
     run yet / the run predates this column (§9 "Settled 2026-07-28, second
     sitting"): a run can read ``done`` having written nothing because every
     write was refused, and nothing else in the output flags that."""
+    from windowsill import db  # deferred: see module docstring
+
     runs = db.list_runs(database, job_id=job_id)
     if not runs:
         return None
@@ -523,6 +596,8 @@ def _permission_denials(database: sqlite_utils.Database, job_id: int) -> int | N
 @click.pass_context
 def report(ctx: click.Context, since: str, with_timezone: bool) -> None:
     """Digest: what ran, delta%, duration, state -- one line each."""
+    from windowsill import db  # deferred: see module docstring
+
     with _session(_home(ctx)) as (database, _cfg, _root):
         now_str = _iso_now()
         cutoff = _since_cutoff(now_str, since)
@@ -567,10 +642,18 @@ def report(ctx: click.Context, since: str, with_timezone: bool) -> None:
 @click.pass_context
 def show(ctx: click.Context, identifier: str) -> None:
     """Directives, resolved argv, state, conversation id, delta%, transcript tail."""
+    from windowsill import db, runner  # deferred: see module docstring
+
     with _session(_home(ctx)) as (database, cfg, root):
         job_id = _resolve(database, identifier)
         job = db.get_job(database, job_id)
-        argv = runner.build_argv(job["passthrough"], resume=job.get("resume_id"))
+        # §3.3: reflect the same allowed_tools default/yield behaviour run_job
+        # actually applies, so "resolved argv" here matches what would dispatch.
+        argv = runner.build_argv(
+            job["passthrough"],
+            resume=job.get("resume_id"),
+            allowed_tools=cfg["safety"]["allowed_tools"],
+        )
 
         runs = db.list_runs(database, job_id=job_id)
         last_run = runs[-1] if runs else None
@@ -626,6 +709,8 @@ def show(ctx: click.Context, identifier: str) -> None:
 @click.pass_context
 def log(ctx: click.Context, identifier: str, follow: bool) -> None:
     """Stream the transcript; -f follows a running job."""
+    from windowsill import db, runner  # deferred: see module docstring
+
     with _session(_home(ctx)) as (database, _cfg, root):
         job_id = _resolve(database, identifier)
         job = db.get_job(database, job_id)
@@ -665,6 +750,8 @@ def log(ctx: click.Context, identifier: str, follow: bool) -> None:
 @click.pass_context
 def del_(ctx: click.Context, identifier: str, home: Path | None) -> None:
     """Cancel; SIGTERM the process group if running."""
+    from windowsill import db  # deferred: see module docstring
+
     with _session(_home(ctx, home)) as (database, _cfg, _root):
         job_id = _resolve(database, identifier)
         job = db.get_job(database, job_id)
@@ -692,6 +779,8 @@ def del_(ctx: click.Context, identifier: str, home: Path | None) -> None:
 @click.pass_context
 def hold(ctx: click.Context, identifier: str) -> None:
     """Hold a queued/ready job; needs ``windowsill release``."""
+    from windowsill import db  # deferred: see module docstring
+
     with _session(_home(ctx)) as (database, _cfg, _root):
         job_id = _resolve(database, identifier)
         job = db.get_job(database, job_id)
@@ -713,6 +802,8 @@ def hold(ctx: click.Context, identifier: str) -> None:
 @click.pass_context
 def release(ctx: click.Context, identifier: str) -> None:
     """Release a held job back to ``queued``."""
+    from windowsill import db  # deferred: see module docstring
+
     with _session(_home(ctx)) as (database, _cfg, _root):
         job_id = _resolve(database, identifier)
         job = db.get_job(database, job_id)
@@ -737,6 +828,8 @@ def release(ctx: click.Context, identifier: str) -> None:
 @click.pass_context
 def resume(ctx: click.Context, identifier: str, home: Path | None) -> None:
     """exec into ``claude --resume <conversation_id>`` in the job's cwd."""
+    from windowsill import db  # deferred: see module docstring
+
     with _session(_home(ctx, home)) as (database, _cfg, _root):
         job_id = _resolve(database, identifier)
         job = db.get_job(database, job_id)
@@ -759,10 +852,12 @@ def resume(ctx: click.Context, identifier: str, home: Path | None) -> None:
 @click.pass_context
 def run_(ctx: click.Context, job_id: int) -> None:
     """Internal; execute one dispatched job to completion (spawned by tick)."""
+    from windowsill import db, scheduler  # deferred: see module docstring
+
     with _session(_home(ctx)) as (database, cfg, root):
         if db.get_job(database, job_id) is None:
             raise click.ClickException(f"no job with id {job_id}")
-        _run_job(
+        _resolve_run_job()(
             database,
             job_id,
             root=root,
@@ -782,6 +877,8 @@ def run_(ctx: click.Context, job_id: int) -> None:
 @click.pass_context
 def tick(ctx: click.Context, quiet: bool) -> None:
     """Internal; run one scheduler pass -- promote due jobs and dispatch ready ones (used by cron and the run chain)."""
+    from windowsill import scheduler  # deferred: see module docstring
+
     home = _home(ctx)
     with _session(home) as (database, cfg, root):
         # Bind --home into the dispatch: the detached `windowsill run` must come back
@@ -791,8 +888,8 @@ def tick(ctx: click.Context, quiet: bool) -> None:
             root=root,
             config=cfg,
             now=_iso_now,
-            spawn_run=partial(_spawn_run, home=home),
-            probe=_probe,
+            spawn_run=partial(_resolve_spawn_run(), home=home),
+            probe=_resolve_probe(),
         )
         # §5.3's ceiling warning survives -q on purpose: "warn loudly" is the
         # whole point, and under cron stdout is the only thing that reaches you.

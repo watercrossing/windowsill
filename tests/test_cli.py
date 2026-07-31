@@ -6,6 +6,12 @@ clock, and spawn NO real subprocess: every command is driven through
 handful of side-effecting seams cli.py exposes as private module
 attributes (`_iso_now`, `_sleep`, `_terminate`, `_exec`, `_spawn_run`) are
 monkeypatched exactly like the sibling modules' injectable keywords.
+
+`_spawn_run`, `_run_job`, and `_probe` default to `None` rather than the
+real function directly (see cli.py's module docstring on deferred imports);
+`cli._resolve_spawn_run()` / `_resolve_run_job()` / `_resolve_probe()` are
+what a command actually calls, and what falls back to the real default when
+nothing has monkeypatched the attribute.
 """
 
 from __future__ import annotations
@@ -870,20 +876,27 @@ def test_tick_prints_ceiling_warnings_even_when_quiet(tmp_path: Path, runner: Cl
 
 
 def test_tick_default_probe_is_the_usage_oracle(tmp_path: Path) -> None:
-    # The indirection, not usage.probe itself: bound as a default it would be
-    # frozen at import and the suite's no-real-claude guard would miss it.
-    assert cli._probe is runner_mod._default_probe
-    # ...and it defers to usage.probe at call time, which is what makes the
-    # guard (and any monkeypatch) effective.
+    # cli._probe is a lazy sentinel (None) rather than runner._default_probe
+    # bound directly -- binding it at module scope would force `import
+    # windowsill.cli` to import windowsill.runner (and everything it drags
+    # in) just to answer `--help` (see cli.py's module docstring).
+    assert cli._probe is None
+    # cli._resolve_probe() is where the deferred import happens; unpatched,
+    # it must still resolve to the real production default.
+    assert cli._resolve_probe() is runner_mod._default_probe
+    # ...and that defers to usage.probe at call time, which is what makes the
+    # suite's no-real-claude guard (and any monkeypatch) effective.
     assert runner_mod._default_probe() is usage.probe()
 
 
 def test_tick_default_spawn_run_is_schedulers_default(tmp_path: Path) -> None:
-    # Guards the seam wiring itself: cli._spawn_run must be the same
-    # production default scheduler.tick would otherwise fall back to, so
-    # `windowsill tick` really does chain-dispatch `windowsill run <id>` when nothing
-    # has monkeypatched it away.
-    assert cli._spawn_run is scheduler._default_spawn_run
+    # Same lazy-sentinel pattern as `_probe` above.
+    assert cli._spawn_run is None
+    # Guards the seam wiring itself: cli._resolve_spawn_run() must resolve to
+    # the same production default scheduler.tick would otherwise fall back
+    # to, so `windowsill tick` really does chain-dispatch `windowsill run <id>`
+    # when nothing has monkeypatched it away.
+    assert cli._resolve_spawn_run() is scheduler._default_spawn_run
 
 
 # ---------------------------------------------------------------------------
@@ -975,9 +988,12 @@ def test_run_unknown_id_errors(tmp_path: Path, runner: CliRunner) -> None:
 
 
 def test_run_default_seam_is_runners_run_job(tmp_path: Path) -> None:
-    # Guards the seam wiring: cli._run_job must be runner.run_job so an
+    # Same lazy-sentinel pattern as `_probe`/`_spawn_run` (see cli.py's
+    # module docstring): cli._run_job is None until something monkeypatches
+    # it, and cli._resolve_run_job() must resolve to runner.run_job so an
     # un-monkeypatched `windowsill run` really executes the job via the runner.
-    assert cli._run_job is runner_mod.run_job
+    assert cli._run_job is None
+    assert cli._resolve_run_job() is runner_mod.run_job
 
 
 # ---------------------------------------------------------------------------
