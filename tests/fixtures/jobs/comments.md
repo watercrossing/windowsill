@@ -1,4 +1,4 @@
-#!/usr/bin/env ccq
+#!/usr/bin/env windowsill
 # This whole job file is a scratch test for comment handling.
 #$ --name comment-test
 #$ #this is a #$-style comment and must be ignored

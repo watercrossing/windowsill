@@ -166,26 +166,13 @@ def test_default_db_path_on_a_fresh_home(tmp_path: Path) -> None:
     assert db.default_db_path(tmp_path) == tmp_path / ".windowsill" / "windowsill.db"
 
 
-def test_default_db_path_keeps_ccq_db_in_a_pre_rename_home(tmp_path: Path) -> None:
-    """The pre-rename directory holds ccq.db, and that is the queue.
-
-    Resolving to a windowsill.db beside it would open an empty database and
-    quietly drop every queued job on the floor.
-    """
+def test_default_db_path_ignores_a_stray_legacy_dot_ccq(tmp_path: Path) -> None:
+    """A leftover pre-rename ``~/.ccq`` is not consulted -- there is no
+    migration, and a fresh ``.windowsill/windowsill.db`` is always used."""
     legacy = tmp_path / ".ccq"
     legacy.mkdir()
 
-    assert db.default_db_path(tmp_path) == legacy / "ccq.db"
-
-
-def test_connect_on_a_pre_rename_home_finds_the_existing_jobs(tmp_path: Path) -> None:
-    legacy = tmp_path / ".ccq"
-    legacy.mkdir()
-    job_id = insert_bare_job(db.connect(legacy / "ccq.db"), name="from-before-the-rename", state="queued")
-
-    conn = db.connect(home=tmp_path)
-
-    assert db.get_job(conn, job_id)["name"] == "from-before-the-rename"
+    assert db.default_db_path(tmp_path) == tmp_path / ".windowsill" / "windowsill.db"
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +311,7 @@ def test_insert_and_get_job_round_trips_json_fields(tmp_path: Path) -> None:
         state="queued",
         submitted_at="2026-07-18T00:00:00Z",
         cwd="/home/user/code/myapp",
-        body="#!/usr/bin/env ccq\ndo the refactor",
+        body="#!/usr/bin/env windowsill\ndo the refactor",
         passthrough=["--model", "claude-opus-4-8", "--max-turns", "60"],
         hold_jid=["17", "audit-auth"],
     )

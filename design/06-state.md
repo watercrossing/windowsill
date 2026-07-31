@@ -1,6 +1,6 @@
 # 6. State: SQLite
 
-One DB at `~/.ccq/ccq.db` via `sqlite-utils`. It is also the lock — `BEGIN IMMEDIATE` is the dispatch lock, and state is crash-safe for free. Enable WAL.
+One DB at `~/.windowsill/windowsill.db` via `sqlite-utils`. It is also the lock — `BEGIN IMMEDIATE` is the dispatch lock, and state is crash-safe for free. Enable WAL.
 
 ```sql
 CREATE TABLE jobs (
@@ -58,7 +58,7 @@ CREATE TABLE sched (                  -- single row, id=1
   blocked_reason TEXT
 );
 
-CREATE TABLE events (                 -- audit trail; feeds ccq report
+CREATE TABLE events (                 -- audit trail; feeds windowsill report
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts TEXT NOT NULL, job_id INTEGER, kind TEXT NOT NULL, detail TEXT
 );
@@ -70,7 +70,7 @@ Current window = latest `window` row where `reset_at > now`. No row, or expired 
 
 Three namespaces; do not add a fourth.
 
-- **`id`** — monotonic integer, never reused (even after `gc`). This is what you type: `ccq del 42`. SGE muscle memory is the point.
+- **`id`** — monotonic integer, never reused (even after `gc`). This is what you type: `windowsill del 42`. SGE muscle memory is the point.
 - **`name`** — deliberately *not* globally unique. Resubmit `nightly-lint` nightly and 42, 57, 88 all carry it. Unique only among non-terminal jobs, which is what makes `--hold-jid` and `--resume-from` resolvable.
 - **`conversation_id`** — a UUID, but not ours. Claude emits it; it is opaque; it is the only identifier in the system we never invent.
 
@@ -81,9 +81,9 @@ Resolution for `--hold-jid` / `--resume-from`: parses as `int` ⇒ id lookup; ot
 Artifacts on disk, state in SQLite.
 
 ```
-~/.ccq/
+~/.windowsill/
   config.toml
-  ccq.db
+  windowsill.db
   jobs/00042-refactor-auth/
     job.md          # verbatim submission
     cmd.json        # resolved argv + env + cwd, for reproducibility
@@ -92,10 +92,10 @@ Artifacts on disk, state in SQLite.
     transcript.md   # rendered, human-readable
     resume.sh       # cd <cwd> && claude --resume <id>
   worktrees/00042-refactor-auth/
-  logs/ccq.log      # the scheduler's own log, never the jobs'
+  logs/windowsill.log      # the scheduler's own log, never the jobs'
 ```
 
 Zero-padded `<id>-<name>` so `ls` sorts.
 
 The job dir is always written, whatever else is configured.
-`--log` ([§2.3](02-job-file.md)) adds a *second* destination for `transcript.md` — it never moves the canonical one, because everything else here (`ccq show`, `ccq log`, `ccq gc`) addresses artifacts by job dir.
+`--log` ([§2.3](02-job-file.md)) adds a *second* destination for `transcript.md` — it never moves the canonical one, because everything else here (`windowsill show`, `windowsill log`, `windowsill gc`) addresses artifacts by job dir.

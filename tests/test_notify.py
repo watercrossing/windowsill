@@ -21,7 +21,7 @@ from windowsill.config import DEFAULTS
 CONFIG: dict[str, Any] = {
     "notify": {
         "default": "email",
-        "ntfy": {"url": "https://ntfy.sh", "topic": "ccq-nightly"},
+        "ntfy": {"url": "https://ntfy.sh", "topic": "windowsill-nightly"},
         "email": {"to": "you@real.example", "from": "noreply@real.example", "sendmail": "/usr/sbin/sendmail"},
     }
 }
@@ -65,7 +65,7 @@ def test_compose_title_is_name_and_state() -> None:
 
 def test_compose_body_has_resume_command_and_delta() -> None:
     _, body = notify.compose(job_id=42, name="refactor-auth", state="done", summary="green", delta_pct=12)
-    assert "ccq resume 42" in body
+    assert "windowsill resume 42" in body
     assert "12%" in body
     assert "green" in body
 
@@ -73,7 +73,7 @@ def test_compose_body_has_resume_command_and_delta() -> None:
 def test_compose_body_omits_delta_when_absent() -> None:
     _, body = notify.compose(job_id=7, name="j", state="failed", delta_pct=None)
     assert "Δ" not in body
-    assert "ccq resume 7" in body
+    assert "windowsill resume 7" in body
 
 
 def test_compose_body_flags_nonzero_permission_denials() -> None:
@@ -136,7 +136,7 @@ def test_ntfy_posts_to_url_slash_topic_with_title_header() -> None:
     result = notify.notify("ntfy", "the title", "the body", config=CONFIG, http_post=post, run_sendmail=SendmailSpy())
     assert result.ok is True
     endpoint, data, headers = post.calls[0]
-    assert endpoint == "https://ntfy.sh/ccq-nightly"
+    assert endpoint == "https://ntfy.sh/windowsill-nightly"
     assert data == b"the body"
     assert headers.get("Title") == "the title"
 

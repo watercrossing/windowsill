@@ -109,13 +109,13 @@ def test_partial_nested_override_preserves_sibling_defaults(tmp_path: Path) -> N
     config_file.write_text(
         """
         [notify.ntfy]
-        topic = "my-ccq-topic"
+        topic = "my-windowsill-topic"
         """
     )
 
     cfg = load_config(config_file)
 
-    assert cfg["notify"]["ntfy"]["topic"] == "my-ccq-topic"
+    assert cfg["notify"]["ntfy"]["topic"] == "my-windowsill-topic"
     # sibling default inside the same nested table survives
     assert cfg["notify"]["ntfy"]["url"] == "https://ntfy.sh"
     # unrelated notify keys survive
@@ -194,7 +194,7 @@ default = "email"
 
 [notify.ntfy]
 url   = "https://ntfy.sh"
-topic = "ccq-nightly"
+topic = "windowsill-nightly"
 
 [notify.email]
 to       = "you@your-real-domain"
@@ -237,7 +237,7 @@ def test_full_example_config_round_trips(tmp_path: Path) -> None:
     }
     assert cfg["notify"] == {
         "default": "email",
-        "ntfy": {"url": "https://ntfy.sh", "topic": "ccq-nightly"},
+        "ntfy": {"url": "https://ntfy.sh", "topic": "windowsill-nightly"},
         "email": {
             "to": "you@your-real-domain",
             "from": "noreply@your-real-domain",
@@ -252,9 +252,9 @@ def test_full_example_config_round_trips(tmp_path: Path) -> None:
 
 
 def test_home_override_resolves_to_dot_windowsill_config_toml(tmp_path: Path) -> None:
-    ccq_dir = tmp_path / ".windowsill"
-    ccq_dir.mkdir()
-    (ccq_dir / "config.toml").write_text(
+    state_dir_path = tmp_path / ".windowsill"
+    state_dir_path.mkdir()
+    (state_dir_path / "config.toml").write_text(
         """
         [queue]
         max_parallel = 7
@@ -264,7 +264,7 @@ def test_home_override_resolves_to_dot_windowsill_config_toml(tmp_path: Path) ->
     cfg = load_config(home=tmp_path)
 
     assert cfg["queue"]["max_parallel"] == 7
-    assert cfg.path == ccq_dir / "config.toml"
+    assert cfg.path == state_dir_path / "config.toml"
 
 
 def test_home_override_with_missing_file_gives_defaults(tmp_path: Path) -> None:
@@ -274,7 +274,7 @@ def test_home_override_with_missing_file_gives_defaults(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# state_dir — the rename must not strand a pre-rename ~/.ccq
+# state_dir — always ~/.windowsill; a legacy ~/.ccq is not consulted
 # ---------------------------------------------------------------------------
 
 
@@ -282,18 +282,10 @@ def test_state_dir_is_dot_windowsill_on_a_fresh_home(tmp_path: Path) -> None:
     assert state_dir(tmp_path) == tmp_path / ".windowsill"
 
 
-def test_state_dir_falls_back_to_a_pre_rename_dot_ccq(tmp_path: Path) -> None:
-    # The queue, the ledger, and any in-flight job dirs live in here.
+def test_state_dir_ignores_a_stray_legacy_dot_ccq(tmp_path: Path) -> None:
+    # An install left over from before the rename must not be silently
+    # picked up — no migration, no warning, just a fresh .windowsill.
     (tmp_path / ".ccq").mkdir()
-
-    assert state_dir(tmp_path) == tmp_path / ".ccq"
-
-
-def test_state_dir_prefers_dot_windowsill_when_both_exist(tmp_path: Path) -> None:
-    # Once the user has moved (or started) a .windowsill, the old directory
-    # stops being consulted — otherwise the fallback would be permanent.
-    (tmp_path / ".ccq").mkdir()
-    (tmp_path / ".windowsill").mkdir()
 
     assert state_dir(tmp_path) == tmp_path / ".windowsill"
 

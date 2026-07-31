@@ -1,4 +1,4 @@
-#!/usr/bin/env ccq
+#!/usr/bin/env windowsill
 #$ --name continuation-test
 #$ --at tomorrow \
      02:00

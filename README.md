@@ -28,8 +28,8 @@ uv tool install windowsill
 ```
 
 That puts five commands on your PATH: the four short verbs `ccsub`, `ccstat`, `ccdel`, `ccresume`,
-and `ccq`, the dispatcher that carries all of them plus the rest — `ccq show`, `ccq report`, `ccq tick`.
-`ccq --help` is the one place that lists everything.
+and `windowsill`, the dispatcher that carries all of them plus the rest — `windowsill show`, `windowsill report`, `windowsill tick`.
+`windowsill --help` is the one place that lists everything.
 
 From a checkout of this repo, run it straight from the project environment instead:
 
@@ -43,14 +43,6 @@ so your source edits take effect immediately — prefer it while working in the 
 environment each time and runs that snapshot rather than your live source:
 handy for a one-off try, redundant once the code is already local.
 
-### Upgrading from `ccq`
-
-The package used to be called `ccq`. If you have a `~/.ccq` from before the rename,
-windowsill keeps using it — queue, ledger, job dirs, and `ccq.db` filename included —
-so an upgrade strands nothing and cron keeps working untouched.
-New installs get `~/.windowsill`. To move an existing one, stop the queue, `mv ~/.ccq ~/.windowsill`,
-and rename `ccq.db` inside it to `windowsill.db`; the old directory is ignored as soon as the new one exists.
-
 ## Running on a schedule (cron)
 
 windowsill dispatches jobs two ways (see [`design/03-execution-model.md`](design/03-execution-model.md)).
@@ -62,20 +54,20 @@ Add one line to your crontab (`crontab -e`):
 
 ```cron
 PATH=/home/you/.local/bin:/usr/bin:/bin
-*/15 * * * * ccq tick -q
+*/15 * * * * windowsill tick -q
 ```
 
 - **`-q`** suppresses `tick`'s one-line summary, so cron has no output to mail you every 15 minutes.
 - **`PATH`** matters because cron runs with a nearly empty environment.
-  Both `ccq` *and* `claude` have to be findable on it — a tick with a due job spawns `ccq run`, which spawns `claude`.
-  `uv tool install windowsill` puts `ccq` in `~/.local/bin`, where `claude` usually already lives; confirm with `command -v ccq claude` and set the `PATH=` line to match.
-  (If you run from a checkout instead of installing, use `uv run --project /path/to/windowsill ccq tick -q` and make sure `uv` is on that `PATH` too.)
+  Both `windowsill` *and* `claude` have to be findable on it — a tick with a due job spawns `windowsill run`, which spawns `claude`.
+  `uv tool install windowsill` puts `windowsill` in `~/.local/bin`, where `claude` usually already lives; confirm with `command -v windowsill claude` and set the `PATH=` line to match.
+  (If you run from a checkout instead of installing, use `uv run --project /path/to/windowsill windowsill tick -q` and make sure `uv` is on that `PATH` too.)
 - **`HOME`** is set by cron automatically, which is all `claude` needs to find its credentials — a non-interactive job with no TTY authenticates fine (verified in [`design/09-findings.md`](design/09-findings.md)).
 
 To keep a heartbeat and capture any errors, redirect to a log instead:
 
 ```cron
-*/15 * * * * ccq tick >> "$HOME/.windowsill/logs/tick.log" 2>&1
+*/15 * * * * windowsill tick >> "$HOME/.windowsill/logs/tick.log" 2>&1
 ```
 
 Drop the `-q` when you redirect — the summary line becomes a useful "it's alive" trace in the log rather than mail in your inbox.
@@ -142,7 +134,7 @@ This means a new `claude` flag works the day it ships, with no change here — a
 | `--isolate <mode>` | config | `none` \| `worktree` |
 | `--allow-dirty` | false | Permit running against a dirty tree |
 | `--notify <channel>[:<dest>]` | config (`none`) | `none` \| `ntfy` \| `email`. May carry this job's own recipient or topic: `email:me@example.com` |
-| `--hold` | false | Submit `held`; needs `ccq release` |
+| `--hold` | false | Submit `held`; needs `windowsill release` |
 | `--timeout <dur>` | `4h` | Wall-clock kill |
 | `--no-resume-on-limit` | false | On rate-limit requeue, restart from the original body instead of resuming |
 
@@ -162,22 +154,22 @@ Three commands you'll use constantly, each its own executable, after Grid Engine
 - **`ccresume <id>`** — the morning-after command.
   `exec`s into `claude --resume <conversation_id>` in the job's working directory, so you drop straight back into last night's conversation.
 
-Working today (milestones M1 and M2). Every row is also reachable as a subcommand of `ccq`,
+Working today (milestones M1 and M2). Every row is also reachable as a subcommand of `windowsill`,
 which is the form cron and the job chain use:
 
 | Command | Also | Behaviour |
 |---|---|---|
-| `ccsub <file>` | `ccq sub` | Submit. `-` reads stdin. Prints job id. `--now` bypasses `--at` |
-| `ccstat` | `ccq stat` | id, name, state, model, when, cwd, elapsed, plus window state and 30d count |
-| `ccstat -a` | `ccq stat -a` | Include terminal jobs from the last 7 days |
-| `ccdel <id>` | `ccq del` | Cancel; SIGTERM the process group if running |
-| `ccresume <id>` | `ccq resume` | `exec` into `claude --resume <conversation_id>` in the job's cwd |
-| — | `ccq show <id>` | Directives, resolved argv, state, conversation id, Δ%, permission denials, transcript tail |
-| — | `ccq log <id> [-f]` | Stream the transcript; `-f` follows a running job |
-| — | `ccq hold <id>` / `ccq release <id>` | Toggle held |
-| — | `ccq usage [--probe]` | Cached window state; `--probe` reads `/usage` fresh (max once per 10s) |
-| — | `ccq report [--since 24h]` | Digest of what ran: state, duration, Δ%, and a `ccresume` line each |
-| — | `ccq tick` | Internal; cron and chain entry point |
+| `ccsub <file>` | `windowsill sub` | Submit. `-` reads stdin. Prints job id. `--now` bypasses `--at` |
+| `ccstat` | `windowsill stat` | id, name, state, model, when, cwd, elapsed, plus window state and 30d count |
+| `ccstat -a` | `windowsill stat -a` | Include terminal jobs from the last 7 days |
+| `ccdel <id>` | `windowsill del` | Cancel; SIGTERM the process group if running |
+| `ccresume <id>` | `windowsill resume` | `exec` into `claude --resume <conversation_id>` in the job's cwd |
+| — | `windowsill show <id>` | Directives, resolved argv, state, conversation id, Δ%, permission denials, transcript tail |
+| — | `windowsill log <id> [-f]` | Stream the transcript; `-f` follows a running job |
+| — | `windowsill hold <id>` / `windowsill release <id>` | Toggle held |
+| — | `windowsill usage [--probe]` | Cached window state; `--probe` reads `/usage` fresh (max once per 10s) |
+| — | `windowsill report [--since 24h]` | Digest of what ran: state, duration, Δ%, and a `ccresume` line each |
+| — | `windowsill tick` | Internal; cron and chain entry point |
 
 Times are printed in your machine's own local time with no zone attached — `2026-07-28 02:00`.
 Pass `--with-timezone` to any of these for the offset-bearing ISO form instead.
@@ -186,9 +178,9 @@ Designed but not implemented yet — do not rely on these:
 
 | Command | Intended behaviour |
 |---|---|
-| `ccq sub -e` | `$EDITOR` on a template header; submit on save |
-| `ccq gc [--older-than 30d]` | Remove terminal job dirs and worktrees |
-| `ccq doctor` | Environment/config sanity check |
+| `windowsill sub -e` | `$EDITOR` on a template header; submit on save |
+| `windowsill gc [--older-than 30d]` | Remove terminal job dirs and worktrees |
+| `windowsill doctor` | Environment/config sanity check |
 
 Correspondingly, the two things those cover — `--isolate worktree` and the dirty-tree refusal — are part of the design but not yet functional.
 Everything else is live: window policies decide dispatch from a `/usage` probe, rate limits requeue instead of failing, `--retry` retries, and finished jobs notify.
@@ -214,7 +206,7 @@ topic = "your-private-topic"
 There is no default recipient and no default ntfy topic.
 A channel that is on with nowhere to send to sends nothing and records a `notify_skipped` event — it will not fall back to a placeholder, and it will not guess from `$USER` and your hostname.
 A single job can carry its own destination with `#$ --notify email:me@example.com`, which is the whole configuration if you only want mail from one job.
-`ccq show <id>` prints the address a job would actually reach.
+`windowsill show <id>` prints the address a job would actually reach.
 
 ## Similar tools
 

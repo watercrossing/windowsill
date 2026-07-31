@@ -178,7 +178,7 @@ def test_next_action_done_state_says_finished() -> None:
     facts = mail.RunFacts(job_id=9, name="n", job_state="done", outcome="success", has_conversation=True)
     lines = mail.next_action(facts)
     assert lines[0] == "finished — nothing further."
-    assert lines[-1] == "To pick the conversation up by hand: ccq resume 9"
+    assert lines[-1] == "To pick the conversation up by hand: windowsill resume 9"
 
 
 def _blocked_facts(**overrides: object) -> mail.RunFacts:
@@ -224,10 +224,10 @@ def test_subject_of_a_blocked_run_does_not_end_on_the_word_success() -> None:
     assert "1 still running" in subject
 
 
-def test_next_action_no_conversation_points_at_ccq_show() -> None:
+def test_next_action_no_conversation_points_at_windowsill_show() -> None:
     facts = mail.RunFacts(job_id=9, name="n", job_state="failed", outcome="error", has_conversation=False)
     lines = mail.next_action(facts)
-    assert lines[-1] == "No conversation to resume (ccq show 9 for the transcript)."
+    assert lines[-1] == "No conversation to resume (windowsill show 9 for the transcript)."
 
 
 def test_next_action_rate_limited_requeue_reads_as_automatic() -> None:
@@ -271,7 +271,7 @@ def test_next_action_blocked_but_not_ready_state_omits_the_reason_line() -> None
         blocked_reason="rate limit reached",
     )
     lines = mail.next_action(facts)
-    assert lines[0] == "held — needs `ccq release` before it runs again."
+    assert lines[0] == "held — needs `windowsill release` before it runs again."
     assert lines[1] == f"The queue is blocked until {mail._local('2026-08-01T02:00:00Z')}."
     assert not any(line.startswith("Reason:") for line in lines)
 
@@ -320,7 +320,7 @@ def test_usage_rows_windows_in_30d_without_a_ceiling_prints_the_bare_count() -> 
 
 def test_subject_includes_job_id_name_state_and_result_detail() -> None:
     facts = mail.RunFacts(job_id=42, name="refactor-auth", job_state="done", outcome="success", result=SUCCESS_RESULT)
-    assert mail.subject(facts) == "[ccq 42] refactor-auth: done (success, 3 turns, 8.4s, $0.0800)"
+    assert mail.subject(facts) == "[windowsill 42] refactor-auth: done (success, 3 turns, 8.4s, $0.0800)"
 
 
 def test_subject_appends_denied_count_when_present() -> None:
@@ -330,7 +330,7 @@ def test_subject_appends_denied_count_when_present() -> None:
 
 def test_subject_falls_back_to_outcome_with_no_result_event() -> None:
     facts = mail.RunFacts(job_id=7, name="n", job_state="failed", outcome="timeout", result=None)
-    assert mail.subject(facts) == "[ccq 7] n: failed (timeout)"
+    assert mail.subject(facts) == "[windowsill 7] n: failed (timeout)"
 
 
 # ---------------------------------------------------------------------------
@@ -359,7 +359,7 @@ def test_render_html_contains_summary_outcome_next_and_usage_blocks() -> None:
     html = mail.render_html(_facts())
     assert "<strong>Green</strong>" in html
     assert "Outcome" in html and "success" in html
-    assert "Next" in html and "ccq resume 42" in html
+    assert "Next" in html and "windowsill resume 42" in html
     assert "Window usage" in html and "42% used" in html
 
 

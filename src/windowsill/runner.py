@@ -1,4 +1,4 @@
-"""ccq run execution: invocation, detached spawn, reap, timeout.
+"""windowsill run execution: invocation, detached spawn, reap, timeout.
 
 Implements design/03-execution-model.md §3.2 (the invocation), §3.3 (safety for unattended
 runs), and the parts of §6.2 (the job-directory filesystem layout) that a
@@ -71,7 +71,7 @@ def log_destination(log_path: str | None, *, job_id: int, name: str, cwd: str) -
     exists, means "in there", under the same ``<5-digit id>-<name>`` naming
     the job dir uses (§6.2); anything else is taken as the file itself. A
     relative path resolves against the *job's* ``cwd``, not windowsill's: the job
-    file is written from the project's point of view, while ``ccq tick``
+    file is written from the project's point of view, while ``windowsill tick``
     runs from wherever cron left it.
     """
     if not log_path:
@@ -172,7 +172,7 @@ def is_alive(pid: int) -> bool:
     """Whether ``pid`` is a live process, via ``kill(pid, 0)``.
 
     This is how a *different* windowsill invocation than the one that spawned the
-    run (e.g. a later ``ccq tick``) checks on it -- it isn't the parent in
+    run (e.g. a later ``windowsill tick``) checks on it -- it isn't the parent in
     the ``wait()`` sense, so signal-0 liveness is the only portable check.
     """
     try:
@@ -359,7 +359,7 @@ def outcome_from_result(
 
 
 # ---------------------------------------------------------------------------
-# reap: the lightweight pid-liveness + result check (§3.1 step 2, "ccq tick")
+# reap: the lightweight pid-liveness + result check (§3.1 step 2, "windowsill tick")
 # ---------------------------------------------------------------------------
 
 
@@ -685,7 +685,7 @@ def run_job(
     """Run one already-selected job to completion: build its invocation,
     spawn it detached under ``root``'s job directory, block until it
     exits (this wrapper is the child's real parent, so a genuine
-    ``wait()``-style block is correct here -- unlike ``ccq tick``, which
+    ``wait()``-style block is correct here -- unlike ``windowsill tick``, which
     never blocks on a running job per §3.1), enforce its ``--timeout``,
     persist the outcome to ``runs``/``jobs``/``events``, and finally hand
     off to ``on_complete`` detached (Popen-and-exit, §3.1: "never

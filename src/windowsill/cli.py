@@ -7,7 +7,7 @@ parsing, execution, or scheduling logic of its own:
 - :mod:`windowsill.db` -- the SQLite state layer and identifier resolution.
 - :mod:`windowsill.jobfile` -- job-file directive parsing.
 - :mod:`windowsill.runner` -- argv building and the job-directory layout.
-- :mod:`windowsill.scheduler` -- the ``ccq tick`` dispatch step.
+- :mod:`windowsill.scheduler` -- the ``windowsill tick`` dispatch step.
 
 Every side-effecting dependency a test would otherwise have to fake for
 real (the clock, sleeping while following a log, sending a signal,
@@ -61,7 +61,7 @@ def _sleep(seconds: float) -> None:
 
 
 def _default_terminate(pid: int) -> None:
-    """SIGTERM a process group (§8.1 ``ccq del``: "SIGTERM the process
+    """SIGTERM a process group (§8.1 ``windowsill del``: "SIGTERM the process
     group if running"). Best-effort -- a pid that's already gone is not
     an error."""
     try:
@@ -72,14 +72,14 @@ def _default_terminate(pid: int) -> None:
 
 _terminate = _default_terminate
 
-#: The claude invocation prefix ``ccq resume`` execs into. Same seam name
+#: The claude invocation prefix ``windowsill resume`` execs into. Same seam name
 #: as ``windowsill.runner``'s ``claude_cmd``.
 _claude_cmd: tuple[str, ...] = ("claude",)
 
 
 def _default_exec(argv: list[str], cwd: str) -> None:
     """``exec`` into ``argv`` after ``chdir``-ing to ``cwd`` (§8.1
-    ``ccq resume``). Replaces the current process image -- never returns
+    ``windowsill resume``). Replaces the current process image -- never returns
     on success."""
     os.chdir(cwd)
     os.execvp(argv[0], argv)
@@ -88,14 +88,14 @@ def _default_exec(argv: list[str], cwd: str) -> None:
 _exec = _default_exec
 
 #: Production ``spawn_run`` handed to :func:`windowsill.scheduler.tick` -- Popens
-#: ``ccq run <id>`` detached. Tests replace this wholesale with a spy so
+#: ``windowsill run <id>`` detached. Tests replace this wholesale with a spy so
 #: no real process is ever spawned.
 _spawn_run = scheduler._default_spawn_run
 
-#: The per-job run entrypoint ``ccq run`` drives (:func:`windowsill.runner.run_job`).
+#: The per-job run entrypoint ``windowsill run`` drives (:func:`windowsill.runner.run_job`).
 #: Same module-attribute seam style as ``_spawn_run``/``_exec``: tests
 #: monkeypatch it so a fake ``claude`` (via ``_claude_cmd``) is spawned
-#: instead of the real binary, and no chained ``ccq tick`` is ever Popened.
+#: instead of the real binary, and no chained ``windowsill tick`` is ever Popened.
 _run_job = runner.run_job
 
 #: The ``/usage`` oracle handed to :func:`windowsill.scheduler.tick` (§4). Same seam
@@ -129,7 +129,7 @@ def _home(ctx: click.Context, home: Path | None = None) -> Path | None:
     """The home this invocation should use.
 
     A command's own ``--home`` wins over the group's, so both
-    ``ccq --home X stat`` and ``ccstat --home X`` land on the same queue.
+    ``windowsill --home X stat`` and ``ccstat --home X`` land on the same queue.
     ``ctx.obj`` is ``None`` when a command was invoked as its own script.
     """
     if home is not None:
@@ -326,7 +326,7 @@ def main(ctx: click.Context, home: Path | None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ccq sub
+# windowsill sub
 # ---------------------------------------------------------------------------
 
 
@@ -395,7 +395,7 @@ def sub(ctx: click.Context, file, run_now: bool, home: Path | None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ccq stat
+# windowsill stat
 # ---------------------------------------------------------------------------
 
 
@@ -435,7 +435,7 @@ def stat(ctx: click.Context, show_all: bool, with_timezone: bool, home: Path | N
 
 
 # ---------------------------------------------------------------------------
-# ccq usage
+# windowsill usage
 # ---------------------------------------------------------------------------
 
 #: §4.2: "Rate-limit to 1 probe per 10s". A probe is free but not polite.
@@ -456,7 +456,7 @@ def usage_(ctx: click.Context, force_probe: bool, with_timezone: bool) -> None:
             # §4.2: cheap, but not free of manners -- refuse to hammer it.
             last = (window_row or {}).get("probed_at")
             if last and (_parse_iso(now_str) - _parse_iso(last)).total_seconds() < PROBE_MIN_INTERVAL_SECONDS:
-                raise click.ClickException(f"probed less than {PROBE_MIN_INTERVAL_SECONDS}s ago; showing cache is `ccq usage`")
+                raise click.ClickException(f"probed less than {PROBE_MIN_INTERVAL_SECONDS}s ago; showing cache is `windowsill usage`")
             parsed = _probe()
             window.record_probe(database, parsed, now_str=now_str)
             window_row = db.current_window(database, now_str)
@@ -483,7 +483,7 @@ def usage_(ctx: click.Context, force_probe: bool, with_timezone: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ccq report
+# windowsill report
 # ---------------------------------------------------------------------------
 
 
@@ -544,7 +544,8 @@ def report(ctx: click.Context, since: str, with_timezone: bool) -> None:
             # "Settled 2026-07-28, second sitting").
             denial_text = f" denied={denials}" if denials else ""
             click.echo(
-                f"{job['id']:<5} {job['name']:<24} {job['state']:<10} {_elapsed(job, now_str):<9} {delta_text:<7} ccq resume {job['id']}{denial_text}"
+                f"{job['id']:<5} {job['name']:<24} {job['state']:<10} {_elapsed(job, now_str):<9} "
+                f"{delta_text:<7} windowsill resume {job['id']}{denial_text}"
             )
 
         if not jobs:
@@ -557,7 +558,7 @@ def report(ctx: click.Context, since: str, with_timezone: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ccq show
+# windowsill show
 # ---------------------------------------------------------------------------
 
 
@@ -615,7 +616,7 @@ def show(ctx: click.Context, identifier: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ccq log
+# windowsill log
 # ---------------------------------------------------------------------------
 
 
@@ -654,7 +655,7 @@ def log(ctx: click.Context, identifier: str, follow: bool) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ccq del
+# windowsill del
 # ---------------------------------------------------------------------------
 
 
@@ -677,12 +678,12 @@ def del_(ctx: click.Context, identifier: str, home: Path | None) -> None:
             _terminate(job["pid"])
 
         db.update_job(database, job_id, state="cancelled", finished_at=now_str)
-        db.log_event(database, ts=now_str, job_id=job_id, kind="cancelled", detail="ccq del")
+        db.log_event(database, ts=now_str, job_id=job_id, kind="cancelled", detail="windowsill del")
         click.echo(f"cancelled {job_id}")
 
 
 # ---------------------------------------------------------------------------
-# ccq hold / ccq release
+# windowsill hold / windowsill release
 # ---------------------------------------------------------------------------
 
 
@@ -690,7 +691,7 @@ def del_(ctx: click.Context, identifier: str, home: Path | None) -> None:
 @click.argument("identifier")
 @click.pass_context
 def hold(ctx: click.Context, identifier: str) -> None:
-    """Hold a queued/ready job; needs ``ccq release``."""
+    """Hold a queued/ready job; needs ``windowsill release``."""
     with _session(_home(ctx)) as (database, _cfg, _root):
         job_id = _resolve(database, identifier)
         job = db.get_job(database, job_id)
@@ -703,7 +704,7 @@ def hold(ctx: click.Context, identifier: str) -> None:
 
         now_str = _iso_now()
         db.update_job(database, job_id, state="held")
-        db.log_event(database, ts=now_str, job_id=job_id, kind="held", detail="ccq hold")
+        db.log_event(database, ts=now_str, job_id=job_id, kind="held", detail="windowsill hold")
         click.echo(f"held {job_id}")
 
 
@@ -721,12 +722,12 @@ def release(ctx: click.Context, identifier: str) -> None:
 
         now_str = _iso_now()
         db.update_job(database, job_id, state="queued")
-        db.log_event(database, ts=now_str, job_id=job_id, kind="queued", detail="ccq release")
+        db.log_event(database, ts=now_str, job_id=job_id, kind="queued", detail="windowsill release")
         click.echo(f"released {job_id}")
 
 
 # ---------------------------------------------------------------------------
-# ccq resume
+# windowsill resume
 # ---------------------------------------------------------------------------
 
 
@@ -749,7 +750,7 @@ def resume(ctx: click.Context, identifier: str, home: Path | None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ccq run
+# windowsill run
 # ---------------------------------------------------------------------------
 
 
@@ -772,7 +773,7 @@ def run_(ctx: click.Context, job_id: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ccq tick
+# windowsill tick
 # ---------------------------------------------------------------------------
 
 
@@ -783,7 +784,7 @@ def tick(ctx: click.Context, quiet: bool) -> None:
     """Internal; run one scheduler pass -- promote due jobs and dispatch ready ones (used by cron and the run chain)."""
     home = _home(ctx)
     with _session(home) as (database, cfg, root):
-        # Bind --home into the dispatch: the detached `ccq run` must come back
+        # Bind --home into the dispatch: the detached `windowsill run` must come back
         # to *this* queue, not to whichever job holds that id in ~/.windowsill.
         result = scheduler.tick(
             database,

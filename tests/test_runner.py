@@ -1321,7 +1321,7 @@ def test_successful_run_notifies_on_the_jobs_channel(tmp_path: Path) -> None:
     channel, title, body, _message = sent[0]
     assert channel == "ntfy"
     assert title == "nightly-lint: done"
-    assert f"ccq resume {job_id}" in body
+    assert f"windowsill resume {job_id}" in body
     assert "Δ 3%" in body
     assert db.list_events(conn, job_id=job_id)[-1]["kind"] == "notified"
 

@@ -1,4 +1,4 @@
-# ccq — a local batch queue for Claude Code
+# windowsill — a local batch queue for Claude Code
 
 **One-liner:** SGE-style job files that queue prompts and run them unattended in 5-hour windows you would otherwise sleep through.
 

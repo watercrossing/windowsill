@@ -110,9 +110,9 @@ def test_shebang_ignored_gives_identical_result_to_no_shebang() -> None:
 def test_shebang_line_itself_never_leaks_into_output() -> None:
     jf = parse_jobfile(_read("basic.md"))
 
-    assert "#!/usr/bin/env ccq" not in jf.body
-    assert "#!/usr/bin/env ccq" not in jf.passthrough
-    assert not any("ccq" == tok for tok in jf.passthrough)
+    assert "#!/usr/bin/env windowsill" not in jf.body
+    assert "#!/usr/bin/env windowsill" not in jf.passthrough
+    assert not any("windowsill" == tok for tok in jf.passthrough)
 
 
 def test_non_leading_bang_line_is_just_a_bare_comment() -> None:
@@ -252,7 +252,7 @@ def test_resume_is_consumed_by_scheduler_never_reaches_passthrough() -> None:
 def test_unknown_directive_passes_through_unvalidated() -> None:
     jf = parse_jobfile(_read("flags_and_quoting.md"))
 
-    # ccq MUST NOT validate or reject unknown directives — pass them
+    # windowsill MUST NOT validate or reject unknown directives — pass them
     # through, argv order preserved, and let claude complain.
     assert jf.passthrough == ["--some-new-flag", "value-with-dashes"]
 

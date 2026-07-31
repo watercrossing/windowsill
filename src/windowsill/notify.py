@@ -2,7 +2,7 @@
 
 Exactly two channels. **ntfy** POSTs to ``<url>/<topic>`` with the job name +
 state as the title and a one-line body carrying the result, the Δ window %,
-and the ``ccq resume <id>`` command that is the morning-after path. **email**
+and the ``windowsill resume <id>`` command that is the morning-after path. **email**
 pipes an RFC-822 message to ``sendmail -t`` from the configured noreply
 address. Nothing else.
 
@@ -69,7 +69,7 @@ def compose(
     """Build the ``(title, body)`` for a job's completion notification.
 
     Title is ``"<name>: <state>"``; body is the one-line result, the Δ window %
-    when known, and ``ccq resume <id>`` -- each on its own line so the resume
+    when known, and ``windowsill resume <id>`` -- each on its own line so the resume
     command is tappable.
 
     ``permission_denials`` (design/09-findings.md, "Settled 2026-07-28, second
@@ -92,7 +92,7 @@ def compose(
         lines.append(f"Δ {delta_pct}%")
     if permission_denials:
         lines.append(f"{permission_denials} permission denial{'s' if permission_denials != 1 else ''}")
-    lines.append(f"ccq resume {job_id}")
+    lines.append(f"windowsill resume {job_id}")
     return title, "\n".join(lines)
 
 

@@ -96,7 +96,7 @@ _AGGREGATE_WEEKLY_BUCKET = "all models"
 class ParsedUsage:
     """One parse of ``/usage``. ``reset_at`` (and the ``is_open`` derived from
     it) is the only field the dispatcher needs; the rest feed the ``window``
-    ledger (§6) and ``ccq report``. All datetimes are UTC-aware."""
+    ledger (§6) and ``windowsill report``. All datetimes are UTC-aware."""
 
     pct_used: int | None
     reset_at: datetime | None
@@ -312,7 +312,7 @@ def _default_run(argv: Sequence[str]) -> str:
 def invoke(*, run: Callable[[Sequence[str]], str] = _default_run, claude_cmd: Sequence[str] = ("claude",)) -> dict:
     """Probe ``/usage`` and return the parsed ``--output-format json`` envelope.
 
-    Exposed separately from :func:`probe` so ``ccq doctor`` can inspect the
+    Exposed separately from :func:`probe` so ``windowsill doctor`` can inspect the
     envelope directly (e.g. assert ``num_turns == 0`` -- that a probe is still
     free, §4.2)."""
     stdout = run([*claude_cmd, *USAGE_ARGV_SUFFIX])

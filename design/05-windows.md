@@ -15,7 +15,7 @@ An anchor does not create capacity. It moves a boundary. **A window opened at 01
 - **Any dispatched job is its own anchor.** If a job runs at 01:30, it opens the window. Firing a Haiku ping first to open a window the job would have opened anyway is pure waste. There is no anchor logic on the dispatch path at all.
 - **A scheduled anchor is only worth it when no job needs the window but you want the boundary moved.** The realistic instance is one morning anchor: a 07:00 ping puts your working-day boundary at 12:00 instead of wherever a 09:00 start would drift it.
 - **`--anchor` jobs fire conditionally**: probe first (free, [§4.2](04-usage-oracle.md)), and if any window is open — including one opened from your phone — the job **no-ops to `skipped`**. Fixed cron times are fragile: answer one message at 23:20 and you have a window running to 04:20, so a 01:30 anchor would land inside it, open nothing, and silently break the day's alignment. Conditional firing is what makes an anchor safe to schedule.
-- **At most one scheduled anchor exists.** `ccq doctor` warns if more than one non-terminal `--anchor` job is queued.
+- **At most one scheduled anchor exists.** `windowsill doctor` warns if more than one non-terminal `--anchor` job is queued.
 
 ```toml
 [anchor]
@@ -33,7 +33,7 @@ Every dispatch made while no window was open inserts a row into `window`. That t
 
 - `windows_this_month = SELECT count(*) FROM window WHERE opened_at > now - 30d`
 - Above `config.queue.max_sessions_per_month` (default **60**): **refuse to dispatch anchors**, warn loudly on real jobs, never silently block real work. An anchor is discretionary; a job you queued is not.
-- `ccq report` and `ccq stat` show the trailing-30d count. Surface it before it becomes a surprise.
+- `windowsill report` and `windowsill stat` show the trailing-30d count. Surface it before it becomes a surprise.
 
 ## 5.4 Rate-limit handling
 

@@ -19,14 +19,14 @@ dependencies = [
 Repository = "https://github.com/watercrossing/ccq"
 
 [project.scripts]
-# The SGE-shaped short verbs are the daily interface; `ccq` stays as the
-# dispatcher so `--help` lists everything in one place and cron keeps
-# calling `ccq tick` (design/08-interface.md §8.1).
+# The SGE-shaped short verbs are the daily interface; `windowsill` stays as
+# the dispatcher so `--help` lists everything in one place and cron keeps
+# calling `windowsill tick` (design/08-interface.md §8.1).
 ccsub = "windowsill.cli:sub"
 ccstat = "windowsill.cli:stat"
 ccdel = "windowsill.cli:del_"
 ccresume = "windowsill.cli:resume"
-ccq = "windowsill.cli:main"
+windowsill = "windowsill.cli:main"
 
 [dependency-groups]
 dev = [

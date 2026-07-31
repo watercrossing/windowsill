@@ -102,32 +102,17 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
     return merged
 
 
-#: Where state lives under the home directory. ``.ccq`` is what every
-#: install before the rename used.
+#: Where state lives under the home directory.
 STATE_DIR_NAME = ".windowsill"
-LEGACY_STATE_DIR_NAME = ".ccq"
 
 
 def state_dir(home: Path | None = None) -> Path:
     """Return the directory holding the DB, config, logs, and job dirs.
 
-    ``<home>/.windowsill``, except when that does not exist and a
-    ``<home>/.ccq`` from before the rename does — then the old one is used
-    unchanged.
-
-    A rename must not stand between the user and their queue. That
-    directory holds queued jobs, the run ledger, and the job dirs of runs
-    still in flight; silently resolving to a fresh empty ``.windowsill``
-    would leave a cron ``ccq tick`` dispatching from an empty queue while
-    the real one sat untouched next to it. Moving it is the user's call,
-    and nothing breaks if they never make it.
+    Always ``<home>/.windowsill``.
     """
     base = home if home is not None else Path.home()
-    current = base / STATE_DIR_NAME
-    legacy = base / LEGACY_STATE_DIR_NAME
-    if not current.exists() and legacy.exists():
-        return legacy
-    return current
+    return base / STATE_DIR_NAME
 
 
 def default_config_path(home: Path | None = None) -> Path:

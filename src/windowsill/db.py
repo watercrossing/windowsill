@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS sched (     -- single row, id=1
   blocked_reason TEXT
 );
 
-CREATE TABLE IF NOT EXISTS events (    -- audit trail; feeds ccq report
+CREATE TABLE IF NOT EXISTS events (    -- audit trail; feeds windowsill report
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts TEXT NOT NULL, job_id INTEGER, kind TEXT NOT NULL, detail TEXT
 );
@@ -105,8 +105,8 @@ CREATE TABLE IF NOT EXISTS events (    -- audit trail; feeds ccq report
 # its own. It means "needs a human", and every consequence of this set is one
 # a blocked job wants the non-terminal side of: `ccstat` without `-a` filters
 # on exactly this set, and the blocked job is precisely the one the reader
-# must find in the morning; `ccq del` will cancel it; `resolve_identifier`
-# still resolves it by name, so `ccq resume <name>` works. The re-dispatch
+# must find in the morning; `windowsill del` will cancel it; `resolve_identifier`
+# still resolves it by name, so `windowsill resume <name>` works. The re-dispatch
 # worry membership would have answered is handled structurally instead --
 # the scheduler selects by explicit state name ("queued", "ready", "running"),
 # never by "not terminal", so a blocked job is never picked up again.
@@ -150,18 +150,11 @@ class AmbiguousIdentifierError(IdentifierError):
 def default_db_path(home: Path | None = None) -> Path:
     """Return ``<home>/.windowsill/windowsill.db``.
 
-    The filename follows the directory: a pre-rename ``~/.ccq`` holds a
-    ``ccq.db``, and that is the file with the queue in it
-    (:func:`windowsill.config.state_dir`). Creating a fresh
-    ``windowsill.db`` beside it would silently start an empty queue.
-
     Uses the real ``Path.home()`` when ``home`` is not given — callers
     that must not touch the real filesystem (e.g. tests) should always
     pass ``home`` explicitly.
     """
-    directory = config.state_dir(home)
-    name = "ccq.db" if directory.name == config.LEGACY_STATE_DIR_NAME else "windowsill.db"
-    return directory / name
+    return config.state_dir(home) / "windowsill.db"
 
 
 def connect(
@@ -170,7 +163,7 @@ def connect(
     home: Path | None = None,
     timeout: float = 5.0,
 ) -> sqlite_utils.Database:
-    """Open (creating if needed) the ccq state DB with the §6 schema.
+    """Open (creating if needed) the windowsill state DB with the §6 schema.
 
     Resolution of the file to open mirrors :func:`windowsill.config.load_config`:
     ``db_path`` if given, otherwise ``<home>/.windowsill/windowsill.db``.
@@ -375,7 +368,7 @@ def resolve_identifier(
     dependency lookup needs — ``--resume-from audit-auth`` names a job that,
     by the time it is resolved, has necessarily finished — while an
     ambiguous live name is still refused. Interactive commands keep the
-    narrow default: ``ccq del nightly-lint`` should not reach back into last
+    narrow default: ``windowsill del nightly-lint`` should not reach back into last
     week's finished run.
     """
     try:
@@ -541,7 +534,7 @@ def log_event(
     job_id: int | None = None,
     detail: str | None = None,
 ) -> int:
-    """Append a row to ``events`` (the audit trail behind ``ccq report``)."""
+    """Append a row to ``events`` (the audit trail behind ``windowsill report``)."""
     record = dict(ts=ts, job_id=job_id, kind=kind, detail=detail)
     return database["events"].insert(record).last_pk  # type: ignore[return-value]
 

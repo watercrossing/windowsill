@@ -1,4 +1,4 @@
-"""ccq dispatch scheduler: the ``ccq tick`` step (design/03-execution-model.md §3.1)
+"""windowsill dispatch scheduler: the ``windowsill tick`` step (design/03-execution-model.md §3.1)
 and the §7 job-lifecycle state machine.
 
 ``tick`` is chain-driven and cron-floored (§3.1). One tick:
@@ -34,9 +34,9 @@ Dispatch is **claim-then-spawn**:
   DB writes never contend with the tick's transaction.
 
 Chain seam (the next module, ``cli.py``, owns this): ``spawn_run``'s
-production default Popens ``ccq run <id>`` (:data:`RUN_ARGV`) detached in
-its own session. That ``ccq run`` subcommand must call
-``runner.run_job(..., on_complete=<the ``ccq tick`` argv>)``
+production default Popens ``windowsill run <id>`` (:data:`RUN_ARGV`) detached in
+its own session. That ``windowsill run`` subcommand must call
+``runner.run_job(..., on_complete=<the ``windowsill tick`` argv>)``
 (:data:`TICK_ARGV`) so a finished run chain-dispatches the next tick
 (§3.1). It is kept fully behind the ``spawn_run`` injectable so the test
 suite spawns no process.
@@ -60,21 +60,21 @@ from windowsill import config as config_mod
 from windowsill import db, runner, transcript, usage, window
 
 # ---------------------------------------------------------------------------
-# the `ccq run` / `ccq tick` entrypoint contract (cli.py implements these)
+# the `windowsill run` / `windowsill tick` entrypoint contract (cli.py implements these)
 # ---------------------------------------------------------------------------
 
 #: argv prefix of the detached per-job run entrypoint. ``spawn_run``'s
-#: default Popens ``[*RUN_ARGV, str(job_id)]`` -- i.e. ``ccq run <id>`` --
+#: default Popens ``[*RUN_ARGV, str(job_id)]`` -- i.e. ``windowsill run <id>`` --
 #: which cli.py must wire to :func:`windowsill.runner.run_job`.
-RUN_ARGV: tuple[str, ...] = ("ccq", "run")
+RUN_ARGV: tuple[str, ...] = ("windowsill", "run")
 
-#: argv of the next-tick chain command. ``ccq run <id>`` must pass this to
+#: argv of the next-tick chain command. ``windowsill run <id>`` must pass this to
 #: ``run_job(on_complete=...)`` so a finished run kicks the next tick (§3.1).
-TICK_ARGV: tuple[str, ...] = ("ccq", "tick")
+TICK_ARGV: tuple[str, ...] = ("windowsill", "tick")
 
 
 def _with_home(argv: tuple[str, ...], home: Path | None) -> list[str]:
-    """``ccq --home <path> <subcommand>``, or plain ``ccq <subcommand>``.
+    """``windowsill --home <path> <subcommand>``, or plain ``windowsill <subcommand>``.
 
     ``--home`` has to survive every hop of the chain. It doesn't just select a
     directory: a tick that dispatches against one home and a run that wakes up
@@ -88,7 +88,7 @@ def _with_home(argv: tuple[str, ...], home: Path | None) -> list[str]:
 
 
 def run_argv(job_id: int, *, home: Path | None = None) -> list[str]:
-    """The argv the production ``spawn_run`` Popens: ``ccq run <id>``."""
+    """The argv the production ``spawn_run`` Popens: ``windowsill run <id>``."""
     return [*_with_home(RUN_ARGV, home), str(job_id)]
 
 
@@ -103,7 +103,7 @@ def _default_spawn_run(
     home: Path | None = None,
     popen: Callable[..., subprocess.Popen] = subprocess.Popen,
 ) -> None:
-    """Production ``spawn_run``: Popen ``ccq run <id>`` detached, own session.
+    """Production ``spawn_run``: Popen ``windowsill run <id>`` detached, own session.
 
     Popen-and-exit only (§3.1): the tick never awaits it, so a fast-failing
     run cannot fork-bomb. Kept behind the ``spawn_run`` injectable so tests
@@ -266,7 +266,7 @@ def tick(
     alive_check: Callable[[int], bool] = runner.is_alive,
     probe: Callable[[], usage.ParsedUsage] = usage.probe,
 ) -> TickResult:
-    """Run one ``ccq tick`` (§3.1): reap, evaluate the queue, dispatch up to
+    """Run one ``windowsill tick`` (§3.1): reap, evaluate the queue, dispatch up to
     ``max_parallel`` -- all under the dispatch lock -- then spawn the claimed
     runs detached, never blocking on a running job.
 

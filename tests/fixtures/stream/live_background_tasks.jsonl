@@ -2,7 +2,7 @@
 {"type": "assistant", "parent_tool_use_id": null, "message": {"role": "assistant", "content": [{"type": "text", "text": "Dispatching two agents."}]}, "session_id": "live-1"}
 {"type": "system", "subtype": "background_tasks_changed", "tasks": [{"task_id": "aAAA", "task_type": "local_agent", "description": "Fix notify defaults and email body"}], "session_id": "live-1"}
 {"type": "system", "subtype": "task_started", "task_id": "aAAA", "tool_use_id": "toolu_A", "description": "Fix notify defaults and email body", "subagent_type": "claude", "task_type": "local_agent", "session_id": "live-1"}
-{"type": "system", "subtype": "task_started", "task_id": "aBBB", "tool_use_id": "toolu_B", "description": "Inventory ccq naming and state paths", "subagent_type": "Explore", "task_type": "local_agent", "session_id": "live-1"}
+{"type": "system", "subtype": "task_started", "task_id": "aBBB", "tool_use_id": "toolu_B", "description": "Inventory windowsill naming and state paths", "subagent_type": "Explore", "task_type": "local_agent", "session_id": "live-1"}
 {"type": "system", "subtype": "task_started", "task_id": "bCCC", "tool_use_id": "toolu_C", "description": "uv run pytest -q", "task_type": "local_bash", "session_id": "live-1"}
 {"type": "system", "subtype": "task_notification", "task_id": "bCCC", "tool_use_id": "toolu_C", "status": "completed", "session_id": "live-1"}
 {"type": "system", "subtype": "task_notification", "task_id": "aBBB", "tool_use_id": "toolu_B", "status": "completed", "session_id": "live-1"}

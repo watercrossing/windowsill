@@ -14,7 +14,7 @@ order a person reads them:
    the permission-denial count (§9) when there is one.
 3. **The next action windowsill itself will take** -- read off the job's §7
    state and the ``sched`` block gate (§6), never invented, plus the
-   ``ccq resume <id>`` escape hatch that is the morning-after path (§8.1).
+   ``windowsill resume <id>`` escape hatch that is the morning-after path (§8.1).
 4. **Window usage** -- whatever the ``/usage`` oracle last read (§4), which is
    the only unit that binds (§1).
 
@@ -270,7 +270,7 @@ _NEXT_ACTION: dict[str, str] = {
     "cancelled": "cancelled — will not run.",
     "ready": "back on the queue; the next tick will dispatch it.",
     "queued": "queued; a tick will promote it when it is due.",
-    "held": "held — needs `ccq release` before it runs again.",
+    "held": "held — needs `windowsill release` before it runs again.",
     "running": "still running.",
     # §7 "blocked": the main thread ended while work it dispatched was still
     # running, so its closing summary describes work that had not happened.
@@ -302,7 +302,7 @@ class RunFacts:
     #: ``sched.blocked_until`` when the queue is held (§5.4), and why.
     blocked_until: str | None = None
     blocked_reason: str | None = None
-    #: Whether ``ccq resume <id>`` has a conversation to resume.
+    #: Whether ``windowsill resume <id>`` has a conversation to resume.
     has_conversation: bool = False
     #: Background work still in flight when the run's stream ended -- what put
     #: the job in §7's ``blocked`` state. ``task_id`` / ``description`` /
@@ -341,7 +341,7 @@ def next_action(facts: RunFacts) -> list[str]:
     holds the queue: that is §5.4's rate-limit requeue, i.e. the run ran out of
     window and will pick up by itself when the next one opens.
 
-    The last line is always the manual path (§8.1's ``ccq resume``), because
+    The last line is always the manual path (§8.1's ``windowsill resume``), because
     the point of the mail is that the reader never has to go looking for it.
 
     ``blocked`` (§7) is the state where that last line stops being a footnote
@@ -370,9 +370,9 @@ def next_action(facts: RunFacts) -> list[str]:
         if blocked:
             lines.append(f"The queue is blocked until {_local(facts.blocked_until)}.")
     if facts.has_conversation:
-        lines.append(f"To pick the conversation up by hand: ccq resume {facts.job_id}")
+        lines.append(f"To pick the conversation up by hand: windowsill resume {facts.job_id}")
     else:
-        lines.append(f"No conversation to resume (ccq show {facts.job_id} for the transcript).")
+        lines.append(f"No conversation to resume (windowsill show {facts.job_id} for the transcript).")
     return lines
 
 
@@ -416,7 +416,7 @@ def usage_rows(
 def subject(facts: RunFacts) -> str:
     """The Subject line: job id, name, state, and how it went (§8.4).
 
-    ``ccq-complete: done`` said neither which job nor whether it did anything;
+    ``windowsill-complete: done`` said neither which job nor whether it did anything;
     a subject is the only part of the mail a phone shows.
     """
     detail = list(transcript.result_parts(facts.result)) if facts.result else [facts.outcome]
@@ -426,7 +426,7 @@ def subject(facts: RunFacts) -> str:
         detail.append(f"{len(facts.live_tasks)} still running")
     if facts.permission_denials:
         detail.append(f"{facts.permission_denials} denied")
-    return f"[ccq {facts.job_id}] {facts.name}: {facts.job_state} ({', '.join(detail)})"
+    return f"[windowsill {facts.job_id}] {facts.name}: {facts.job_state} ({', '.join(detail)})"
 
 
 # ---------------------------------------------------------------------------

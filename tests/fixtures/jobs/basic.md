@@ -1,4 +1,4 @@
-#!/usr/bin/env ccq
+#!/usr/bin/env windowsill
 #$ --name refactor-auth
 #$ --at 2026-07-18T02:00
 #$ --model claude-opus-4-8

@@ -1,4 +1,4 @@
-"""Tests for windowsill.scheduler -- the `ccq tick` dispatch step (§3.1) and the
+"""Tests for windowsill.scheduler -- the `windowsill tick` dispatch step (§3.1) and the
 M1 slice of the §7 job-lifecycle state machine.
 
 These tests spawn NO real process and read NO real clock: `tick`'s `now`,
@@ -581,18 +581,18 @@ def test_dispatch_lock_is_actually_held_across_the_tick(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# the production `spawn_run` default: `ccq run <id>`, detached, no test spawn
+# the production `spawn_run` default: `windowsill run <id>`, detached, no test spawn
 # ---------------------------------------------------------------------------
 
 
 def test_run_argv_shape() -> None:
-    assert scheduler.run_argv(7) == ["ccq", "run", "7"]
-    assert scheduler.RUN_ARGV == ("ccq", "run")
-    assert scheduler.TICK_ARGV == ("ccq", "tick")
+    assert scheduler.run_argv(7) == ["windowsill", "run", "7"]
+    assert scheduler.RUN_ARGV == ("windowsill", "run")
+    assert scheduler.TICK_ARGV == ("windowsill", "tick")
 
 
-def test_default_spawn_run_popens_detached_ccq_run(tmp_path: Path) -> None:
-    """The production default Popens `ccq run <id>` in its own session --
+def test_default_spawn_run_popens_detached_windowsill_run(tmp_path: Path) -> None:
+    """The production default Popens `windowsill run <id>` in its own session --
     verified through a fake popen so nothing is actually spawned."""
     calls: list[tuple[list[str], dict[str, Any]]] = []
 
@@ -602,7 +602,7 @@ def test_default_spawn_run_popens_detached_ccq_run(tmp_path: Path) -> None:
 
     scheduler._default_spawn_run(42, popen=fake_popen)
 
-    assert calls[0][0] == ["ccq", "run", "42"]
+    assert calls[0][0] == ["windowsill", "run", "42"]
     assert calls[0][1]["start_new_session"] is True
 
 

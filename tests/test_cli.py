@@ -30,7 +30,7 @@ FUTURE = "2026-07-23T09:00:00+00:00"
 OLD = "2026-07-01T09:00:00+00:00"  # well over 7 / 30 days before NOW
 
 # A tiny stand-in for `claude`: reads the body on stdin and emits a canned
-# stream-json transcript (a `system` init then a `result`), so `ccq run`'s
+# stream-json transcript (a `system` init then a `result`), so `windowsill run`'s
 # real runner.run_job is exercised end to end without the real binary. Same
 # pattern as tests/test_runner.py's fake-claude scripts.
 FAKE_CLAUDE_SCRIPT = """
@@ -146,7 +146,7 @@ Do the thing.
 
 
 # ---------------------------------------------------------------------------
-# ccq sub
+# windowsill sub
 # ---------------------------------------------------------------------------
 
 
@@ -270,7 +270,7 @@ def test_sub_stores_log_directive_with_tilde_expanded(tmp_path: Path, runner: Cl
 
 def test_sub_leaves_relative_log_directive_relative(tmp_path: Path, runner: CliRunner) -> None:
     # Resolved against the job's --cwd at write time (runner.log_destination),
-    # not against wherever `ccq sub` happened to be run from.
+    # not against wherever `windowsill sub` happened to be run from.
     home = tmp_path / "home"
     job_file = tmp_path / "j.md"
     job_file.write_text("#$ --cwd /tmp/work\n#$ --log logs/run.md\n\nbody\n")
@@ -307,7 +307,7 @@ def test_sub_writes_job_md_verbatim(tmp_path: Path, runner: CliRunner) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ccq sub: --at is normalized to UTC at store time (the naïve-local bug)
+# windowsill sub: --at is normalized to UTC at store time (the naïve-local bug)
 # ---------------------------------------------------------------------------
 
 
@@ -393,7 +393,7 @@ def test_tick_leaves_job_whose_local_at_is_future_queued(tmp_path: Path, runner:
 
 
 # ---------------------------------------------------------------------------
-# ccq stat
+# windowsill stat
 # ---------------------------------------------------------------------------
 
 
@@ -488,7 +488,7 @@ def test_stat_when_is_blank_for_a_job_with_no_times(tmp_path: Path, runner: CliR
 
 
 # ---------------------------------------------------------------------------
-# ccq show
+# windowsill show
 # ---------------------------------------------------------------------------
 
 
@@ -601,7 +601,7 @@ def test_show_unknown_id_errors(tmp_path: Path, runner: CliRunner) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ccq log
+# windowsill log
 # ---------------------------------------------------------------------------
 
 
@@ -664,7 +664,7 @@ def test_log_unknown_id_errors(tmp_path: Path, runner: CliRunner) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ccq del
+# windowsill del
 # ---------------------------------------------------------------------------
 
 
@@ -711,7 +711,7 @@ def test_del_already_terminal_is_a_noop(tmp_path: Path, runner: CliRunner) -> No
 
 
 # ---------------------------------------------------------------------------
-# ccq hold / ccq release
+# windowsill hold / windowsill release
 # ---------------------------------------------------------------------------
 
 
@@ -751,7 +751,7 @@ def test_release_non_held_job_errors(tmp_path: Path, runner: CliRunner) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ccq resume
+# windowsill resume
 # ---------------------------------------------------------------------------
 
 
@@ -788,7 +788,7 @@ def test_resume_without_conversation_id_errors(tmp_path: Path, runner: CliRunner
 
 
 # ---------------------------------------------------------------------------
-# ccq tick
+# windowsill tick
 # ---------------------------------------------------------------------------
 
 
@@ -825,7 +825,7 @@ def test_tick_leaves_not_yet_due_job_alone(tmp_path: Path, runner: CliRunner, mo
 
 def test_tick_quiet_suppresses_summary_but_still_dispatches(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
     # -q is for cron, which mails any output: the tick must do its work but
-    # print nothing, whereas the bare `ccq tick` still prints the summary.
+    # print nothing, whereas the bare `windowsill tick` still prints the summary.
     home = tmp_path / "home"
     conn = make_db(home)
     job_id = add_job(conn, name="quietly", state="queued", at_time=None)
@@ -881,7 +881,7 @@ def test_tick_default_probe_is_the_usage_oracle(tmp_path: Path) -> None:
 def test_tick_default_spawn_run_is_schedulers_default(tmp_path: Path) -> None:
     # Guards the seam wiring itself: cli._spawn_run must be the same
     # production default scheduler.tick would otherwise fall back to, so
-    # `ccq tick` really does chain-dispatch `ccq run <id>` when nothing
+    # `windowsill tick` really does chain-dispatch `windowsill run <id>` when nothing
     # has monkeypatched it away.
     assert cli._spawn_run is scheduler._default_spawn_run
 
@@ -903,7 +903,7 @@ def test_ambiguous_name_errors(tmp_path: Path, runner: CliRunner) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ccq run
+# windowsill run
 # ---------------------------------------------------------------------------
 
 
@@ -919,8 +919,8 @@ def test_run_executes_job_to_terminal_via_fake_claude(tmp_path: Path, runner: Cl
     monkeypatch.setattr(cli, "_claude_cmd", claude_cmd)
 
     # Drive the real runner.run_job through the _run_job seam, but neutralise
-    # its detached on-complete chain so no real `ccq tick` process is spawned,
-    # and capture the wiring `ccq run` handed it.
+    # its detached on-complete chain so no real `windowsill tick` process is spawned,
+    # and capture the wiring `windowsill run` handed it.
     captured: dict[str, Any] = {}
 
     def fake_run_job(database, jid, *, root, on_complete, claude_cmd, config=None):
@@ -944,11 +944,11 @@ def test_run_executes_job_to_terminal_via_fake_claude(tmp_path: Path, runner: Cl
 
     assert result.exit_code == 0, result.output
 
-    # `ccq run` wired run_job to the right job, root, chain, and claude seam.
+    # `windowsill run` wired run_job to the right job, root, chain, and claude seam.
     assert captured["job_id"] == job_id
     assert captured["root"] == home / ".windowsill"
     # --home survives the chain: the next tick must come back to this queue.
-    assert captured["on_complete"] == ["ccq", "--home", str(home), "tick"]
+    assert captured["on_complete"] == ["windowsill", "--home", str(home), "tick"]
     assert captured["claude_cmd"] == claude_cmd
 
     # Job reached a terminal state and captured the conversation id (§7).
@@ -976,7 +976,7 @@ def test_run_unknown_id_errors(tmp_path: Path, runner: CliRunner) -> None:
 
 def test_run_default_seam_is_runners_run_job(tmp_path: Path) -> None:
     # Guards the seam wiring: cli._run_job must be runner.run_job so an
-    # un-monkeypatched `ccq run` really executes the job via the runner.
+    # un-monkeypatched `windowsill run` really executes the job via the runner.
     assert cli._run_job is runner_mod.run_job
 
 
@@ -1010,17 +1010,17 @@ def test_default_home_state_dir_is_created(tmp_path: Path, runner: CliRunner, mo
 
 
 # ---------------------------------------------------------------------------
-# ccq usage (§8.1, §4.2)
+# windowsill usage (§8.1, §4.2)
 # ---------------------------------------------------------------------------
 
 
 def test_usage_reads_the_cache_and_never_probes(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, pin_tz) -> None:
-    # §4.2: "ccq stat reads cache and never probes; ccq usage --probe is the
+    # §4.2: "windowsill stat reads cache and never probes; windowsill usage --probe is the
     # explicit override."
     home = tmp_path / "home"
     conn = make_db(home)
     db.insert_window(conn, opened_at=PAST, reset_at=FUTURE, probed_at=PAST, pct_used=15, weekly_pct=1, extra_bucket="Fable", extra_pct=0)
-    monkeypatch.setattr(cli, "_probe", lambda: pytest.fail("ccq usage probed without --probe"))
+    monkeypatch.setattr(cli, "_probe", lambda: pytest.fail("windowsill usage probed without --probe"))
 
     pin_tz("Etc/GMT-1")
     result = run(runner, home, "usage")
@@ -1082,7 +1082,7 @@ def test_usage_shows_a_live_block(tmp_path: Path, runner: CliRunner, pin_tz) -> 
 
 
 # ---------------------------------------------------------------------------
-# ccq report (§8.1: the actual product at 08:00)
+# windowsill report (§8.1: the actual product at 08:00)
 # ---------------------------------------------------------------------------
 
 
@@ -1098,7 +1098,7 @@ def test_report_lists_what_ran_with_delta_and_resume_line(tmp_path: Path, runner
     assert result.exit_code == 0, result.output
     assert "nightly-lint" in result.output
     assert "Δ 12%" in result.output
-    assert f"ccq resume {job_id}" in result.output
+    assert f"windowsill resume {job_id}" in result.output
     assert "1 jobs · Δ 12%" in result.output
 
 
@@ -1167,7 +1167,7 @@ def test_report_rejects_an_unparseable_since(tmp_path: Path, runner: CliRunner) 
 
 
 def test_tick_dispatch_carries_home_into_the_detached_run(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Without this, `ccq --home X tick` dispatches `ccq run <id>` with no
+    """Without this, `windowsill --home X tick` dispatches `windowsill run <id>` with no
     --home -- and the run wakes up against the real ~/.windowsill, where that id is
     somebody else's job entirely."""
     home = tmp_path / "home"
@@ -1184,12 +1184,12 @@ def test_tick_dispatch_carries_home_into_the_detached_run(tmp_path: Path, runner
     result = run(runner, home, "tick")
 
     assert result.exit_code == 0, result.output
-    assert popened == [["ccq", "--home", str(home), "run", str(job_id)]]
+    assert popened == [["windowsill", "--home", str(home), "run", str(job_id)]]
 
 
 def test_argv_builders_omit_home_when_it_is_the_default(tmp_path: Path) -> None:
-    assert scheduler.run_argv(7) == ["ccq", "run", "7"]
-    assert scheduler.tick_argv() == ["ccq", "tick"]
+    assert scheduler.run_argv(7) == ["windowsill", "run", "7"]
+    assert scheduler.tick_argv() == ["windowsill", "tick"]
 
 
 # ---------------------------------------------------------------------------
@@ -1245,7 +1245,7 @@ def test_resume_runs_as_its_own_script(tmp_path: Path, runner: CliRunner, monkey
 
 
 def test_a_commands_own_home_wins_over_the_groups(tmp_path: Path, runner: CliRunner) -> None:
-    """`ccq --home A stat --home B` must read B, so that the two spellings of
+    """`windowsill --home A stat --home B` must read B, so that the two spellings of
     the same command can never disagree about which queue they are on."""
     group_home = tmp_path / "group"
     command_home = tmp_path / "command"
@@ -1267,7 +1267,7 @@ def test_declared_console_scripts_all_resolve(tmp_path: Path) -> None:
     with (Path(__file__).parent.parent / "pyproject.toml").open("rb") as f:
         scripts = tomllib.load(f)["project"]["scripts"]
 
-    assert set(scripts) == {"ccsub", "ccstat", "ccdel", "ccresume", "ccq"}
+    assert set(scripts) == {"ccsub", "ccstat", "ccdel", "ccresume", "windowsill"}
     for target in scripts.values():
         module, _, attribute = target.partition(":")
         assert module == "windowsill.cli"

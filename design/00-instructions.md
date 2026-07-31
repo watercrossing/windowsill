@@ -10,7 +10,7 @@ So: **you orchestrate, subagents implement.** Your context should hold this sect
 
 ## 0.2 Subagent protocol
 
-- **Delegate by file, never by summary.** A subagent brief reads: *"Read [`04-usage-oracle.md`](04-usage-oracle.md). Implement `src/ccq/usage.py`, tests first. Do not read other sections."* It must **never** read: *"Here's what [§4](04-usage-oracle.md) says: the usage parser should..."*
+- **Delegate by file, never by summary.** A subagent brief reads: *"Read [`04-usage-oracle.md`](04-usage-oracle.md). Implement `src/windowsill/usage.py`, tests first. Do not read other sections."* It must **never** read: *"Here's what [§4](04-usage-oracle.md) says: the usage parser should..."*
 - This document is precise where it is precise on purpose. "The reset clause is the discriminator, not the percentage, not the line" survives verbatim reading and dies in paraphrase. **Paraphrasing the spec into a brief is the single most likely way to build the wrong thing.** If you find yourself explaining a section to a subagent, stop and give it the file name instead.
 - **Use Sonnet for implementation subagents.** Opus for integration, design judgement, and anything where [§0.4](00-instructions.md)'s tensions apply. Most of this codebase is unremarkable Python and does not need Opus.
 - **Subagents report file paths and test results, not code.** Never let a subagent paste an implementation back into your context. You read the diff only if a test fails twice.
@@ -42,15 +42,15 @@ Modules map 1:1 onto spec sections. Dispatch one subagent per row.
 
 | Module | Reads | Milestone |
 |---|---|---|
-| `ccq/jobfile.py` — directive parser, pass-through split | [§2](02-job-file.md) | M1 |
-| `ccq/db.py` — schema, migrations, `BEGIN IMMEDIATE` | [§6](06-state.md) | M1 |
-| `ccq/config.py` — TOML load, defaults | [§8.3](08-interface.md) | M1 |
-| `ccq/runner.py` — invoke, spawn detached, reap, timeout | [§3.2](03-execution-model.md), [§3.3](03-execution-model.md) | M1 |
-| `ccq/scheduler.py` — `tick`, dispatch, chain | [§3.1](03-execution-model.md), [§7](07-lifecycle.md) | M1 |
-| `ccq/cli.py` — click commands | [§8.1](08-interface.md) | M1 |
-| `ccq/usage.py` — `/usage` oracle, probe rule | [§4](04-usage-oracle.md) | M2 |
-| `ccq/window.py` — policies, anchors, accounting | [§5](05-windows.md) | M2/M3 |
-| `ccq/notify.py` — ntfy, sendmail | [§8.4](08-interface.md) | M2 |
+| `windowsill/jobfile.py` — directive parser, pass-through split | [§2](02-job-file.md) | M1 |
+| `windowsill/db.py` — schema, migrations, `BEGIN IMMEDIATE` | [§6](06-state.md) | M1 |
+| `windowsill/config.py` — TOML load, defaults | [§8.3](08-interface.md) | M1 |
+| `windowsill/runner.py` — invoke, spawn detached, reap, timeout | [§3.2](03-execution-model.md), [§3.3](03-execution-model.md) | M1 |
+| `windowsill/scheduler.py` — `tick`, dispatch, chain | [§3.1](03-execution-model.md), [§7](07-lifecycle.md) | M1 |
+| `windowsill/cli.py` — click commands | [§8.1](08-interface.md) | M1 |
+| `windowsill/usage.py` — `/usage` oracle, probe rule | [§4](04-usage-oracle.md) | M2 |
+| `windowsill/window.py` — policies, anchors, accounting | [§5](05-windows.md) | M2/M3 |
+| `windowsill/notify.py` — ntfy, sendmail | [§8.4](08-interface.md) | M2 |
 | `README.md` | [§0.6](00-instructions.md), [§1](01-motivation.md), [§2](02-job-file.md), [§8.1](08-interface.md) | M1 |
 
 Build M1 end-to-end and *use it for a night* before starting M2. [§9](09-findings.md)'s remaining open question — the rate-limit signal shape — is only answerable by observing a real limit hit, and M1 running real jobs is what produces one.
@@ -60,11 +60,11 @@ Build M1 end-to-end and *use it for a night* before starting M2. [§9](09-findin
 A proper installable package. Not a single file.
 
 ```
-ccq/
+windowsill/
 ├── pyproject.toml          # hatchling; requires-python = ">=3.13"
 ├── README.md               # install, job file format, the 3 commands that matter
 ├── design/                 # this design, one file per section
-├── src/ccq/
+├── src/windowsill/
 │   ├── __init__.py, cli.py, config.py, db.py, jobfile.py,
 │   ├── notify.py, runner.py, scheduler.py, usage.py, window.py
 └── tests/
@@ -73,6 +73,6 @@ ccq/
 ```
 
 - Dependencies: `click`, `sqlite-utils`. Dev: `pytest`. Nothing else unless it saves a tone of work — stdlib covers `tomllib`, `zoneinfo`, `subprocess`, `shlex`, `signal`, `smtplib`.
-- Entry point: `[project.scripts] ccq = "ccq.cli:main"`.
-- Install: `uv tool install .` — or `uvx --from . ccq` to try it without installing.
-- The `ccq` on `PATH` must work from cron with a minimal environment ([§9](09-findings.md) confirms `claude` itself does).
+- Entry point: `[project.scripts] windowsill = "windowsill.cli:main"`.
+- Install: `uv tool install .` — or `uvx --from . windowsill` to try it without installing.
+- The `windowsill` on `PATH` must work from cron with a minimal environment ([§9](09-findings.md) confirms `claude` itself does).

@@ -2,7 +2,7 @@
 
 Claude Code has no native pretty-printed export: a conversation is stored
 on disk as newline-delimited JSON (``~/.claude/projects/<slug>/<id>.jsonl``),
-and ``claude -p --output-format stream-json --verbose`` -- what a ccq run
+and ``claude -p --output-format stream-json --verbose`` -- what a windowsill run
 captures into ``stream.jsonl`` -- is that same event stream, one JSON object
 per line. So "the format Claude Code uses" *is* JSONL; the readable form is
 whatever you render it into. design/06-state.md §6.2 chose Markdown

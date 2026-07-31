@@ -3,7 +3,7 @@
 A job is a UTF-8 text file: a directive header, a blank line, then the prompt body (Markdown, free-form, any length).
 
 ```
-#!/usr/bin/env ccq
+#!/usr/bin/env windowsill
 #$ --name refactor-auth
 #$ --at 2026-07-18T02:00
 #$ --model claude-opus-4-8
@@ -36,14 +36,14 @@ need to `BLOCKED.md`, then continue with the next call site.
 
 Two kinds of directive, distinguished by lookup rather than syntax:
 
-- **Scheduler directives** are consumed by `ccq` and never reach the CLI ([§2.3](02-job-file.md)).
+- **Scheduler directives** are consumed by `windowsill` and never reach the CLI ([§2.3](02-job-file.md)).
 - **Everything else is passed through verbatim to `claude`**, in order, as argv.
 
-`#$ --model claude-opus-4-8` becomes `claude --model claude-opus-4-8`. `#$ --max-turns 60` becomes `--max-turns 60`. `ccq` never needs to know what those mean, so a new Claude Code flag works on day one with no parser change.
+`#$ --model claude-opus-4-8` becomes `claude --model claude-opus-4-8`. `#$ --max-turns 60` becomes `--max-turns 60`. `windowsill` never needs to know what those mean, so a new Claude Code flag works on day one with no parser change.
 
 Non-negotiable consequences:
 
-- `ccq` MUST NOT validate or reject unknown directives. Pass them through; let `claude` complain.
+- `windowsill` MUST NOT validate or reject unknown directives. Pass them through; let `claude` complain.
 - Pass-through args are argv elements, never a concatenated shell string. No `shell=True`. Ever.
 - Where a scheduler directive shadows a real `claude` flag, the scheduler wins and it must be documented. That set is currently exactly one: `--resume` ([§2.3](02-job-file.md)), which needs late resolution.
 - `--model` is pass-through, but is *also* mirrored into the `jobs.model` column for display and anchor defaults. Mirror, don't intercept.
@@ -67,7 +67,7 @@ Non-negotiable consequences:
 | `--isolate <mode>` | config | `none` \| `worktree` |
 | `--allow-dirty` | false | Permit running against a dirty tree |
 | `--notify <channel>[:<dest>]` | config (`none`) | `none` \| `ntfy` \| `email`, optionally carrying this job's own recipient/topic — `email:me@example.com` ([§8.4](08-interface.md)) |
-| `--hold` | false | Submit `held`; needs `ccq release` |
+| `--hold` | false | Submit `held`; needs `windowsill release` |
 | `--timeout <dur>` | `4h` | Wall-clock kill |
 | `--no-resume-on-limit` | false | On rate-limit requeue, restart from the original body instead of resuming ([§5.4](05-windows.md)) |
 

@@ -32,7 +32,7 @@ Current week (Fable): 0% used
 Notes:
 
 - **Line 1's "session" is the window.** Its `resets` timestamp is the only fact the scheduler needs.
-- **The trailing block is machine-local** — "does not include other devices or claude.ai" — and counts *conversations*, not windows. Never an input to a dispatch decision. Fine to surface in `ccq report`.
+- **The trailing block is machine-local** — "does not include other devices or claude.ai" — and counts *conversations*, not windows. Never an input to a dispatch decision. Fine to surface in `windowsill report`.
 - **The separate weekly bucket is Fable, not Opus.** Support docs still say Opus-only; the client is ground truth. Read the bucket name from the output; do not hardcode a model.
 
 ## 4.1 Parsing
@@ -47,7 +47,7 @@ Notes:
 - **No year in the timestamp.** Infer by choosing the candidate year (`now.year`, `±1`) that puts the reset nearest to now and in the future. Test 31 Dec explicitly.
 - **The minutes are optional.** On the hour the clause reads `resets Jul 28, 7am (Europe/London)`, with no `:00` ([§9](09-findings.md), observed 2026-07-28). A pattern that requires `:mm` reads a live window as closed.
 - The timezone is parenthesised — resolve via `zoneinfo`, store UTC, display local.
-- `ccq doctor` asserts the parse still works against live output and fails loudly if not.
+- `windowsill doctor` asserts the parse still works against live output and fails loudly if not.
 
 ## 4.2 The probe rule
 
@@ -59,10 +59,10 @@ Free and global together mean the oracle can simply be consulted:
 
 - **Probe when a dispatch decision depends on window state** and the cached `reset_at` is absent or has passed. Common case; costs nothing.
 - **Probe before and after each run** ([§4.3](04-usage-oracle.md)).
-- **Cache anyway**, in the `window` table ([§6](06-state.md)). Not for correctness — for latency and manners. `ccq stat` reads cache and never probes; `ccq usage --probe` is the explicit override. Rate-limit to 1 probe per 10s.
+- **Cache anyway**, in the `window` table ([§6](06-state.md)). Not for correctness — for latency and manners. `windowsill stat` reads cache and never probes; `windowsill usage --probe` is the explicit override. Rate-limit to 1 probe per 10s.
 - **Do not probe on every cron tick regardless.** The tick usually has no dispatch candidate and therefore no question to ask.
 
-This is a behavioural finding on one client version, not a documented guarantee. If `/usage` ever starts costing a window, the failure is silent and expensive — `ccq doctor` re-runs the two-probe check ([§8.2](08-interface.md)).
+This is a behavioural finding on one client version, not a documented guarantee. If `/usage` ever starts costing a window, the failure is silent and expensive — `windowsill doctor` re-runs the two-probe check ([§8.2](08-interface.md)).
 
 Note: each probe returns a `session_id` and may leave a conversation record on disk. It does not increment the local conversation counter and is otherwise harmless.
 
@@ -73,5 +73,5 @@ Note: each probe returns a `session_id` and may leave a conversation record on d
 Probe immediately before and after each run; store both in `runs`. The delta is what the job cost in the only unit that binds.
 
 - Approximate: another surface may move the number concurrently. Acceptable — single user, mostly asleep.
-- `ccq report` shows Δ% per job. This is the number that tells you a job is too expensive to keep queueing.
+- `windowsill report` shows Δ% per job. This is the number that tells you a job is too expensive to keep queueing.
 - Sanity anchor from the target account: **one large prompt ≈ 15% of a window**, at >150k context. A job showing 40% is not a job, it is a project.

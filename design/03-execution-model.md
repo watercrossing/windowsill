@@ -6,12 +6,12 @@ An asymmetry determines this design. **Idle time inside an open window is destro
 
 So latency only matters between jobs inside a live window, and polling is the wrong tool for it:
 
-- **Chain dispatch (the latency path).** On job exit, the runner spawns a detached `ccq tick` and exits. Consecutive jobs in an open window start within seconds of each other.
-- **Cron (the liveness floor).** `*/15 * * * * ccq tick` catches a broken chain, an `--at` coming due, and a `blocked_until` expiring. 15 minutes is fine precisely because it is never the latency path.
+- **Chain dispatch (the latency path).** On job exit, the runner spawns a detached `windowsill tick` and exits. Consecutive jobs in an open window start within seconds of each other.
+- **Cron (the liveness floor).** `*/15 * * * * windowsill tick` catches a broken chain, an `--at` coming due, and a `blocked_until` expiring. 15 minutes is fine precisely because it is never the latency path.
 
 Cron, not a systemd timer: no `loginctl enable-linger` requirement, no unit files, works identically on any always-on box.
 
-`ccq tick`:
+`windowsill tick`:
 
 1. Opens the DB, `BEGIN IMMEDIATE` (this is the dispatch lock — [§6](06-state.md)).
 2. Reaps: for each `running` job, check pid liveness and `result.json`.
@@ -44,7 +44,7 @@ The body goes on **stdin**, never argv. Bodies will exceed `ARG_MAX` and will co
  "modelUsage":{},"permission_denials":[],"uuid":"..."}
 ```
 
-- `session_id` → `jobs.conversation_id`. `is_error` and `subtype` → run outcome. `num_turns`, `duration_ms`, `usage` → `ccq report`.
+- `session_id` → `jobs.conversation_id`. `is_error` and `subtype` → run outcome. `num_turns`, `duration_ms`, `usage` → `windowsill report`.
 - `stream-json` emits incrementally: write straight to `stream.jsonl` so a killed run still leaves a usable partial, and derive the result from the last event.
 - **Do not trust `total_cost_usd`.** The observed `0` came from a zero-turn slash command, so it is uninformative; whether it is populated for a real run on a subscription is untested ([§9](09-findings.md)). Use the Δ window % ([§4.3](04-usage-oracle.md)) as the cost metric regardless — it is the unit that actually binds.
 - Confirm whether `--model` takes the full API string (`claude-opus-4-8`) or aliases only (`opus`). Normalise in config; reject neither.
@@ -54,7 +54,7 @@ The body goes on **stdin**, never argv. Bodies will exceed `ARG_MAX` and will co
 Unattended means no permission prompts, so blast radius must be bounded by construction:
 
 - Default to an explicit `--allowedTools` allowlist from config, **not** blanket permission bypass. A job wanting bypass must say so in its own header.
-- `--isolate worktree` → `git worktree add ~/.ccq/worktrees/<id>-<name> -b ccq/<name>`, run there, leave the branch for morning review. Default for anything that writes code.
+- `--isolate worktree` → `git worktree add ~/.windowsill/worktrees/<id>-<name> -b windowsill/<name>`, run there, leave the branch for morning review. Default for anything that writes code.
 - Refuse to dispatch into a dirty tree unless `--allow-dirty`.
 - Enforce `--timeout` with SIGTERM to the process group, then SIGKILL after 30s. Record the partial transcript.
-- Never remove a worktree automatically. `ccq gc` only, on demand.
+- Never remove a worktree automatically. `windowsill gc` only, on demand.
