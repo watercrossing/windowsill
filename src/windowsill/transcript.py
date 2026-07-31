@@ -79,7 +79,7 @@ def _render_assistant(message: dict[str, Any]) -> list[str]:
         elif kind == "thinking":
             thinking = block.get("thinking", "").rstrip()
             if thinking:
-                lines += ["> 💭 **Thinking**", ">", _blockquote(thinking), ""]
+                lines += ["> 💭 **Thinking**", ">", _blockquote(_truncate(thinking)), ""]
         elif kind == "tool_use":
             name = block.get("name", "?")
             inp = json.dumps(block.get("input", {}), indent=2)

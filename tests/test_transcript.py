@@ -33,6 +33,34 @@ def test_renders_thinking_marked_and_quoted() -> None:
     assert "> Let me plan the refactor before touching code." in md
 
 
+def test_renders_thinking_interleaved_with_prose_and_tool_use() -> None:
+    # a single turn carrying thinking + text + tool_use blocks together --
+    # all three must render, and the thinking stays visually distinct (in
+    # its own blockquote) from the ordinary prose and the tool call.
+    md = transcript.render_stream(FIXTURES / "thinking_and_prose.jsonl")
+    assert "> 💭 **Thinking**" in md
+    assert "> Let me check the auth module before I touch it." in md
+    assert "I'll start by reading the module, then patch it." in md
+    assert "Read" in md
+    assert "src/auth.py" in md
+
+
+def test_renders_a_thinking_only_turn() -> None:
+    # the fixture's second assistant turn carries only a thinking block --
+    # it must still render even though it has no prose or tool call.
+    md = transcript.render_stream(FIXTURES / "thinking_and_prose.jsonl")
+    assert "> That's the whole fix -- nothing else worth saying." in md
+
+
+def test_long_thinking_truncated(tmp_path: Path) -> None:
+    stream = tmp_path / "stream.jsonl"
+    big = "x" * 5000
+    stream.write_text(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "thinking", "thinking": big}]}}) + "\n")
+    md = transcript.render_stream(stream)
+    assert "truncated" in md
+    assert len(md) < 4000
+
+
 def test_renders_tool_use_with_input() -> None:
     md = transcript.render_stream(FIXTURES / "basic.jsonl")
     assert "Read" in md
@@ -144,6 +172,16 @@ def test_final_summary_excludes_thinking() -> None:
     summary = transcript.final_summary(events)
     assert "Not addressed to the reader" not in summary
     assert summary.startswith("Done. Summary:")
+
+
+def test_final_summary_ignores_a_trailing_thinking_only_turn() -> None:
+    """final_summary feeds the completion email body (§8.4); a thinking block
+    must never leak into it, even when it is the stream's literal last
+    assistant turn (the fixture's second turn is thinking-only)."""
+    events = list(transcript.iter_events(FIXTURES / "thinking_and_prose.jsonl"))
+    summary = transcript.final_summary(events)
+    assert summary == "I'll start by reading the module, then patch it."
+    assert "nothing else worth saying" not in summary
 
 
 def test_final_summary_keeps_a_very_long_message_whole(tmp_path: Path) -> None:
