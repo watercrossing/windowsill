@@ -29,6 +29,8 @@ cd <cwd> && claude -p \
   --output-format stream-json --verbose \
   [--resume <conversation_id>] \
   [--allowed-tools <comma-separated tools>] \
+  [--append-system-prompt <windowsill's prompt>] \
+  [--add-dir <job dir>] \
   <pass-through directives...> \
   < body
 ```
@@ -49,6 +51,9 @@ The body goes on **stdin**, never argv. Bodies will exceed `ARG_MAX` and will co
 - `stream-json` emits incrementally: write straight to `stream.jsonl` so a killed run still leaves a usable partial, and derive the result from the last event.
 - **Do not trust `total_cost_usd`.** The observed `0` came from a zero-turn slash command, so it is uninformative; whether it is populated for a real run on a subscription is untested ([§9](09-findings.md)). Use the Δ window % ([§4.3](04-usage-oracle.md)) as the cost metric regardless — it is the unit that actually binds.
 - Confirm whether `--model` takes the full API string (`claude-opus-4-8`) or aliases only (`opus`). Normalise in config; reject neither.
+
+**The appended system prompt** (`[prompt]`, §8.3) is a *default*, not a new capability — `#$ --append-system-prompt "..."` has always passed straight through. It tells the job the one thing its own body cannot know (nobody is watching, so a question ends the run) and asks it to keep a status journal at `<job dir>/journal.md`, reached by the injected `--add-dir`. The journal lives in the job dir and never the working tree: it must not pollute the branch left for morning review, and being keyed on job id is what makes it survive a re-dispatch. `--append-system-prompt`, not `--system-prompt`: the latter *replaces* Claude Code's own prompt and strips the harness instructions (its help for `--exclude-dynamic-system-prompt-sections` says so outright). Injection is skipped entirely — prompt *and* `--add-dir`, logged as a `system_prompt_yielded` event — for anchor jobs (§5.2), and when the job's own pass-through names any of `--append-system-prompt`, `--append-system-prompt-file`, `--system-prompt`, `--system-prompt-file` (`runner.SYSTEM_PROMPT_FLAGS`). That yield rule is also the free per-job opt-out (`#$ --append-system-prompt ""`), so there is no new scheduler directive. It is a mirror, not an intercept: nothing is validated, rejected, reordered or removed (§2.2). The re-execution line is injected only when windowsill *knows* it is true — a prior run exists **and** this dispatch carries no `resume_id`, i.e. the `--retry` / `--no-resume-on-limit` shape, which re-dispatches a fresh conversation with the original body. A resumed agent already holds that history and is never told to go read it.
+- `--add-dir` takes `<directories...>` and is **variadic** on the installed CLI (2.1.218), not the single-argument flag it looks like: it keeps consuming tokens until one that looks like a flag. `build_argv` therefore emits it as the *last* injected token, directly abutting pass-through, so the swallow stops at the first `#$` directive. `--append-system-prompt-file` and `--system-prompt-file` exist but are `.hideHelp()`'d, and each is mutually exclusive with its inline sibling — pairing them is a hard error that kills the run, which is the second reason the yield rule is total.
 
 ## 3.3 Safety for unattended runs
 

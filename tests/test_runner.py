@@ -20,6 +20,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+from windowsill import config as config_module
 from windowsill import db, notify, runner, usage
 
 # ---------------------------------------------------------------------------
@@ -1590,3 +1593,569 @@ def test_failed_notification_is_logged_and_never_fails_the_job(tmp_path: Path) -
     last = db.list_events(conn, job_id=job_id)[-1]
     assert last["kind"] == "notify_failed"
     assert "refused" in last["detail"]
+
+
+# ---------------------------------------------------------------------------
+# §3.2 the default appended system prompt -- constants and the byte budget
+# ---------------------------------------------------------------------------
+
+
+def test_system_prompt_byte_budget() -> None:
+    """§0.1: context is *the* cost driver, and the way a system prompt goes bad
+    is by quietly accreting -- a sentence here, a caveat there, none of them
+    individually worth arguing about. So the budget is a failing test, not a
+    comment. The numbers are the plan's, with the headroom deliberately tight
+    (~25%): enough to reword, not enough to bolt on a new section without
+    someone consciously raising the ceiling and justifying it in a diff.
+    """
+    always_on = runner.SYSTEM_PROMPT_BASE + runner.SYSTEM_PROMPT_JOURNAL
+    assert len(always_on) < 1200, f"the always-injected prompt has grown to {len(always_on)} bytes"
+
+    worst_case = always_on + runner.SYSTEM_PROMPT_REEXEC
+    assert len(worst_case) < 1500, f"the fully-expanded prompt has grown to {len(worst_case)} bytes"
+
+
+def test_system_prompt_constants_are_the_ones_build_argv_yields_to() -> None:
+    """The four flags windowsill yields to, and the one it injects. Locked down
+    because a typo here fails open: an unrecognised flag means windowsill
+    injects its own on top of the job's, and `--append-system-prompt-file`
+    plus `--append-system-prompt` is a hard CLI error that kills the run."""
+    assert runner.SYSTEM_PROMPT_FLAGS == {
+        "--append-system-prompt",
+        "--append-system-prompt-file",
+        "--system-prompt",
+        "--system-prompt-file",
+    }
+    assert runner.JOURNAL_FILENAME == "journal.md"
+
+
+def test_journal_prompt_names_the_absolute_path_and_the_four_headings() -> None:
+    plan = runner.resolve_system_prompt(
+        [],
+        config={},
+        job_dir=Path("/state/jobs/00042-refactor-auth"),
+        is_anchor=False,
+        prior_runs=[],
+        resume_id=None,
+    )
+    assert "/state/jobs/00042-refactor-auth/journal.md" in plan.text
+    for heading in ("Goal", "Done", "Next", "Notes"):
+        assert heading in plan.text
+    # BLOCKED.md is deliberate: design/02-job-file.md's own example job file
+    # already writes this instruction by hand. The prompt hoists that
+    # boilerplate rather than competing with it -- same filename, same idea.
+    assert "BLOCKED.md" in plan.text
+
+
+# ---------------------------------------------------------------------------
+# build_argv: §3.2 system prompt / --add-dir injection and ordering
+# ---------------------------------------------------------------------------
+
+
+def test_build_argv_omits_system_prompt_when_none() -> None:
+    argv = runner.build_argv(["--max-turns", "10"])
+    assert "--append-system-prompt" not in argv
+    assert "--add-dir" not in argv
+
+
+def test_build_argv_injects_system_prompt_before_passthrough() -> None:
+    """Ordering is load-bearing. `--append-system-prompt` is registered with a
+    plain string parser, so a repeated occurrence replaces rather than
+    accumulates -- injecting *first* means a user's own occurrence is later and
+    wins. (The yield rule means this should never actually arise; it is the
+    belt to that braces.)"""
+    argv = runner.build_argv(["--model", "opus"], system_prompt="be brief")
+    assert argv.index("--append-system-prompt") < argv.index("--model")
+    assert argv[argv.index("--append-system-prompt") + 1] == "be brief"
+
+
+def test_build_argv_injects_add_dir_once_per_entry() -> None:
+    argv = runner.build_argv([], system_prompt="be brief", add_dirs=["/a", "/b"])
+    assert argv.count("--add-dir") == 2
+    assert argv[argv.index("--add-dir") + 1] == "/a"
+
+
+def test_build_argv_add_dir_is_the_last_injected_token_before_passthrough() -> None:
+    """`--add-dir` takes `<directories...>` -- it is *variadic* on the installed
+    CLI (2.1.218), not the single-argument flag the plan assumed. A variadic
+    option keeps swallowing tokens until the next one that looks like a flag,
+    so a bare positional immediately after it would be eaten as a second
+    directory. Injecting it last, directly abutting pass-through, is what keeps
+    that harmless: every `#$` directive is itself a flag, so the swallow stops
+    at the first pass-through token.
+    """
+    argv = runner.build_argv(["--model", "opus"], system_prompt="be brief", add_dirs=["/job/dir"])
+    assert argv[-3:] == ["/job/dir", "--model", "opus"]
+    assert argv[-4] == "--add-dir"
+
+
+def test_build_argv_injects_system_prompt_after_resume_and_allowed_tools() -> None:
+    argv = runner.build_argv([], resume="conv-abc", allowed_tools=["Read"], system_prompt="be brief", add_dirs=["/job/dir"])
+    assert argv.index("--resume") < argv.index("--allowed-tools") < argv.index("--append-system-prompt") < argv.index("--add-dir")
+
+
+def test_build_argv_injects_add_dir_even_without_prompt_text() -> None:
+    argv = runner.build_argv([], add_dirs=["/job/dir"])
+    assert "--append-system-prompt" not in argv
+    assert argv[-2:] == ["--add-dir", "/job/dir"]
+
+
+# ---------------------------------------------------------------------------
+# §3.2 the yield rule: a job that names any system-prompt flag gets its own
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "own",
+    [
+        ["--append-system-prompt", "mine"],
+        ["--append-system-prompt-file", "/tmp/p.txt"],
+        ["--system-prompt", "mine"],
+        ["--system-prompt-file", "/tmp/p.txt"],
+        ["--append-system-prompt="],  # the documented per-job opt-out, equals form
+        ["--system-prompt=mine"],
+    ],
+)
+def test_build_argv_yields_entirely_when_passthrough_names_a_system_prompt_flag(own: list[str]) -> None:
+    """Yielding is total: no prompt *and* no `--add-dir`. Granting directory
+    access for a journal the agent was never told about would be pointless, and
+    `--append-system-prompt` alongside `--append-system-prompt-file` is a hard
+    CLI error that would kill the run outright."""
+    argv = runner.build_argv(own, system_prompt="windowsill's", add_dirs=["/job/dir"])
+    assert "--append-system-prompt" not in argv[: len(argv) - len(own)]
+    assert "--add-dir" not in argv
+    assert argv[-len(own) :] == own
+
+
+def test_build_argv_does_not_yield_system_prompt_on_unrelated_flags() -> None:
+    argv = runner.build_argv(["--model", "opus", "--max-turns", "10"], system_prompt="be brief", add_dirs=["/job/dir"])
+    assert "--append-system-prompt" in argv
+    assert "--add-dir" in argv
+
+
+@pytest.mark.parametrize(
+    "own",
+    [
+        ["--append-system-prompt", "mine"],
+        ["--append-system-prompt-file", "/tmp/p.txt"],
+        ["--system-prompt", "mine"],
+        ["--system-prompt-file", "/tmp/p.txt"],
+        ["--append-system-prompt="],
+    ],
+)
+def test_resolve_system_prompt_yields_and_says_so(own: list[str], tmp_path: Path) -> None:
+    plan = runner.resolve_system_prompt(own, config={}, job_dir=tmp_path, is_anchor=False, prior_runs=[], resume_id=None)
+    assert plan.text is None
+    assert plan.add_dir is None
+    # Distinct from "there was nothing to inject": `yielded` is what run_job
+    # logs, so the morning's event log says *why* no prompt went in.
+    assert plan.yielded is True
+
+
+def test_resolve_system_prompt_does_not_claim_a_yield_when_nothing_was_on_offer(tmp_path: Path) -> None:
+    """A job naming its own `--system-prompt` while `[prompt].enabled = false`
+    isn't yielding anything -- windowsill had nothing to inject either way, so
+    there is no event worth logging."""
+    plan = runner.resolve_system_prompt(
+        ["--system-prompt", "mine"],
+        config={"prompt": {"enabled": False}},
+        job_dir=tmp_path,
+        is_anchor=False,
+        prior_runs=[],
+        resume_id=None,
+    )
+    assert plan.text is None
+    assert plan.yielded is False
+
+
+# ---------------------------------------------------------------------------
+# §5.2 anchor jobs are never injected
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_system_prompt_skips_anchor_jobs(tmp_path: Path) -> None:
+    """An anchor is a Haiku "reply with the single word: ok" ping whose whole
+    point is to cost nothing. 250 tokens and a journal instruction is not
+    nothing."""
+    plan = runner.resolve_system_prompt([], config={}, job_dir=tmp_path, is_anchor=True, prior_runs=[], resume_id=None)
+    assert plan.text is None
+    assert plan.add_dir is None
+    assert plan.yielded is False
+
+
+# ---------------------------------------------------------------------------
+# [prompt] config: enabled / journal / text
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_system_prompt_default_config_injects_base_and_journal(tmp_path: Path) -> None:
+    plan = runner.resolve_system_prompt([], config={}, job_dir=tmp_path, is_anchor=False, prior_runs=[], resume_id=None)
+    assert runner.SYSTEM_PROMPT_BASE in plan.text
+    assert "status journal" in plan.text
+    assert plan.add_dir == tmp_path
+
+
+def test_resolve_system_prompt_enabled_false_injects_nothing(tmp_path: Path) -> None:
+    plan = runner.resolve_system_prompt([], config={"prompt": {"enabled": False}}, job_dir=tmp_path, is_anchor=False, prior_runs=[], resume_id=None)
+    assert plan.text is None
+    assert plan.add_dir is None
+
+
+def test_resolve_system_prompt_journal_false_keeps_prompt_drops_journal_and_add_dir(tmp_path: Path) -> None:
+    """The two switches are separate because they cost differently: the prompt
+    is ~250 cached tokens, the journal is an Edit/Write per update that stays
+    in context forever. Someone may want the unattended-behaviour prompt
+    without paying the write overhead."""
+    plan = runner.resolve_system_prompt([], config={"prompt": {"journal": False}}, job_dir=tmp_path, is_anchor=False, prior_runs=[], resume_id=None)
+    assert plan.text == runner.SYSTEM_PROMPT_BASE
+    assert "journal.md" not in plan.text
+    assert plan.add_dir is None
+
+
+def test_resolve_system_prompt_text_override_is_verbatim_with_journal_substituted(tmp_path: Path) -> None:
+    plan = runner.resolve_system_prompt(
+        [],
+        config={"prompt": {"text": "Only this. Journal: {journal}"}},
+        job_dir=tmp_path,
+        is_anchor=False,
+        prior_runs=[],
+        resume_id=None,
+    )
+    assert plan.text == f"Only this. Journal: {tmp_path / 'journal.md'}"
+    assert runner.SYSTEM_PROMPT_BASE not in plan.text
+    assert plan.add_dir == tmp_path
+
+
+def test_resolve_system_prompt_text_override_survives_other_braces(tmp_path: Path) -> None:
+    """Substitution is a plain string replace, not `str.format` -- a user's
+    override is prose, and prose contains braces (JSON examples, f-strings,
+    shell expansions). `str.format` would raise KeyError on all of them."""
+    plan = runner.resolve_system_prompt(
+        [],
+        config={"prompt": {"text": 'Emit {"ok": true} and ${HOME}. See {journal}.'}},
+        job_dir=tmp_path,
+        is_anchor=False,
+        prior_runs=[],
+        resume_id=None,
+    )
+    assert plan.text == f'Emit {{"ok": true}} and ${{HOME}}. See {tmp_path / "journal.md"}.'
+
+
+def test_resolve_system_prompt_text_override_wins_over_the_reexec_line(tmp_path: Path) -> None:
+    """`text` replaces the built-in *wholesale*, not "the base part of it"."""
+    plan = runner.resolve_system_prompt(
+        [],
+        config={"prompt": {"text": "Only this."}},
+        job_dir=tmp_path,
+        is_anchor=False,
+        prior_runs=[{"id": 1, "outcome": "timeout"}],
+        resume_id=None,
+    )
+    assert plan.text == "Only this."
+
+
+def test_resolve_system_prompt_reads_the_real_shipped_defaults(tmp_path: Path) -> None:
+    """Guards the seam between config.DEFAULTS and the `.get(..., True)`
+    fallbacks in resolve_system_prompt: flipping a shipped default without
+    flipping the fallback would give a partial config file different behaviour
+    from no config file at all."""
+    plan = runner.resolve_system_prompt([], config=config_module.DEFAULTS, job_dir=tmp_path, is_anchor=False, prior_runs=[], resume_id=None)
+    assert runner.SYSTEM_PROMPT_BASE in plan.text
+    assert "journal.md" in plan.text
+    assert plan.add_dir == tmp_path
+
+
+# ---------------------------------------------------------------------------
+# §3.2 the re-execution gate -- the rule most likely to regress
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_system_prompt_no_reexec_line_on_a_first_run(tmp_path: Path) -> None:
+    plan = runner.resolve_system_prompt([], config={}, job_dir=tmp_path, is_anchor=False, prior_runs=[], resume_id=None)
+    assert "attempt" not in plan.text
+    assert "Do not start over" not in plan.text
+
+
+def test_resolve_system_prompt_reexec_line_when_prior_run_and_no_resume(tmp_path: Path) -> None:
+    """The `--retry` / `--no-resume-on-limit` shape: both re-dispatch with a
+    brand-new conversation and the original body, discarding everything the
+    previous attempt did. This is the only case where windowsill *knows* the
+    session is a fresh-context re-execution."""
+    plan = runner.resolve_system_prompt(
+        [],
+        config={},
+        job_dir=tmp_path,
+        is_anchor=False,
+        prior_runs=[{"id": 1, "outcome": "timeout"}],
+        resume_id=None,
+    )
+    assert "This is attempt 2 of this job" in plan.text
+    assert "timeout" in plan.text
+    assert str(tmp_path / "journal.md") in plan.text
+    assert "Do not start over" in plan.text
+
+
+def test_resolve_system_prompt_no_reexec_line_when_resuming(tmp_path: Path) -> None:
+    """A resumed agent carries its own history in context. Telling it to go
+    read a file about what it already remembers is pure cost."""
+    plan = runner.resolve_system_prompt(
+        [],
+        config={},
+        job_dir=tmp_path,
+        is_anchor=False,
+        prior_runs=[{"id": 1, "outcome": "rate_limited"}],
+        resume_id="conv-abc",
+    )
+    assert "attempt" not in plan.text
+
+
+def test_resolve_system_prompt_reexec_attempt_counts_every_prior_run(tmp_path: Path) -> None:
+    plan = runner.resolve_system_prompt(
+        [],
+        config={},
+        job_dir=tmp_path,
+        is_anchor=False,
+        prior_runs=[{"id": 1, "outcome": "failed"}, {"id": 2, "outcome": "timeout"}, {"id": 3, "outcome": "killed"}],
+        resume_id=None,
+    )
+    assert "This is attempt 4 of this job" in plan.text
+    # The *previous* attempt's outcome, not the first one's.
+    assert "ended: killed" in plan.text
+
+
+def test_resolve_system_prompt_reexec_tolerates_a_prior_run_with_no_outcome(tmp_path: Path) -> None:
+    """A run row whose process vanished before anything was written back still
+    has a NULL outcome. Formatting "None" into the prompt would be worse than
+    saying so."""
+    plan = runner.resolve_system_prompt([], config={}, job_dir=tmp_path, is_anchor=False, prior_runs=[{"id": 1, "outcome": None}], resume_id=None)
+    assert "ended: unknown" in plan.text
+
+
+def test_resolve_system_prompt_no_reexec_line_when_journal_is_off(tmp_path: Path) -> None:
+    """The re-execution line's whole instruction is "read the journal". With no
+    journal being kept there is nothing to read, so it is 40 wasted tokens
+    pointing at a file that does not exist."""
+    plan = runner.resolve_system_prompt(
+        [],
+        config={"prompt": {"journal": False}},
+        job_dir=tmp_path,
+        is_anchor=False,
+        prior_runs=[{"id": 1, "outcome": "timeout"}],
+        resume_id=None,
+    )
+    assert plan.text == runner.SYSTEM_PROMPT_BASE
+
+
+# ---------------------------------------------------------------------------
+# run_job: the wiring -- a real dispatch gets the prompt, the dir, and the gate
+# ---------------------------------------------------------------------------
+
+
+def _dispatched_argv(tmp_path: Path, job_id: int, name: str = "nightly-lint") -> list[str]:
+    return json.loads((runner.job_dir(tmp_path, job_id, name) / "cmd.json").read_text())["argv"]
+
+
+def test_run_job_injects_the_system_prompt_and_the_job_dir(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _make_job(conn, tmp_path)
+
+    _run(conn, job_id, tmp_path, config={"prompt": {"enabled": True, "journal": True}})
+
+    argv = _dispatched_argv(tmp_path, job_id)
+    dir_ = runner.job_dir(tmp_path, job_id, "nightly-lint")
+    assert argv[argv.index("--add-dir") + 1] == str(dir_)
+    prompt = argv[argv.index("--append-system-prompt") + 1]
+    assert runner.SYSTEM_PROMPT_BASE in prompt
+    assert str(dir_ / "journal.md") in prompt
+    # The journal's directory is reachable and exists by dispatch time, so the
+    # agent's first Write does not fail on a missing parent.
+    assert dir_.is_dir()
+
+
+def test_run_job_journal_lives_in_the_job_dir_never_the_working_tree(tmp_path: Path) -> None:
+    """§3.3 leaves the branch for morning review. A journal in the worktree
+    pollutes that branch and the agent may well commit it. The job dir is also
+    keyed on job id, so it survives every re-dispatch of the job -- which is
+    the entire point."""
+    cwd = tmp_path / "worktree"
+    cwd.mkdir()
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = db.insert_job(
+        conn,
+        name="nightly-lint",
+        state="queued",
+        submitted_at="2026-07-21T00:00:00Z",
+        cwd=str(cwd),
+        body="please lint the repo",
+        passthrough=[],
+    )
+
+    _run(conn, job_id, tmp_path)
+
+    argv = _dispatched_argv(tmp_path, job_id)
+    journal_dir = Path(argv[argv.index("--add-dir") + 1])
+    assert journal_dir == runner.job_dir(tmp_path, job_id, "nightly-lint")
+    assert cwd not in journal_dir.parents and journal_dir != cwd
+
+
+def test_run_job_yields_and_logs_when_the_job_names_its_own_system_prompt(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _make_job(conn, tmp_path, passthrough=["--append-system-prompt", ""])
+
+    _run(conn, job_id, tmp_path)
+
+    argv = _dispatched_argv(tmp_path, job_id)
+    assert argv.count("--append-system-prompt") == 1
+    assert argv[-2:] == ["--append-system-prompt", ""]
+    assert "--add-dir" not in argv
+
+    events = db.list_events(conn, job_id=job_id)
+    assert events[0]["kind"] == "system_prompt_yielded"
+    assert "system-prompt flag" in events[0]["detail"]
+
+
+def test_run_job_anchor_gets_no_system_prompt(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = db.insert_job(
+        conn,
+        name="anchor",
+        state="queued",
+        submitted_at="2026-07-21T00:00:00Z",
+        cwd=str(tmp_path),
+        body="Reply with the single word: ok",
+        passthrough=[],
+        is_anchor=True,
+    )
+
+    _run(conn, job_id, tmp_path)
+
+    argv = _dispatched_argv(tmp_path, job_id, "anchor")
+    assert "--append-system-prompt" not in argv
+    assert "--add-dir" not in argv
+    assert "system_prompt_yielded" not in [e["kind"] for e in db.list_events(conn, job_id=job_id)]
+
+
+def test_run_job_disabled_by_config_injects_nothing(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _make_job(conn, tmp_path)
+
+    _run(conn, job_id, tmp_path, config={"prompt": {"enabled": False}})
+
+    argv = _dispatched_argv(tmp_path, job_id)
+    assert "--append-system-prompt" not in argv
+    assert "--add-dir" not in argv
+
+
+def test_run_job_second_dispatch_without_resume_gets_the_reexec_line(tmp_path: Path) -> None:
+    """The retry path for real: run once, reset to ready with no resume_id (what
+    `--retry` does), run again. The second dispatch must know it is attempt 2."""
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _make_job(conn, tmp_path)
+
+    _run(conn, job_id, tmp_path)
+    assert "attempt" not in _dispatched_argv(tmp_path, job_id)[_dispatched_argv(tmp_path, job_id).index("--append-system-prompt") + 1]
+
+    db.update_job(conn, job_id, state="ready", resume_id=None)
+    _run(conn, job_id, tmp_path)
+
+    argv = _dispatched_argv(tmp_path, job_id)
+    prompt = argv[argv.index("--append-system-prompt") + 1]
+    assert "This is attempt 2 of this job" in prompt
+    assert "ended: done" in prompt
+
+
+def test_run_job_resumed_dispatch_gets_no_reexec_line(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _make_job(conn, tmp_path)
+
+    _run(conn, job_id, tmp_path)
+    db.update_job(conn, job_id, state="ready", resume_id="conv-abc")
+    _run(conn, job_id, tmp_path)
+
+    argv = _dispatched_argv(tmp_path, job_id)
+    prompt = argv[argv.index("--append-system-prompt") + 1]
+    assert "attempt" not in prompt
+
+
+# ---------------------------------------------------------------------------
+# §8.4 the completion email falls back to the journal only when there is no prose
+# ---------------------------------------------------------------------------
+
+
+def _facts(conn, job: dict, dir_: Path, events: list[dict]) -> Any:
+    return runner._run_facts(
+        conn,
+        job,
+        "done",
+        outcome="done",
+        result_event=None,
+        events=events,
+        live_tasks=[],
+        delta_pct=None,
+        permission_denials=None,
+        conversation_id="conv-abc",
+        reading=None,
+        finished_at="2026-07-21T02:30:00+00:00",
+        config={},
+        job_dir=dir_,
+    )
+
+
+_PROSE_EVENT = {"type": "assistant", "message": {"content": [{"type": "text", "text": "All green."}]}}
+
+
+def test_run_facts_summary_falls_back_to_the_journal_when_there_is_no_prose(tmp_path: Path) -> None:
+    """A run killed by `--timeout` mid-tool-call leaves no closing message, so
+    today's email is worthless -- and that is precisely the morning where the
+    journal on disk is intact and worth reading."""
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _make_job(conn, tmp_path)
+    dir_ = tmp_path / "jobdir"
+    dir_.mkdir()
+    (dir_ / "journal.md").write_text("Goal — ship it.\nNext — the mail tests.\n")
+
+    facts = _facts(conn, db.get_job(conn, job_id), dir_, [])
+
+    assert "Next — the mail tests." in facts.summary
+    # Flagged as a fallback, so nobody reads a checklist as a closing report.
+    assert "no closing message" in facts.summary
+
+
+def test_run_facts_summary_prefers_prose_and_ignores_the_journal(tmp_path: Path) -> None:
+    """The normal case: the final assistant turn is prose addressed to the
+    reader, which beats a Goal/Done/Next checklist. Swapping it out would be a
+    downgrade for the 90% case."""
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _make_job(conn, tmp_path)
+    dir_ = tmp_path / "jobdir"
+    dir_.mkdir()
+    (dir_ / "journal.md").write_text("Goal — ship it.\n")
+
+    facts = _facts(conn, db.get_job(conn, job_id), dir_, [_PROSE_EVENT])
+
+    assert facts.summary == "All green."
+    assert "Goal" not in facts.summary
+
+
+def test_run_facts_summary_is_empty_with_neither_prose_nor_journal(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _make_job(conn, tmp_path)
+    dir_ = tmp_path / "jobdir"
+    dir_.mkdir()
+
+    facts = _facts(conn, db.get_job(conn, job_id), dir_, [])
+
+    assert facts.summary == ""
+
+
+def test_run_facts_summary_ignores_an_empty_journal(tmp_path: Path) -> None:
+    """A journal the agent created and never wrote to is not a summary."""
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _make_job(conn, tmp_path)
+    dir_ = tmp_path / "jobdir"
+    dir_.mkdir()
+    (dir_ / "journal.md").write_text("   \n\n")
+
+    facts = _facts(conn, db.get_job(conn, job_id), dir_, [])
+
+    assert facts.summary == ""

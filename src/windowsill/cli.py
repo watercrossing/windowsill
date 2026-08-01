@@ -647,22 +647,43 @@ def show(ctx: click.Context, identifier: str) -> None:
     with _session(_home(ctx)) as (database, cfg, root):
         job_id = _resolve(database, identifier)
         job = db.get_job(database, job_id)
-        # §3.3: reflect the same allowed_tools default/yield behaviour run_job
-        # actually applies, so "resolved argv" here matches what would dispatch.
+        runs = db.list_runs(database, job_id=job_id)
+        dir_ = runner.job_dir(root, job_id, job["name"])
+        # §3.3/§3.2: reflect the same allowed_tools *and* system-prompt
+        # default/yield behaviour run_job actually applies, so "resolved argv"
+        # here matches what would dispatch. `runs` is every run so far, which
+        # for a job about to be re-dispatched is exactly the `prior_runs` the
+        # next dispatch would see -- so the re-execution line shows up here
+        # before it is ever sent.
+        prompt_plan = runner.resolve_system_prompt(
+            job["passthrough"],
+            config=cfg,
+            job_dir=dir_,
+            is_anchor=bool(job["is_anchor"]),
+            prior_runs=runs,
+            resume_id=job.get("resume_id"),
+        )
         argv = runner.build_argv(
             job["passthrough"],
             resume=job.get("resume_id"),
             allowed_tools=cfg["safety"]["allowed_tools"],
+            system_prompt=prompt_plan.text,
+            add_dirs=[str(prompt_plan.add_dir)] if prompt_plan.add_dir else (),
         )
+        # §8.1's one-screen constraint: windowsill's own prompt is ~950
+        # characters of prose a reader already knows the content of. Elide it
+        # to its length -- the flag being *there*, and the --add-dir beside
+        # it, is what they came to check. A job's own prompt is never elided:
+        # that one they did not write in this repo.
+        if prompt_plan.text:
+            argv = [f"<windowsill system prompt, {len(prompt_plan.text)} chars>" if a == prompt_plan.text else a for a in argv]
 
-        runs = db.list_runs(database, job_id=job_id)
         last_run = runs[-1] if runs else None
         delta = None
         if last_run and last_run.get("pct_before") is not None and last_run.get("pct_after") is not None:
             delta = last_run["pct_after"] - last_run["pct_before"]
         denials = last_run.get("permission_denials") if last_run else None
 
-        dir_ = runner.job_dir(root, job_id, job["name"])
         # Prefer the rendered, human-readable transcript (§6.2); fall back to
         # the raw stream for a run that hasn't produced one yet.
         transcript_path = dir_ / "transcript.md"
@@ -676,6 +697,10 @@ def show(ctx: click.Context, identifier: str) -> None:
         click.echo(f"conversation_id: {job['conversation_id'] or '-'}")
         click.echo(f"delta%: {delta if delta is not None else 'n/a'}")
         click.echo(f"permission denials (last run): {denials if denials is not None else 'n/a'}")
+        # §3.2: whether the job actually kept the journal windowsill asked for.
+        # "absent" on a finished job is the signal that the prompt is not
+        # landing -- the thing worth knowing before the next overnight run.
+        click.echo(f"journal: {'present' if runner.read_journal(dir_) else 'absent'}")
         click.echo("directives:")
         click.echo(f"  window: {job['window_policy']}")
         click.echo(f"  anchor: {bool(job['is_anchor'])}")

@@ -149,15 +149,69 @@ TOOL_PERMISSION_FLAGS = frozenset(
 )
 
 
+def names_any_flag(passthrough: Sequence[str], flags: frozenset[str]) -> bool:
+    """Whether ``passthrough`` already names any flag in ``flags``.
+
+    Recognises both ``--flag value`` and ``--flag=value`` forms. The shared
+    engine behind every "does the job's own pass-through already have an
+    opinion about X" yield rule in this module (§0.4 "pass-through beats
+    validation", extended to defaults) -- :func:`names_tool_permission_flag`
+    (§3.3's ``safety.allowed_tools``) and :func:`names_system_prompt_flag`
+    (§3.2's appended system prompt) are both one-line wrappers over this,
+    not separate implementations of the same read.
+    """
+    return any(token.split("=", 1)[0] in flags for token in passthrough)
+
+
 def names_tool_permission_flag(passthrough: Sequence[str]) -> bool:
     """Whether ``passthrough`` already names a flag in :data:`TOOL_PERMISSION_FLAGS`.
 
-    Recognises both ``--flag value`` and ``--flag=value`` forms. Used by
-    :func:`build_argv` to decide whether to yield, and by callers that need
-    to log the yield (§3.3's "silent-but-visible": no error, but the run's
-    event log makes clear windowsill did not inject).
+    Used by :func:`build_argv` to decide whether to yield, and by callers
+    that need to log the yield (§3.3's "silent-but-visible": no error, but
+    the run's event log makes clear windowsill did not inject).
     """
-    return any(token.split("=", 1)[0] in TOOL_PERMISSION_FLAGS for token in passthrough)
+    return names_any_flag(passthrough, TOOL_PERMISSION_FLAGS)
+
+
+#: Every ``claude`` flag (confirmed via ``claude --help``, v2.1.218, plus a
+#: grep of the installed CLI's bundle for two more it deliberately
+#: ``.hideHelp()``s) that names or replaces the session's system prompt. A
+#: job whose own pass-through directives (§2.2) name any of these has an
+#: opinion of its own about the system prompt, so windowsill's default
+#: appended prompt (§3.2) must yield to it entirely, the same shape as
+#: :data:`TOOL_PERMISSION_FLAGS` -- the job's own flag always wins; this
+#: also doubles as the feature's free per-job opt-out (``#$
+#: --append-system-prompt ""``), so no new scheduler directive is needed.
+#:
+#: ``--append-system-prompt`` is the one windowsill injects (append, not
+#: replace -- ``--system-prompt`` strips Claude Code's own harness
+#: instructions, confirmed by ``--exclude-dynamic-system-prompt-sections``'s
+#: help text: "Only applies with the default system prompt (ignored with
+#: --system-prompt)"). ``--append-system-prompt-file`` and
+#: ``--system-prompt-file`` do not appear in ``claude --help`` output but do
+#: exist in the bundle, each mutually exclusive with its inline sibling: the
+#: bundle contains the hard error strings "Cannot use both
+#: --append-system-prompt and --append-system-prompt-file" and "Cannot use
+#: both --system-prompt and --system-prompt-file". A job naming any of the
+#: four is a job with its own idea about the system prompt.
+SYSTEM_PROMPT_FLAGS = frozenset(
+    {
+        "--append-system-prompt",
+        "--append-system-prompt-file",
+        "--system-prompt",
+        "--system-prompt-file",
+    }
+)
+
+
+def names_system_prompt_flag(passthrough: Sequence[str]) -> bool:
+    """Whether ``passthrough`` already names a flag in :data:`SYSTEM_PROMPT_FLAGS`.
+
+    Used by :func:`build_argv` to decide whether to yield windowsill's
+    default appended system prompt, and by :func:`resolve_system_prompt` to
+    decide whether it is worth resolving one at all.
+    """
+    return names_any_flag(passthrough, SYSTEM_PROMPT_FLAGS)
 
 
 def build_argv(
@@ -166,6 +220,8 @@ def build_argv(
     resume: str | None = None,
     claude_cmd: Sequence[str] = ("claude",),
     allowed_tools: Sequence[str] = (),
+    system_prompt: str | None = None,
+    add_dirs: Sequence[str] = (),
 ) -> list[str]:
     """The argv for §3.2's invocation, minus ``cd <cwd> &&`` (that's the
     subprocess ``cwd=`` kwarg) and minus the body (goes on stdin, never
@@ -188,12 +244,30 @@ def build_argv(
     view -- when ``passthrough`` already names a tool-permission flag of
     its own (:func:`names_tool_permission_flag`); ``run_job`` is
     responsible for logging that yield (§3.3).
+
+    ``system_prompt`` is windowsill's default appended system prompt (§3.2),
+    already fully resolved by :func:`resolve_system_prompt` -- this function
+    does no config reading, journal-path substitution, or re-execution
+    detection of its own. Injected as ``--append-system-prompt <text>``,
+    same yield shape as ``allowed_tools``: skipped when ``passthrough``
+    already names a flag in :data:`SYSTEM_PROMPT_FLAGS`
+    (:func:`names_system_prompt_flag`) -- the job's own flag always wins,
+    which is also this feature's free per-job opt-out. ``add_dirs`` (the
+    job dir, so the agent can write ``journal.md``) is injected as one
+    ``--add-dir`` per entry, nested under the same yield check: granting
+    directory access for a journal the prompt never told the agent about
+    would be pointless, so it rises and falls with ``system_prompt``.
     """
     argv = list(claude_cmd) + ["-p", "--output-format", "stream-json", "--verbose"]
     if resume:
         argv += ["--resume", resume]
     if allowed_tools and not names_tool_permission_flag(passthrough):
         argv += ["--allowed-tools", ",".join(allowed_tools)]
+    if (system_prompt or add_dirs) and not names_system_prompt_flag(passthrough):
+        if system_prompt:
+            argv += ["--append-system-prompt", system_prompt]
+        for add_dir in add_dirs:
+            argv += ["--add-dir", add_dir]
     argv += list(passthrough)
     return argv
 
@@ -504,6 +578,191 @@ _DEFAULT_WINDOW_LENGTH = "5h"
 RESUME_ON_LIMIT_BODY = "Continue where you left off."
 
 
+# ---------------------------------------------------------------------------
+# §3.2 the default appended system prompt, and the journal it advertises
+# ---------------------------------------------------------------------------
+
+#: The filename windowsill writes/advertises the per-job status journal
+#: under, always directly inside the job dir (never the working tree/
+#: worktree -- it must not pollute the branch left for morning review).
+JOURNAL_FILENAME = "journal.md"
+
+#: Injected whenever ``[prompt].enabled`` (byte-identical every run, no
+#: per-job substitution). States the operating rules a job's own file would
+#: otherwise have to spell out by hand -- design/02-job-file.md's own
+#: example job file already writes "if you hit a blocker ... write what you
+#: tried ... to BLOCKED.md" -- and hoists that boilerplate rather than
+#: competing with it: same filename, same idea.
+SYSTEM_PROMPT_BASE = (
+    "You are running unattended under windowsill, a batch queue that runs one "
+    "job per session inside a fixed usage window. Nobody is watching this "
+    "session and no question you ask will be answered. Never end a turn on a "
+    "question. If you are blocked, write what you tried and what you need "
+    "into `BLOCKED.md`, then carry on with the next piece of work.\n\n"
+    "Context is the budget that binds here, not time and not money. For work "
+    "that spans many files, delegate the reading and editing to subagents and "
+    "keep this session for planning and results."
+)
+
+#: Appended after :data:`SYSTEM_PROMPT_BASE` whenever ``[prompt].journal``.
+#: ``{journal}`` is substituted with the job dir's absolute journal path.
+#: Explicitly rations updates -- the journal is the *expensive* half of this
+#: feature (each write is an Edit/Write call that stays in context for the
+#: rest of the run), so the prompt itself is the only thing keeping that
+#: cost down.
+SYSTEM_PROMPT_JOURNAL = (
+    "Keep a status journal at `{journal}`, under a page:\n\n"
+    "    Goal  — one line.\n"
+    "    Done  — what is finished, and the evidence (file, test, commit).\n"
+    "    Next  — what remains, in order.\n"
+    "    Notes — decisions and dead ends worth not repeating.\n\n"
+    "Write it once early, then update it when you finish a step or change "
+    "plan — not more often; every update costs context. You own this "
+    "file: never ask a subagent to write it."
+)
+
+#: Appended only when windowsill *knows* this run is a fresh-context
+#: re-execution of a job that has already tried at least once: a prior run
+#: exists in ``runs`` and this dispatch carries no ``resume_id``. That is
+#: exactly the ``--retry``/``--no-resume-on-limit`` shape (runner.py's own
+#: requeue paths), both of which re-dispatch with a brand-new conversation
+#: and the original body, discarding everything the previous attempt did.
+#: Never injected on an ordinary first run, and never on a resumed run --
+#: a resumed agent already has this history in its own context and doesn't
+#: need to be told to go read a file about it.
+SYSTEM_PROMPT_REEXEC = (
+    "This is attempt {attempt} of this job. The previous attempt ended: "
+    "{outcome}. This session has none of its history — read `{journal}` "
+    "first and continue from Next. Do not start over."
+)
+
+
+@dataclass(frozen=True)
+class SystemPromptPlan:
+    """What :func:`resolve_system_prompt` decided to inject for one run.
+
+    ``text`` is the value for ``--append-system-prompt``, or ``None`` when
+    nothing should be injected at all (config off, an anchor job, or the
+    job's own pass-through already names a system-prompt flag of its own --
+    §3.2's yield rule). ``add_dir`` is the job dir to also pass as
+    ``--add-dir``, or ``None`` whenever ``text`` doesn't mention the journal
+    by path -- kept together with ``text`` so the two can never drift apart
+    (a directory grant for a journal the prompt never told the agent about
+    would be silently pointless).
+
+    ``yielded`` distinguishes the one reason for ``text is None`` that a
+    reader of the morning's event log would want to know about -- the job
+    brought its own system-prompt flag -- from the two that are simply
+    windowsill having nothing on offer (disabled, or an anchor). Only the
+    first is worth an event: §3.3's "silent-but-visible" shape, the same one
+    ``allowed_tools_yielded`` already uses. A job that names its own flag
+    while ``[prompt].enabled`` is false yielded nothing and reports
+    ``False``.
+    """
+
+    text: str | None = None
+    add_dir: Path | None = None
+    yielded: bool = False
+
+
+def resolve_system_prompt(
+    passthrough: Sequence[str],
+    *,
+    config: Mapping[str, Any] | None,
+    job_dir: Path,
+    is_anchor: bool,
+    prior_runs: Sequence[Mapping[str, Any]],
+    resume_id: str | None,
+) -> SystemPromptPlan:
+    """Resolve §3.2's default appended system prompt for one dispatch.
+
+    Pure: no I/O, no clock, no probing -- every fact it needs (config,
+    whether this is an anchor job, the job's prior ``runs`` rows in
+    dispatch order, and whether this dispatch carries a ``resume_id``) is
+    handed in. ``run_job`` supplies ``prior_runs`` via ``db.list_runs``
+    called *before* this dispatch's own run is inserted, so it naturally
+    excludes the run currently being resolved.
+
+    Nothing is injected (``SystemPromptPlan()``, both fields ``None``) when:
+
+    - ``[prompt].enabled`` is false,
+    - ``is_anchor`` -- injecting a ~250-token prompt and a journal
+      instruction into a Haiku "reply with the single word: ok" ping is
+      absurd, or
+    - the job's own pass-through already names a flag in
+      :data:`SYSTEM_PROMPT_FLAGS` (:func:`names_system_prompt_flag`) -- the
+      job's own flag always wins, and this is also the feature's free
+      per-job opt-out (``#$ --append-system-prompt ""``): no new scheduler
+      directive is needed.
+
+    Otherwise the text is either ``[prompt].text`` verbatim (with
+    ``"{journal}"`` substituted -- a plain string replace, not
+    ``str.format``, since a user's override may itself contain other brace
+    characters), or built from :data:`SYSTEM_PROMPT_BASE` plus, when
+    ``[prompt].journal``, :data:`SYSTEM_PROMPT_JOURNAL`, plus, when
+    ``[prompt].journal`` *and* ``prior_runs`` is non-empty *and*
+    ``resume_id`` is ``None``, :data:`SYSTEM_PROMPT_REEXEC` (naming the
+    attempt number and the previous attempt's outcome). The re-execution
+    line is gated on ``[prompt].journal`` too: it tells the agent to go
+    read the journal, which presupposes one is being kept.
+
+    ``add_dir`` is the job dir itself whenever the resolved text is
+    non-empty and ``[prompt].journal`` is on (covers both the built-in text
+    and an override that mentions ``{journal}``); ``None`` otherwise.
+    """
+    prompt_config = (config or {}).get("prompt") or {}
+    # Order matters only for what gets *reported*: the two "nothing on offer"
+    # cases are checked first so that a disabled/anchor job which also happens
+    # to name its own flag doesn't log a yield it never made.
+    if is_anchor or not prompt_config.get("enabled", True):
+        return SystemPromptPlan()
+    if names_system_prompt_flag(passthrough):
+        return SystemPromptPlan(yielded=True)
+
+    journal_enabled = bool(prompt_config.get("journal", True))
+    journal_path = job_dir / JOURNAL_FILENAME
+    add_dir = job_dir if journal_enabled else None
+
+    override = prompt_config.get("text") or ""
+    if override:
+        return SystemPromptPlan(text=override.replace("{journal}", str(journal_path)), add_dir=add_dir)
+
+    parts = [SYSTEM_PROMPT_BASE]
+    if journal_enabled:
+        parts.append(SYSTEM_PROMPT_JOURNAL.format(journal=journal_path))
+        if prior_runs and resume_id is None:
+            prior_outcome = prior_runs[-1].get("outcome") or "unknown"
+            parts.append(
+                SYSTEM_PROMPT_REEXEC.format(
+                    attempt=len(prior_runs) + 1,
+                    outcome=prior_outcome,
+                    journal=journal_path,
+                )
+            )
+
+    return SystemPromptPlan(text="\n\n".join(parts), add_dir=add_dir)
+
+
+def read_journal(job_dir: Path) -> str:
+    """The job's ``journal.md``, or ``""`` when there isn't one worth reading.
+
+    Used only as the completion email's fallback summary (§8.4): the primary
+    is still the run's closing prose, which is addressed to the reader and
+    beats a Goal/Done/Next checklist in the 90% case. This covers the case
+    where there *is* no closing prose -- a run killed by ``--timeout``
+    mid-tool-call, or one that died before its first turn -- which is exactly
+    the morning the email is currently worthless and the journal on disk is
+    intact. A journal the agent created and never wrote to is not a summary,
+    so whitespace counts as absent.
+    """
+    path = job_dir / JOURNAL_FILENAME
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return text.strip()
+
+
 @dataclass
 class RunOutcome:
     job_id: int
@@ -614,6 +873,17 @@ def _requeue_after_limit(
     return "ready"
 
 
+#: Prefixed to the journal when it stands in for a missing closing message,
+#: so nobody reads a Goal/Done/Next checklist as a report addressed to them.
+JOURNAL_SUMMARY_NOTE = "*The run left no closing message. This is the journal it kept.*"
+
+
+def _journal_summary(job_dir: Path) -> str:
+    """The journal as an email body, or ``""`` when there is nothing to show."""
+    journal = read_journal(job_dir)
+    return f"{JOURNAL_SUMMARY_NOTE}\n\n{journal}" if journal else ""
+
+
 def _run_facts(
     database: "db.sqlite_utils.Database",
     job: dict[str, Any],
@@ -629,6 +899,7 @@ def _run_facts(
     reading: "usage.ParsedUsage | None",
     finished_at: str,
     config: Mapping[str, Any] | None,
+    job_dir: Path,
 ) -> "mail.RunFacts":
     """Assemble what the completion email reports (§8.4).
 
@@ -636,6 +907,12 @@ def _run_facts(
     the rate-limit check just walked (so the final summary costs no second
     parse of ``stream.jsonl``), the post-run ``/usage`` reading (§4.3), the
     ``sched`` block gate (§5.4), and the §5.3 ledger count.
+
+    ``summary`` is the run's closing prose, falling back to the journal
+    (:func:`read_journal`) only when there is none -- see that function for
+    why the fallback is one-way. ``RunFacts`` gains no field for it: the
+    journal is Markdown and the summary is Markdown, so ``mail`` renders it
+    unchanged.
     """
     sched = db.get_sched(database)
     settings = config or {}
@@ -644,7 +921,7 @@ def _run_facts(
         name=job["name"],
         job_state=job_state,
         outcome=outcome,
-        summary=transcript.final_summary(events),
+        summary=transcript.final_summary(events) or _journal_summary(job_dir),
         result=result_event,
         live_tasks=[dict(task) for task in live_tasks],
         delta_pct=delta_pct,
@@ -767,7 +1044,30 @@ def run_job(
     # here (§3.3 "silent-but-visible") so the run's own record shows why no
     # allowlist went in, using the same idiom as every other run event.
     allowed_tools = list((config or {}).get("safety", {}).get("allowed_tools") or [])
-    argv = build_argv(job["passthrough"], resume=job.get("resume_id"), claude_cmd=claude_cmd, allowed_tools=allowed_tools)
+
+    # §3.2: the same default/yield shape for the appended system prompt. The
+    # prior runs are read *before* this dispatch's own run row is inserted
+    # below, so `prior_runs` is genuinely "attempts that already happened" --
+    # which is what decides whether this is a fresh-context re-execution
+    # (`--retry`/`--no-resume-on-limit`: a new conversation and the original
+    # body) and therefore whether the agent is told to go read the journal.
+    prompt_plan = resolve_system_prompt(
+        job["passthrough"],
+        config=config,
+        job_dir=dir_,
+        is_anchor=bool(job.get("is_anchor")),
+        prior_runs=db.list_runs(database, job_id=job_id),
+        resume_id=job.get("resume_id"),
+    )
+
+    argv = build_argv(
+        job["passthrough"],
+        resume=job.get("resume_id"),
+        claude_cmd=claude_cmd,
+        allowed_tools=allowed_tools,
+        system_prompt=prompt_plan.text,
+        add_dirs=[str(prompt_plan.add_dir)] if prompt_plan.add_dir else (),
+    )
     write_cmd_json(dir_, argv=argv, cwd=job["cwd"], env=env)
 
     started_at = now()
@@ -778,6 +1078,14 @@ def run_job(
             job_id=job_id,
             kind="allowed_tools_yielded",
             detail="pass-through already names a tool-permission flag; safety.allowed_tools not injected",
+        )
+    if prompt_plan.yielded:
+        db.log_event(
+            database,
+            ts=started_at,
+            job_id=job_id,
+            kind="system_prompt_yielded",
+            detail="pass-through already names a system-prompt flag; windowsill's prompt and journal not injected",
         )
 
     # §4.3: probe immediately before and after the run; the delta is what the
@@ -920,6 +1228,7 @@ def run_job(
                 reading=after,
                 finished_at=finished_at,
                 config=config,
+                job_dir=dir_,
             ),
             ts=finished_at,
             config=config,

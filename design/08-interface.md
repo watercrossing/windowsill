@@ -65,6 +65,11 @@ allowed_tools   = ["Read", "Edit", "Write", "Grep", "Glob", "Bash", "Task", "Tod
 default_isolate = "worktree"
 allow_dirty     = false
 
+[prompt]
+enabled = true                    # §3.2; append windowsill's system prompt to every non-anchor job
+journal = true                    # ask the job to keep <job dir>/journal.md; adds --add-dir <job dir>
+text    = ""                      # replace the built-in prompt wholesale; "{journal}" is substituted
+
 [notify]
 default = "none"                  # opt-in; see §8.4
 

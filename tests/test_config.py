@@ -334,3 +334,47 @@ def test_malformed_toml_raises(tmp_path: Path) -> None:
 
     with pytest.raises(Exception):
         load_config(config_file)
+
+
+# ---------------------------------------------------------------------------
+# [prompt]: §3.2's appended system prompt and its journal
+# ---------------------------------------------------------------------------
+
+
+def test_prompt_defaults_are_on_with_an_empty_override(tmp_path: Path) -> None:
+    """Default on, per the `safety.allowed_tools` precedent (a default-on
+    injection), not §8.4's "opt-in, never guessed" -- that rule is about not
+    mailing strangers, a blast-radius concern that does not apply to a system
+    prompt. `text` ships empty, meaning "use the built-in"."""
+    cfg = load_config(tmp_path / "config.toml")
+    assert cfg["prompt"] == {"enabled": True, "journal": True, "text": ""}
+
+
+def test_prompt_journal_can_be_turned_off_alone(tmp_path: Path) -> None:
+    """The journal is the expensive half (an Edit/Write per update, resident in
+    context for the rest of the run), so it must be switchable without giving
+    up the ~250-token unattended-behaviour prompt."""
+    path = tmp_path / "config.toml"
+    path.write_text("[prompt]\njournal = false\n")
+
+    cfg = load_config(path)
+    assert cfg["prompt"]["journal"] is False
+    assert cfg["prompt"]["enabled"] is True
+    assert cfg["prompt"]["text"] == ""
+
+
+def test_prompt_text_override_merges_over_the_defaults(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text('[prompt]\ntext = "Only this. See {journal}."\n')
+
+    cfg = load_config(path)
+    assert cfg["prompt"]["text"] == "Only this. See {journal}."
+    assert cfg["prompt"]["enabled"] is True
+
+
+def test_prompt_defaults_are_not_shared_mutable_state(tmp_path: Path) -> None:
+    cfg1 = load_config(tmp_path / "config.toml")
+    cfg1["prompt"]["enabled"] = False
+
+    assert load_config(tmp_path / "config.toml")["prompt"]["enabled"] is True
+    assert DEFAULTS["prompt"]["enabled"] is True

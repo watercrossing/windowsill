@@ -79,6 +79,33 @@ DEFAULTS: dict[str, Any] = {
         "default_isolate": "worktree",
         "allow_dirty": False,
     },
+    # §3.2: windowsill appends a short system prompt to every non-anchor job,
+    # telling it the one thing its own body can't know -- that nobody is
+    # watching, so a question ends the run -- and asking it to keep a status
+    # journal at `<job dir>/journal.md`. This is a *default*, not a new
+    # capability: `--append-system-prompt` has always been passable straight
+    # through as a `#$` directive, and a job that names any system-prompt flag
+    # of its own (`--append-system-prompt`, `--append-system-prompt-file`,
+    # `--system-prompt`, `--system-prompt-file`) gets its own, untouched, with
+    # nothing of windowsill's added -- which is also the free per-job opt-out:
+    # `#$ --append-system-prompt ""`. Anchor jobs (§5.2) are never injected.
+    #
+    # The two switches are separate because they cost differently. `enabled`
+    # buys ~250 tokens once, in the cached prefix: free. `journal` is the
+    # expensive half -- every update is an Edit/Write whose call *and* result
+    # stay in context for the rest of the run, so ten updates is ~3% of a
+    # 150k window, compounding. Default on anyway, because the failure it
+    # insures against costs 100%: `--retry` and `--no-resume-on-limit` both
+    # re-dispatch with a fresh conversation and the original body, throwing an
+    # entire window's work away. Turn it off for jobs that always finish in
+    # one window. `text` replaces the built-in prompt wholesale (`{journal}`
+    # is substituted with the absolute journal path); empty means "use the
+    # built-in", so the default is never something you can only take or leave.
+    "prompt": {
+        "enabled": True,
+        "journal": True,
+        "text": "",
+    },
     # §8.4: notifications are opt-in, and there is no default destination for
     # either channel. A shipped recipient is an address that bounces -- the
     # placeholder that used to sit here was mailed for real and refused by the

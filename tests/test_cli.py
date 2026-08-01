@@ -1288,3 +1288,62 @@ def test_declared_console_scripts_all_resolve(tmp_path: Path) -> None:
         module, _, attribute = target.partition(":")
         assert module == "windowsill.cli"
         assert callable(getattr(cli, attribute))
+
+
+# ---------------------------------------------------------------------------
+# windowsill show: §3.2 system prompt parity, elided to keep one screen
+# ---------------------------------------------------------------------------
+
+
+def test_show_argv_reflects_the_injected_system_prompt_elided(tmp_path: Path, runner: CliRunner) -> None:
+    """ "Resolved argv" is a promise: it must be what would actually dispatch,
+    or it is a lie you debug against at 3am. But the prompt is ~950 characters
+    and §8.1's constraint is one screen, so the text is elided to its length --
+    the flag and the `--add-dir` are what a reader is checking for."""
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="showme", state="queued")
+
+    result = run(runner, home, "show", str(job_id))
+
+    assert result.exit_code == 0, result.output
+    assert "--append-system-prompt <windowsill system prompt, " in result.output
+    assert "--add-dir" in result.output
+    # Elided, not printed: no line of the prompt's own prose leaks into argv.
+    assert "Nobody is watching this session" not in result.output
+
+
+def test_show_reports_whether_a_journal_exists(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="showme", state="queued")
+
+    assert "journal: absent" in run(runner, home, "show", str(job_id)).output
+
+    dir_ = runner_mod.job_dir(home / ".windowsill", job_id, "showme")
+    dir_.mkdir(parents=True, exist_ok=True)
+    (dir_ / "journal.md").write_text("Goal — ship it.\n")
+
+    assert "journal: present" in run(runner, home, "show", str(job_id)).output
+
+
+def test_show_argv_leaves_a_jobs_own_system_prompt_alone(tmp_path: Path, runner: CliRunner) -> None:
+    """The yield rule is visible here too: a job that brought its own prompt
+    sees exactly its own, unelided, and no `--add-dir`."""
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = db.insert_job(
+        conn,
+        name="showme",
+        state="queued",
+        submitted_at=PAST,
+        cwd="/tmp/work",
+        body="do the thing",
+        passthrough=["--append-system-prompt", "mine only"],
+    )
+
+    result = run(runner, home, "show", str(job_id))
+
+    assert "--append-system-prompt mine only" in result.output
+    assert "windowsill system prompt" not in result.output
+    assert "--add-dir" not in result.output
