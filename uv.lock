@@ -195,8 +195,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "click" },
-    { name = "sqlite-utils" },
+    { name = "click", specifier = ">=8.1" },
+    { name = "sqlite-utils", specifier = ">=3.36" },
 ]
 
 [package.metadata.requires-dev]
