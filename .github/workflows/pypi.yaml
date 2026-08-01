@@ -17,6 +17,11 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
+      # A job-level block REPLACES the workflow-level one rather than merging
+      # with it — anything unlisted here is set to `none`, so the `contents:
+      # read` above does not carry over and checkout of this private repo
+      # would fail. Both lines are load-bearing.
+      contents: read
       id-token: write # mints the OIDC token PyPI trades for an upload
     steps:
       - uses: actions/checkout@v4
