@@ -1,7 +1,86 @@
-# Overnight run notes — 2026-07-31
+# Overnight run notes — 2026-07-31 / 2026-08-01
 
 Things you should know at breakfast without reading the transcript.
 Nothing here is a blocker unless it says **BLOCKED**.
+
+---
+
+# Part two — the night of 2026-08-01 (§3–§6)
+
+## §6 PyPI release — the ten-minute checklist
+
+**Verdict: nearly, but do not tag tonight.** The blocker was in the workflow, not
+the package, and it is now fixed (`a06a161`). See "Honest opinion" at the end.
+
+Do these in order. Steps 1–3 are the ones only you can do.
+
+1. **Push.** You are **14 commits ahead** of `watercrossing/ccq`. Everything below
+   assumes they are pushed — including `27526be`, which adds the LICENSE.
+   Tagging a release right now would build a tree with **no LICENSE and no
+   release metadata**. `git push gh-ccq main`.
+2. **Decide the GitHub repo name, and do it now if you are going to.** The remote
+   is still `watercrossing/ccq`. A PyPI trusted publisher binds to the literal
+   `owner/repo`; GitHub's redirect does **not** carry the OIDC claim, so renaming
+   *after* you register the publisher silently breaks publishing. Rename first,
+   or accept `ccq` as the repo name forever. If you rename, update the three URLs
+   in `pyproject.toml:39-41` too.
+3. **PyPI account + 2FA.** 2FA is **mandatory**, no opt-out. Accepted: a TOTP app,
+   a WebAuthn key (YubiKey etc.), plus one-time recovery codes. Do this before
+   step 4 — you cannot register a publisher without it.
+4. **Register a *pending* publisher** (the project does not exist on PyPI yet, so
+   this is the right flow): PyPI → your account → Publishing. Fields, exactly:
+   - PyPI Project Name → `windowsill`
+   - Owner → `watercrossing`
+   - Repository name → `ccq` *(or the new name from step 2)*
+   - Workflow name → `pypi.yaml` — with the extension, matched literally
+   - Environment name → **leave blank** (the workflow declares no `environment:`;
+     if you fill this in, the two must match exactly or the upload is rejected)
+5. **Optional but cheap: a TestPyPI dry run.** Separate account, separate 2FA,
+   separate pending publisher, and a second job pointed at
+   `https://test.pypi.org/legacy/`. Worth it only because **a PyPI version number
+   can never be reused** — if `0.1.0` fails halfway you cannot retry it.
+6. **Tag and release.** Create the GitHub release with tag `v0.1.0`. The workflow
+   guards that the tag matches `pyproject.toml`'s version and fails before upload
+   if not. Publishing the release triggers it.
+
+**Name availability: `windowsill` is FREE.** `pypi.org/pypi/windowsill/json` →
+404, unregistered and not squatted. Note the old name `ccq` **is taken** — by an
+unrelated, actively-maintained project ("Query your own Claude Code agent history
+with DuckDB", 3 releases, last June 2026). So the rename was necessary, not
+cosmetic. Free fallbacks if ever needed: `windowsill-queue`, `winsill`.
+A pending publisher does **not** reserve the name — someone could still take it
+between step 4 and step 6.
+
+### What I found and fixed for you
+
+- **The workflow would NOT have worked** (`a06a161`). Its job-level
+  `permissions:` block listed only `id-token: write`. A job-level block
+  *replaces* the workflow-level one rather than merging, so everything unlisted
+  becomes `none` — the top-level `contents: read` was discarded and
+  `actions/checkout` ran with no read access. Fatal specifically because **the
+  repo is private**. It uses trusted publishing (OIDC), no API token anywhere,
+  which is the right choice.
+- `dist/` was not in `.gitignore`. Now is.
+
+### pyproject: in good shape, small gaps
+
+`twine check --strict` passes on both artifacts. Licence metadata is the modern
+SPDX form and matches the real MIT LICENSE. Artifacts are clean — the wheel has
+all 13 modules and all 5 console scripts; the sdist has README, LICENSE, design/
+and tests/, and **none** of `tasks/`, `BLOCKED.md`, `.venv`, `*.db` or
+`__pycache__`. Still missing, none blocking: no author email, no Documentation
+or Changelog URL (no CHANGELOG exists), and `Programming Language :: Python ::
+3.14` is asserted but never tested — **there is no CI test workflow at all**,
+`pypi.yaml` is the only file in `.github/workflows/`.
+
+### Honest opinion
+
+Ship it, after steps 1–4. The package is genuinely releasable: 545 tests, clean
+artifacts, real metadata. Two caveats I would not paper over — the workflow has
+still **never executed**, so its first run is on the release that matters (hence
+the TestPyPI suggestion), and there is **no CI**, so "the tests pass" currently
+means "they passed on Ingolf's machine". Neither is a reason to wait; both are
+reasons to expect the first release to need a `0.1.1`.
 
 ## Your crontab was changed (§1)
 
