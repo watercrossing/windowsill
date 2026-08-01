@@ -7,6 +7,21 @@ Nothing here is a blocker unless it says **BLOCKED**.
 
 # Part two — the night of 2026-08-01 (§3–§6)
 
+## §5 The email was sent — but not the variant you asked for
+
+Delivered 08:01 to i.becker@ucl.ac.uk, accepted by smtp.cs.ucl.ac.uk
+(`status=sent`). First windowsill email ever to leave the machine.
+
+It is the **completion** variant, reporting **job 18** — every figure read out of
+`windowsill.db`, nothing staged, renderer unmodified.
+
+You asked for the **blocked** variant and did not get it. It could not be produced
+honestly: **no job in the database has ever reached state `blocked`**, and the
+window was closed, so the only ways to get one were to fake a database row or to
+spend window on a job invented purely to fail in an interesting way. You
+pre-authorised the fallback, so I took it — but the blocked path is **still
+unexercised and still owed**. It remains the least-tested branch in `mail.py`.
+
 ## §6 PyPI release — the ten-minute checklist
 
 **Verdict: nearly, but do not tag tonight.** The blocker was in the workflow, not
