@@ -902,5 +902,68 @@ def tick(ctx: click.Context, quiet: bool) -> None:
             )
 
 
+# ---------------------------------------------------------------------------
+# windowsill completions
+# ---------------------------------------------------------------------------
+
+
+@main.group("completions")
+def completions_group() -> None:
+    """Shell completion: emit a script, or install one for every entry point."""
+
+
+def _emit_completion(shell: str) -> None:
+    from windowsill import completions  # deferred: see module docstring
+
+    click.echo(completions.render(shell, "windowsill"))
+
+
+@completions_group.command("bash")
+def completions_bash() -> None:
+    """Emit the bash completion script for ``windowsill`` to stdout."""
+    _emit_completion("bash")
+
+
+@completions_group.command("zsh")
+def completions_zsh() -> None:
+    """Emit the zsh completion script for ``windowsill`` to stdout."""
+    _emit_completion("zsh")
+
+
+@completions_group.command("fish")
+def completions_fish() -> None:
+    """Emit the fish completion script for ``windowsill`` to stdout."""
+    _emit_completion("fish")
+
+
+@completions_group.command("install")
+@click.option(
+    "--shell",
+    "shell_opt",
+    default="auto",
+    help="bash, zsh, fish, or auto to detect from $SHELL.",
+)
+def completions_install(shell_opt: str) -> None:
+    """Detect the shell, and write completion files for all five entry points.
+
+    Deliberately has no ``--home``: that option means the windowsill *state*
+    directory everywhere else in this CLI, a different thing from the real
+    ``$HOME`` completion files belong under -- tests fake the latter by
+    setting the ``HOME`` env var, not by threading a flag through here.
+    """
+    from windowsill import completions  # deferred: see module docstring
+
+    shell = completions.detect_shell() if shell_opt == "auto" else shell_opt
+    if shell not in completions.SHELLS:
+        raise click.ClickException(f"unsupported shell: {shell_opt!r} (expected bash, zsh, fish, or auto)")
+
+    result = completions.install(shell, Path.home())
+    for path in result.written:
+        click.echo(f"wrote {path}")
+    for link, target in result.linked:
+        click.echo(f"linked {link} -> {target.name}")
+    click.echo(result.note)
+
+
 if __name__ == "__main__":  # pragma: no cover
     main()

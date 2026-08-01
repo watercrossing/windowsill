@@ -43,6 +43,34 @@ so your source edits take effect immediately — prefer it while working in the 
 environment each time and runs that snapshot rather than your live source:
 handy for a one-off try, redundant once the code is already local.
 
+### Shell completion
+
+```
+windowsill completions install
+```
+
+Detects your shell from `$SHELL` (or take `--shell bash|zsh|fish` to skip that) and writes
+completion files for all five entry points — `windowsill`, `ccsub`, `ccstat`, `ccdel`, `ccresume` —
+straight into the directory that shell already scans on startup, so there's no rc file to edit
+and nothing to go stale: the script just re-invokes the program on each TAB press, so a CLI change
+shows up the next time you press TAB, not the next time you reinstall completions.
+
+- bash and fish autoload by filename, so install lands one real file — holding all five entry
+  points' scripts — plus a symlink per remaining name in
+  `~/.local/share/bash-completion/completions/` and `~/.config/fish/completions/` respectively.
+- zsh has no such fixed directory, so it gets five real files instead, under `~/.zsh/completions`;
+  if that isn't already on your `$fpath`, `install` prints the `fpath+=(...)` line to add.
+
+Prefer an `eval` line in your rc over installed files? `windowsill completions <bash|zsh|fish>`
+emits the `windowsill` script alone to stdout:
+
+```
+eval "$(windowsill completions bash)"
+```
+
+Either way, a TAB press costs about 70-90ms now — imperceptible; it was ~220ms before commit
+`6daf5c3` trimmed `cli.py`'s import-time cost.
+
 ## Running on a schedule (cron)
 
 windowsill dispatches jobs two ways (see [`design/03-execution-model.md`](design/03-execution-model.md)).
