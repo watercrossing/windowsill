@@ -1,0 +1,24 @@
+#!/bin/sh
+# Run the same checks CI runs, before the batch leaves the machine.
+#
+# Why this exists: a `push` event triggers exactly one CI run, against the tip
+# of what was pushed. Pushing ten commits therefore buys one verdict on all
+# ten — a red build means "somewhere in there", and finding where is a local
+# bisect. Running the checks here turns that into "this push is red" while the
+# commits are still cheap to amend or reorder.
+#
+# Opt in with:   git config core.hooksPath .githooks
+# Skip once with: git push --no-verify
+
+set -e
+
+echo "pre-push: ruff check"
+uv run --no-sync ruff check .
+
+echo "pre-push: ruff format --check"
+uv run --no-sync ruff format --check .
+
+echo "pre-push: pytest"
+uv run --no-sync pytest -q
+
+echo "pre-push: ok"

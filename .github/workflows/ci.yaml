@@ -1,0 +1,61 @@
+# Tests and lint on every push and pull request.
+#
+# This is the workflow that makes "the tests pass" mean something other than
+# "they passed on Ingolf's machine". It is deliberately separate from
+# pypi.yaml: that one is bound to a PyPI trusted publisher by filename and
+# must not grow triggers, and a release should never be gated on a workflow
+# that can be edited casually.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Commits land here in batches of ten, so a push supersedes its predecessor
+# often enough to be worth cancelling — but never on main, where each run is
+# the only record that a given batch was green.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false # one version failing should not hide the other's result
+      matrix:
+        # pyproject claims both. 3.14 was asserted in the classifiers long
+        # before anything ran the suite on it; this is what makes the claim true.
+        python-version: ["3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      # --locked fails rather than silently re-resolving, so a uv.lock that
+      # has drifted from pyproject.toml is a CI failure and not a mystery.
+      - run: uv sync --locked --python ${{ matrix.python-version }}
+
+      - run: uv run --no-sync pytest -q
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --locked
+
+      # Two separate calls: `check` is the lint rules (E, F, I), `format
+      # --check` is the formatter. Passing one says nothing about the other.
+      - run: uv run --no-sync ruff check .
+      - run: uv run --no-sync ruff format --check .
