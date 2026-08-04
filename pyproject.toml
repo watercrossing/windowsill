@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "windowsill"
-version = "0.1.0"
+version = "0.2.0"
 description = "A local batch queue for Claude Code — SGE-style job files that run prompts unattended in 5-hour windows."
 readme = "README.md"
 license = "MIT"
@@ -36,9 +36,10 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/watercrossing/ccq"
-Repository = "https://github.com/watercrossing/ccq"
-Issues = "https://github.com/watercrossing/ccq/issues"
+Homepage = "https://github.com/watercrossing/windowsill"
+Repository = "https://github.com/watercrossing/windowsill"
+Issues = "https://github.com/watercrossing/windowsill/issues"
+Changelog = "https://github.com/watercrossing/windowsill/blob/main/CHANGELOG.md"
 
 [project.scripts]
 # The SGE-shaped short verbs are the daily interface; `windowsill` stays as
