@@ -1,142 +1,161 @@
-# Overnight run notes — 2026-07-31 / 2026-08-01
+# Overnight run notes — 2026-08-04 (todo-4)
 
 Things you should know at breakfast without reading the transcript.
 Nothing here is a blocker unless it says **BLOCKED**.
 
 ---
 
-# Part two — the night of 2026-08-01 (§3–§6)
+## **BLOCKED** — the repo rename broke your PyPI trusted publisher
 
-## §5 The email was sent — but not the variant you asked for
+Do this before you tag 0.2.0, or the publish will fail at the upload step.
 
-Delivered 08:01 to i.becker@ucl.ac.uk, accepted by smtp.cs.ucl.ac.uk
-(`status=sent`). First windowsill email ever to leave the machine.
+You registered the publisher against `watercrossing/**ccq**`. The repo is now
+`watercrossing/**windowsill**`. A trusted publisher matches the OIDC token's
+`repository` claim **literally** — GitHub's rename redirect does not rewrite
+the claim. So the token will say `windowsill`, the publisher will say `ccq`,
+and PyPI will reject the upload.
 
-It is the **completion** variant, reporting **job 18** — every figure read out of
-`windowsill.db`, nothing staged, renderer unmodified.
+This is exactly the trap the last run's §6 step 2 warned about; the warning
+just arrived one release too late to be free.
 
-You asked for the **blocked** variant and did not get it. It could not be produced
-honestly: **no job in the database has ever reached state `blocked`**, and the
-window was closed, so the only ways to get one were to fake a database row or to
-spend window on a job invented purely to fail in an interesting way. You
-pre-authorised the fallback, so I took it — but the blocked path is **still
-unexercised and still owed**. It remains the least-tested branch in `mail.py`.
+**Fix (two minutes, only you can do it):** PyPI → your account → Publishing →
+the `windowsill` project → delete the old `ccq` publisher and add one with:
 
-## §6 PyPI release — the ten-minute checklist
+- Owner → `watercrossing`
+- Repository name → `windowsill`
+- Workflow name → `pypi.yaml`
+- Environment name → **leave blank**
 
-**Verdict: nearly, but do not tag tonight.** The blocker was in the workflow, not
-the package, and it is now fixed (`a06a161`). See "Honest opinion" at the end.
+Everything else about the release path is unchanged and still correct.
 
-Do these in order. Steps 1–3 are the ones only you can do.
+## §1 The rename is done
 
-1. **Push.** You are **14 commits ahead** of `watercrossing/ccq`. Everything below
-   assumes they are pushed — including `27526be`, which adds the LICENSE.
-   Tagging a release right now would build a tree with **no LICENSE and no
-   release metadata**. `git push gh-ccq main`.
-2. **Decide the GitHub repo name, and do it now if you are going to.** The remote
-   is still `watercrossing/ccq`. A PyPI trusted publisher binds to the literal
-   `owner/repo`; GitHub's redirect does **not** carry the OIDC claim, so renaming
-   *after* you register the publisher silently breaks publishing. Rename first,
-   or accept `ccq` as the repo name forever. If you rename, update the three URLs
-   in `pyproject.toml:39-41` too.
-3. **PyPI account + 2FA.** 2FA is **mandatory**, no opt-out. Accepted: a TOTP app,
-   a WebAuthn key (YubiKey etc.), plus one-time recovery codes. Do this before
-   step 4 — you cannot register a publisher without it.
-4. **Register a *pending* publisher** (the project does not exist on PyPI yet, so
-   this is the right flow): PyPI → your account → Publishing. Fields, exactly:
-   - PyPI Project Name → `windowsill`
-   - Owner → `watercrossing`
-   - Repository name → `ccq` *(or the new name from step 2)*
-   - Workflow name → `pypi.yaml` — with the extension, matched literally
-   - Environment name → **leave blank** (the workflow declares no `environment:`;
-     if you fill this in, the two must match exactly or the upload is rejected)
-5. **Optional but cheap: a TestPyPI dry run.** Separate account, separate 2FA,
-   separate pending publisher, and a second job pointed at
-   `https://test.pypi.org/legacy/`. Worth it only because **a PyPI version number
-   can never be reused** — if `0.1.0` fails halfway you cannot retry it.
-6. **Tag and release.** Create the GitHub release with tag `v0.1.0`. The workflow
-   guards that the tag matches `pyproject.toml`'s version and fails before upload
-   if not. Publishing the release triggers it.
+- `~/.ssh/gh-ccq` → `~/.ssh/gh-windowsill` (and `.pub`).
+- `~/.ssh/config`: `Host gh-ccq` → `Host gh-windowsill`, `IdentityFile`
+  updated. Backup at `~/.ssh/config.bak-20260804`.
+- Remote renamed `gh-ccq` → `gh-windowsill`, URL now
+  `gh-windowsill:watercrossing/windowsill.git`. `main` still tracks it.
+- `pyproject.toml` URLs now point at `/windowsill`, plus a new `Changelog` URL.
 
-**Name availability: `windowsill` is FREE.** `pypi.org/pypi/windowsill/json` →
-404, unregistered and not squatted. Note the old name `ccq` **is taken** — by an
-unrelated, actively-maintained project ("Query your own Claude Code agent history
-with DuckDB", 3 releases, last June 2026). So the rename was necessary, not
-cosmetic. Free fallbacks if ever needed: `windowsill-queue`, `winsill`.
-A pending publisher does **not** reserve the name — someone could still take it
-between step 4 and step 6.
+Verified: `ssh -T gh-windowsill` → "Hi watercrossing/windowsill!", and
+`git fetch` succeeds. The deploy key still works against the renamed repo.
 
-### What I found and fixed for you
+## §4 Why you never got a blocked email — no bug, a category error
 
-- **The workflow would NOT have worked** (`a06a161`). Its job-level
-  `permissions:` block listed only `id-token: write`. A job-level block
-  *replaces* the workflow-level one rather than merging, so everything unlisted
-  becomes `none` — the top-level `contents: read` was discarded and
-  `actions/checkout` ran with no read access. Fatal specifically because **the
-  repo is private**. It uses trusted publishing (OIDC), no API token anywhere,
-  which is the right choice.
-- `dist/` was not in `.gitignore`. Now is.
+**The two todo-3 stalls were rate limits, not `blocked`.** Those are different
+states and only one of them notifies.
 
-### pyproject: in good shape, small gaps
+The event log for job 20 settles it:
 
-`twine check --strict` passes on both artifacts. Licence metadata is the modern
-SPDX form and matches the real MIT LICENSE. Artifacts are clean — the wheel has
-all 13 modules and all 5 console scripts; the sdist has README, LICENSE, design/
-and tests/, and **none** of `tasks/`, `BLOCKED.md`, `.venv`, `*.db` or
-`__pycache__`. Still missing, none blocking: no author email, no Documentation
-or Changelog URL (no CHANGELOG exists), and `Programming Language :: Python ::
-3.14` is asserted but never tested — **there is no CI test workflow at all**,
-`pypi.yaml` is the only file in `.github/workflows/`.
+```
+21:21  rate_limited   rate_limit_event; blocked until 2026-08-01T01:49
+02:34  rate_limited   rate_limit_event; blocked until 2026-08-01T07:00
+07:03  done
+07:03  notified       email
+```
 
-### Honest opinion
+Two rate limits, no notification; one completion, one email. That is the code
+working as designed. `runner.py:1170` requeues a rate-limited run, and only the
+terminal branch at `:1203` calls `_notify_job` — *"Only terminal states notify
+— a requeued job hasn't finished"* (`:967`). A requeued job is back at `ready`
+and will run again, so nothing terminal has happened to report.
 
-Ship it, after steps 1–4. The package is genuinely releasable: 545 tests, clean
-artifacts, real metadata. Two caveats I would not paper over — the workflow has
-still **never executed**, so its first run is on the release that matters (hence
-the TestPyPI suggestion), and there is **no CI**, so "the tests pass" currently
-means "they passed on Ingolf's machine". Neither is a reason to wait; both are
-reasons to expect the first release to need a `0.1.1`.
+The confusion is that **two unrelated things are both called "blocked"**:
 
-## Your crontab was changed (§1)
+| | what it means | notifies? |
+|---|---|---|
+| `sched.blocked_until` | the *queue* is rate-limited and paused | no — by design |
+| job state `blocked` (§7) | a *run* ended with background work still live | yes |
 
-The `ccq` → `windowsill` rename deletes `.venv/bin/ccq` on the next `uv run`, which
-would have made the 15-minute tick fail into your inbox every quarter hour. So the
-crontab was updated in the same step:
+You hit the first one twice. The second has **never happened** — the distinct
+job states in the database are `done`, `cancelled`, `failed`, `running`,
+`ready`. That is still true today.
 
-- Backup: `~/.windowsill/crontab.bak.20260731` (the pre-change file, 8 lines).
-- Exactly one line changed, `uv run ccq tick -q` → `uv run windowsill tick -q`.
-  `MAILTO`, the bbcweather entry and the comment block are untouched — verified by
-  `diff` against the backup, which reported a single-line change.
-- Verified afterwards under a cron-like minimal environment:
-  `env -i PATH=/home/ibecker/.local/bin:/usr/local/bin:/usr/bin:/bin HOME=/home/ibecker
-  uv run windowsill tick -q` exits 0.
+### Correcting the last run's note
 
-To roll back: `crontab ~/.windowsill/crontab.bak.20260731`.
+The previous BLOCKED.md called the blocked email "the least-tested branch in
+`mail.py`". That was overstated. It is unit-tested at both levels —
+`tests/test_mail.py:184-223` composes and asserts on blocked-state mail, and
+`tests/test_runner.py:976` asserts a run with live background work comes back
+`outcome=incomplete, job_state=blocked`. And the wiring is sound: `incomplete`
+is excluded from both the requeue and the retry branch, so it falls through to
+the terminal `else` and *does* send. What is untested is not the code, it is
+reality — no real job has ever gone incomplete.
 
-## §2 turned up a real finding: `--allowed-tools` does not restrict anything
+### The real gap this exposes (not a defect — a decision for you)
 
-§3.3 assumed an `--allowed-tools` allowlist bounds a job's tool surface. It does not.
-Established by experiment here on 2026-07-31 against `claude` 2.1.218, with no ambient
-permission rules anywhere on this machine:
+A job that hits a rate limit at 21:21 and finishes at 07:03 tells you
+**nothing for ten hours**. Silence is indistinguishable from a crashed tick.
 
-- `claude -p "run bash echo ..." --allowed-tools Read` → **Bash ran anyway**, exit
-  success, `permission_denials: []`. It is an additive *auto-approve* list.
-- `claude -p "run bash echo ..." --disallowed-tools Bash` → Bash was **absent from the
-  session's tool set entirely**. That is the flag that actually bounds.
+I did not change this, because "notify on requeue" is a design change with a
+spam failure mode, and the last run's §2 lesson was that this kind of thing
+should not land unattended. If you want it, the shape I would build is a
+default-off `[notify] on_rate_limit` that sends the one line the queue already
+knows: *"paused, resuming 02:00"*. Say the word and it is a small change.
 
-So `safety.allowed_tools` is now implemented and no longer dead config, but it buys
-pre-approval, not a sandbox. `safety.disallowed_tools` would be the real lever and is
-deliberately **not** built — that is a decision for you, not something to land unattended
-overnight. The docs no longer claim the boundary exists.
+## §3 CI — added, and here is how it meets your ten-commit habit
 
-Related: the shipped default omitted `Task`. Harmless today precisely because the flag
-does not restrict, but it would have silently broken every subagent-spawning job the
-moment permission prompting engaged. Default widened, with a comment saying why `Task` is
-load-bearing.
+`.github/workflows/ci.yaml`: the suite on Python **3.13 and 3.14**, plus
+`ruff check` and `ruff format --check`, on every push to `main` and every PR.
+This is the obviously-right one — you were shipping a `Programming Language ::
+Python :: 3.14` classifier that nothing had ever tested, and "the tests pass"
+meant "on Ingolf's machine". Baseline right now: **545 pass, lint clean**.
 
-## Note for later: the GitHub remote is still `watercrossing/ccq`
+**On your ten-commits-then-push workflow.** It integrates fine, with one honest
+caveat. A `push` event triggers **one** CI run, against the tip of what you
+pushed — not one per commit. So:
 
-`pyproject.toml`'s `Repository` URL points at `https://github.com/watercrossing/ccq`,
-which is the real remote and so was left alone by the rename. Renaming the GitHub repo
-is a thing only you can do, and it matters for §6 (PyPI release metadata). Not urgent —
-GitHub redirects old URLs — but the release checklist assumes you may want to.
+- Good: ten commits cost you one CI run, not ten. No queue backup, no cost.
+- Bad: a red build means "somewhere in those ten", and finding where is a local
+  `git bisect`. CI cannot tell you which commit broke it because it never saw
+  the middle eight.
+
+So the workflow is the smaller half of the answer. The bigger half is
+`.githooks/pre-push`, which runs those same three checks **before** the batch
+leaves the machine — while the commits are still cheap to amend or reorder.
+It is opt-in and I did not enable it for you:
+
+```
+git config core.hooksPath .githooks     # enable
+git push --no-verify                    # skip once
+```
+
+I'd turn it on. It costs ~10s per push and it is the only thing that keeps a
+red main from being a bisect.
+
+Also: `concurrency` cancels superseded runs on branches but **never on `main`**,
+so every batch you push to main keeps its own permanent green/red record.
+
+## §5 `disallowed_tools` — closed, per your call
+
+You said the permission mode is what defines the boundary for you, so the
+question is now settled rather than open. Recorded in three places so it does
+not get re-litigated: `design/03-execution-model.md` §3.3,
+`design/09-findings.md` (the findings table), and the comment on
+`safety.allowed_tools` in `config.py`. The reasoning written down is that a
+config key would be a *second* mechanism overlapping `--permission-mode`, and
+the two could only ever disagree.
+
+Nothing was implemented and nothing was removed — `safety.allowed_tools` still
+does what it did (auto-approve, not a sandbox).
+
+## §6 0.2.0 is staged
+
+Version bumped, `CHANGELOG.md` written (0.1.0 reconstructed from the tag,
+0.2.0 covering this run), `Changelog` URL added. `v0.1.0` is tagged at the
+previous HEAD, so everything in this run is exactly the 0.2.0 delta.
+
+Verified locally: **545 tests pass**, ruff clean, `uv build` produces both
+artifacts, `twine check --strict` **PASSED** on both.
+
+Release path, once the publisher above is fixed: push, then create the GitHub
+release with tag `v0.2.0`. The workflow still guards tag-vs-version and fails
+before upload on a mismatch.
+
+Two things worth knowing:
+
+- `pypi.yaml` has now **run once for real** (0.1.0 shipped), so it is no longer
+  the untested-on-the-release-that-matters risk it was last week.
+- The 0.1.0 metadata live on PyPI still shows the `ccq` URLs. That cannot be
+  edited — a released version's metadata is immutable. 0.2.0 fixes it going
+  forward; the old page will keep pointing at a redirect.
