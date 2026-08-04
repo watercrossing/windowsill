@@ -87,6 +87,9 @@ def test_jobs_table_has_expected_columns(tmp_path: Path) -> None:
         "conversation_id",
         "pid",
         "exit_code",
+        "warm",
+        "warm_lead",
+        "warmed_by",
     }
     assert expected <= cols
 
@@ -107,6 +110,39 @@ def test_migrate_adds_a_missing_column_to_an_existing_database(tmp_path: Path) -
     job = db.get_job(reopened, job_id)
     assert job["name"] == "pre-existing"
     assert job["log_path"] is None
+
+
+def test_migrate_adds_the_warming_columns_to_an_existing_database(tmp_path: Path) -> None:
+    """§5.4's three columns arrived after databases existed on disk, so the
+    queue that has been running since June must gain them without a rebuild --
+    and every job already in it must read as "not a warm job"."""
+    path = tmp_path / "old.db"
+    conn = db.connect(path)
+    job_id = insert_bare_job(conn, name="pre-existing", state="queued")
+    for column in ("warm", "warm_lead", "warmed_by"):
+        conn.conn.execute(f"ALTER TABLE jobs DROP COLUMN {column}")  # pretend it predates §5.4
+    conn.close()
+
+    reopened = db.connect(path)
+
+    cols = {row[1] for row in reopened.conn.execute("PRAGMA table_info(jobs)").fetchall()}
+    assert {"warm", "warm_lead", "warmed_by"} <= cols
+    job = db.get_job(reopened, job_id)
+    assert job["name"] == "pre-existing"
+    assert job["warm"] == 0
+    assert job["warm_lead"] is None
+    assert job["warmed_by"] is None
+
+
+def test_insert_job_records_the_warming_fields(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    parent = insert_bare_job(conn, name="nightly", state="ready")
+    warmer = insert_bare_job(conn, name="warm-nightly", state="ready")
+
+    db.update_job(conn, parent, warm=1, warm_lead="45m", warmed_by=warmer)
+
+    job = db.get_job(conn, parent)
+    assert (job["warm"], job["warm_lead"], job["warmed_by"]) == (1, "45m", warmer)
 
 
 def test_runs_table_has_permission_denials_column(tmp_path: Path) -> None:

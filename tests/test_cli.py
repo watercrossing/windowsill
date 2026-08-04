@@ -236,6 +236,35 @@ def test_sub_hold_directive_submits_held(tmp_path: Path, runner: CliRunner) -> N
     assert job["state"] == "held"
 
 
+def test_sub_records_the_warming_directives(tmp_path: Path, runner: CliRunner) -> None:
+    """§5.4: `--warm` and `--warm-lead` are scheduler directives, so they land
+    in columns the tick reads, never in the argv claude sees."""
+    home = tmp_path / "home"
+    job_file = tmp_path / "j.md"
+    job_file.write_text("#$ --cwd /tmp/work\n#$ --warm\n#$ --warm-lead 45m\n\nbody\n")
+
+    result = run(runner, home, "sub", str(job_file))
+
+    assert result.exit_code == 0, result.output
+    job = db.get_job(make_db(home), int(result.output.strip()))
+    assert job["warm"] == 1
+    assert job["warm_lead"] == "45m"
+    assert job["warmed_by"] is None  # nothing has warmed anything yet
+    assert job["passthrough"] == []
+
+
+def test_sub_defaults_warming_off(tmp_path: Path, runner: CliRunner) -> None:
+    home = tmp_path / "home"
+    job_file = tmp_path / "j.md"
+    job_file.write_text("#$ --cwd /tmp/work\n\nbody\n")
+
+    result = run(runner, home, "sub", str(job_file))
+
+    job = db.get_job(make_db(home), int(result.output.strip()))
+    assert job["warm"] == 0
+    assert job["warm_lead"] is None
+
+
 def test_sub_defaults_isolate_and_notify_from_config(tmp_path: Path, runner: CliRunner) -> None:
     home = tmp_path / "home"
     job_file = tmp_path / "j.md"
@@ -512,6 +541,38 @@ def test_show_reports_directives_argv_and_no_delta(tmp_path: Path, runner: CliRu
     assert "delta%: n/a" in result.output
     assert "argv:" in result.output
     assert "--model claude-opus-4-8" in result.output
+
+
+def test_show_reports_warming_state(tmp_path: Path, runner: CliRunner) -> None:
+    """§5.4's three fields. `warmed_by` is the answer to "my --warm job has
+    been ready for an hour, is anything happening" -- a job id to show next."""
+    home = tmp_path / "home"
+    conn = make_db(home)
+    warmer_id = add_job(conn, name="warm-showme", state="running")
+    job_id = add_job(conn, name="showme", state="ready")
+    db.update_job(conn, job_id, warm=1, warm_lead="45m", warmed_by=warmer_id)
+
+    result = run(runner, home, "show", str(job_id))
+
+    assert result.exit_code == 0, result.output
+    assert "  warm: True" in result.output
+    assert "  warm_lead: 45m" in result.output
+    assert f"warmed_by: {warmer_id}" in result.output
+
+
+def test_show_names_the_effective_lead_when_the_job_overrides_nothing(tmp_path: Path, runner: CliRunner) -> None:
+    """A bare "-" here would read as "no lead", when the real answer is
+    `[warm].lead` -- the number deciding whether the job starts at 02:30 or
+    at 22:00, which is exactly what the reader came to check."""
+    home = tmp_path / "home"
+    conn = make_db(home)
+    job_id = add_job(conn, name="showme", state="ready")
+    db.update_job(conn, job_id, warm=1)
+
+    result = run(runner, home, "show", str(job_id))
+
+    assert "  warm_lead: 30m (from [warm].lead)" in result.output
+    assert "warmed_by: -" in result.output
 
 
 def test_show_computes_delta_from_last_run(tmp_path: Path, runner: CliRunner) -> None:

@@ -13,8 +13,9 @@ and the §7 job-lifecycle state machine.
    are satisfied to ``ready`` (§7);
 4. **dispatches** up to ``max_parallel`` ready jobs, lowest ``--priority``
    first, subject to each job's ``--window`` policy (§5.1, decided from at
-   most one ``/usage`` probe per tick), the anchor rule (§5.2) and the 30d
-   ceiling (§5.3); and
+   most one ``/usage`` probe per tick), the anchor rule (§5.2), the 30d
+   ceiling (§5.3) and -- for a ``--warm`` job only -- the warming gate
+   (§5.5, :func:`warm_gate`); and
 5. commits and exits, **never blocking on a running job**.
 
 ``tick`` must never call :func:`windowsill.runner.run_job` inline -- ``run_job``
@@ -50,7 +51,7 @@ from __future__ import annotations
 
 import subprocess
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
@@ -252,6 +253,293 @@ def _skip(
 
 
 # ---------------------------------------------------------------------------
+# window warming (§5.5)
+# ---------------------------------------------------------------------------
+#
+# A subscription window is five hours long and starts at your *first*
+# request, so a job dispatched at 22:00 owns 22:00-03:00 and spends one
+# window on it. Warming splits that in two: a throwaway prompt opens the
+# window at 22:00, the real job sits on its hands until shortly before the
+# reset, and the run then spends the tail of window one, crosses the reset,
+# and rolls straight into window two -- close to two windows of quota
+# back-to-back for one job. `[warm].lead` is how much of the tail to claim
+# (see the comment on it in `windowsill.config`: it is really "how much
+# quota to burn first", expressed as time).
+#
+# Three properties this implementation is built around, in the order they
+# cost you if they are wrong:
+#
+# 1. **The warmer is an ordinary anchor job.** Nothing here dispatches
+#    anything. Warming inserts a `jobs` row with `is_anchor=1` and leaves
+#    it to the §5.2 anchor path in `tick` to run -- which already probes,
+#    already no-ops if a window turned out to be open after all, already
+#    refuses to fire over the 30d ceiling, and already writes the §5.3
+#    ledger row. A second dispatch path here would be a second copy of all
+#    four of those rules, and the copy is the one that would rot. The cost
+#    of that choice is that the warmer starts on the *next* tick rather
+#    than this one -- this tick's candidate list was fixed before the
+#    warmer existed -- so the window opens up to one cron floor (15
+#    minutes, per the README's crontab line) after the parent's `--at`.
+#    That delay slides the whole schedule later by the same amount and
+#    spends nothing: the tail is still a tail, and the reset still lands
+#    where the job is waiting for it.
+# 2. **The end of the window is `reset_at` from `/usage`, never
+#    `opened_at + [window].length`.** The ledger's `opened_at` is *our
+#    dispatch*, which is not when the window began if anything else touched
+#    the account first, and the "5h" in config is a guess about Anthropic's
+#    policy rather than a reading of it. Aiming the tail at a derived time
+#    that is even ten minutes late means the job starts after the reset and
+#    the whole exercise has bought nothing.
+# 3. **Every warming decision that is not "go" is a defer.** A warm job
+#    that finds no room left in the window it warmed has not failed and
+#    must not be skipped: the right answer is to wait for a window with
+#    room in it, which is exactly what leaving it `ready` does.
+
+#: The ``--timeout`` given to a spawned warmer. It exists to say one word,
+#: and it holds a `max_parallel` slot -- the very slot its parent is waiting
+#: for -- while it does. Five minutes is far past "the API is answering" and
+#: far short of a stuck child sitting on the queue until morning. Not
+#: configurable on purpose: nothing about a warmer is worth tuning, and the
+#: knob that matters (`[warm].lead`) already exists.
+WARMER_TIMEOUT = "5m"
+
+#: Terminal warmer states from which spawning a *replacement* warmer is the
+#: right move. The distinction is a runaway guard, not fussiness. `tick` is
+#: chain-driven as well as cron-driven, so "the parent is still ready and
+#: no window is open" recurs within seconds; a rule of "no live warmer ⇒
+#: spawn one" turns a warmer that fails immediately (a broken `claude`, a
+#: revoked login) into a loop that submits and burns a job per tick.
+#: `done` means the ping worked and the window it opened has since closed --
+#: warming again is precisely what is wanted. `skipped` means the anchor
+#: path declined it for a reason that has since changed (it found a window
+#: open; that window is now closed). `failed`, `expired` and `cancelled`
+#: are all "this did not work / a human said no", and repeating them faster
+#: than a human can read the log is the failure mode, so those stop.
+REWARMABLE_WARMER_STATES: frozenset[str] = frozenset({"done", "skipped"})
+
+
+def warmer_name(parent_name: str) -> str:
+    """The derived name of the warmer spawned for ``parent_name``.
+
+    Derived rather than fixed so `windowsill stat` answers "what is this
+    ``warm-nightly-audit`` row" without a lookup, and so two warm jobs
+    queued at once do not both produce a job called ``warmer``, which §6.1
+    name resolution would then refuse to resolve as ambiguous.
+    """
+    return f"warm-{parent_name}"
+
+
+def warm_lead_seconds(job: Mapping[str, Any], config: Mapping[str, Any] | None) -> float:
+    """How far before ``reset_at`` this job may go, in seconds.
+
+    ``--warm-lead`` on the job wins over ``[warm].lead``; both are ordinary
+    duration strings, parsed by the one parser this codebase has
+    (:func:`windowsill.runner.parse_timeout_seconds`, which also reads
+    ``--timeout`` and ``[window].length``).
+
+    An unparseable value falls through to the next source rather than
+    raising. This is called inside the dispatch lock: a ``ValueError`` here
+    would roll back the whole tick, so one job file with ``--warm-lead
+    thirty minutes`` in it would stop *every* job in the queue from
+    dispatching, on every tick, until someone noticed.
+    """
+    sources = (job.get("warm_lead"), _setting(config, "warm", "lead"), config_mod.DEFAULTS["warm"]["lead"])
+    for candidate in sources:
+        if not candidate:
+            continue
+        try:
+            seconds = runner.parse_timeout_seconds(str(candidate))
+        except ValueError:
+            continue
+        if seconds is not None:
+            return seconds
+    return 0.0
+
+
+def _log_warm(database: sqlite_utils.Database, job_id: int, now_str: str, detail: str) -> None:
+    """Record a warming decision, unless it is the one already recorded.
+
+    A warm job waits out the *body* of a window on purpose -- four and a
+    half hours of it, with the default lead -- and `tick` runs on a cron
+    floor of a minute plus every time a run finishes. Logging "still
+    waiting for the tail" on each of those turns the one event a reader
+    actually wants (the decision changing) into a haystack. The dedupe is
+    on the exact text, and the text names the *time* being waited for, so a
+    new window -- a different tail -- says so again immediately.
+    """
+    previous = db.list_events(database, job_id=job_id)
+    if previous and previous[-1]["kind"] == "warm" and previous[-1]["detail"] == detail:
+        return
+    db.log_event(database, ts=now_str, job_id=job_id, kind="warm", detail=detail)
+
+
+def _warm_defer(
+    database: sqlite_utils.Database,
+    result: TickResult,
+    job: Mapping[str, Any],
+    now_str: str,
+    reason: str,
+) -> None:
+    """Hold a warm job back for this tick, saying why. Never terminal (§5.5)."""
+    _log_warm(database, job["id"], now_str, reason)
+    result.deferred.append(job["id"])
+
+
+def insert_warmer(
+    database: sqlite_utils.Database,
+    job: Mapping[str, Any],
+    *,
+    now_str: str,
+    config: Mapping[str, Any] | None,
+) -> int:
+    """Insert the anchor job whose dispatch will open the window ``job`` waits for.
+
+    ``state="ready"`` because there is nothing left to wait for: the parent's
+    ``--at`` has already arrived (that is what put it in the candidate list),
+    and a warmer that had to be promoted first would lose a tick doing it.
+
+    ``[anchor].body`` and ``[anchor].model`` are the prompt and the model,
+    per §5.2 -- the cheapest thing that counts as a request, on a model that
+    touches neither weekly bucket. The model is written into **both** the
+    ``model`` column and the pass-through argv, because those two are not
+    the same thing: the column is display-only (§6, "mirrored from
+    pass-through"), and only the ``--model`` in the argv actually reaches
+    ``claude``. Writing just the column would warm the window on Opus and
+    charge the parent's own quota for the privilege.
+
+    The parent's ``cwd`` (so the ping runs somewhere that exists, and its
+    job dir sits beside work it belongs to) and the parent's ``--priority``
+    (the warmer is standing in for the parent, so it should queue where the
+    parent queues -- at ``max_parallel`` 1 an unrelated ordinary job would
+    otherwise take the slot every time and the warmer would never fire).
+    """
+    model = _setting(config, "anchor", "model")
+    return db.insert_job(
+        database,
+        name=warmer_name(job["name"]),
+        state="ready",
+        submitted_at=now_str,
+        cwd=job["cwd"],
+        body=str(_setting(config, "anchor", "body")),
+        passthrough=["--model", str(model)] if model else [],
+        model=str(model) if model else None,
+        is_anchor=True,
+        priority=job["priority"],
+        timeout=WARMER_TIMEOUT,
+    )
+
+
+def _ensure_warmer(
+    database: sqlite_utils.Database,
+    result: TickResult,
+    job: Mapping[str, Any],
+    *,
+    now_str: str,
+    config: Mapping[str, Any] | None,
+    at_ceiling: bool,
+    max_sessions: int,
+) -> None:
+    """No window is open, so the warm job needs one opened *for* it.
+
+    Either spawn the warmer or explain why not; either way the parent is
+    deferred, because dispatching it now is the thing warming exists to
+    prevent -- it would open the window itself and own exactly one.
+    """
+    existing_id = job.get("warmed_by")
+    existing = db.get_job(database, existing_id) if existing_id else None
+
+    if existing is not None and existing["state"] not in db.TERMINAL_STATES:
+        # The one already in flight has not opened a window yet -- it may not
+        # even have been dispatched (it is queued behind this very job in the
+        # same candidate list). Spawning another would double the anchors,
+        # and §5.2 wants at most one.
+        _warm_defer(database, result, job, now_str, f"warmer job {existing_id} is {existing['state']}; waiting for it to open a window")
+        return
+
+    if existing is not None and existing["state"] not in REWARMABLE_WARMER_STATES:
+        reason = f"warmer job {existing_id} is {existing['state']}; not spawning another"
+        _warm_defer(database, result, job, now_str, reason)
+        return
+
+    if at_ceiling:
+        # §5.3: a warmer is an anchor, and an anchor is the first thing to
+        # give up at the ceiling. Refusing here rather than letting the
+        # anchor path refuse it also closes a loop: a skipped warmer is
+        # re-warmable, so spawning one that is certain to be skipped would
+        # submit a fresh job on every tick for as long as the ceiling holds.
+        _warm_defer(database, result, job, now_str, f"30d window ceiling ({max_sessions}) reached; not warming (a warmer is an anchor)")
+        return
+
+    warmer_id = insert_warmer(database, job, now_str=now_str, config=config)
+    db.update_job(database, job["id"], warmed_by=warmer_id)
+    db.log_event(database, ts=now_str, job_id=warmer_id, kind="submitted", detail=f"warmer for job {job['id']}")
+    _warm_defer(database, result, job, now_str, f"spawned warmer job {warmer_id} to open a window")
+
+
+def warm_gate(
+    database: sqlite_utils.Database,
+    result: TickResult,
+    job: Mapping[str, Any],
+    *,
+    now_str: str,
+    now_dt: datetime,
+    window_open: bool,
+    probed: "usage.ParsedUsage | None",
+    config: Mapping[str, Any] | None,
+    at_ceiling: bool,
+    max_sessions: int,
+) -> bool:
+    """Whether a ``--warm`` job may dispatch now (§5.5). Handles it if not.
+
+    Returns ``True`` only for the one case that is worth a dispatch: a
+    window is open, ``now`` has reached ``reset_at - lead``, and enough of
+    that window is still unspent to be worth crossing the reset for. Every
+    other answer defers the job and records why; none of them is terminal.
+
+    This is a gate on top of the existing ones, never instead of them --
+    the caller has already applied ``blocked_until``, ``max_parallel``, the
+    dependencies and the ceiling, and applies ``--window`` afterwards. A
+    ``True`` from here is permission to *keep going*, not permission to run.
+    """
+    if not window_open:
+        _ensure_warmer(database, result, job, now_str=now_str, config=config, at_ceiling=at_ceiling, max_sessions=max_sessions)
+        return False
+
+    row = db.current_window(database, now_str)
+    if row is None or not row.get("reset_at"):
+        # A window this tick's own earlier dispatch opened: real, but its
+        # ledger row cannot carry a `reset_at` yet (§5.3 -- nothing knows one
+        # until the run's pre-probe). Guessing the end of it is exactly the
+        # mistake this feature turns on not making, so wait a tick and read it.
+        _warm_defer(database, result, job, now_str, "window is open but its reset time is not known yet")
+        return False
+
+    tail_start = _parse_dt(row["reset_at"]) - timedelta(seconds=warm_lead_seconds(job, config))
+    if now_dt < tail_start:
+        _warm_defer(database, result, job, now_str, f"waiting for the window tail at {tail_start.isoformat()}")
+        return False
+
+    # The live reading, not the cached one: the whole decision is "is there
+    # anything left in this window worth burning", and a `pct_used` from an
+    # hour ago cannot answer that. `probed` is always present here -- a warm
+    # candidate forces the tick's probe for this reason -- and the ledger row
+    # is only a fallback for a reading that arrived without a percentage.
+    pct_used = probed.pct_used if probed is not None and probed.pct_used is not None else row.get("pct_used")
+    min_pct_free = int(_setting(config, "warm", "min_pct_free"))
+    if pct_used is None:
+        _warm_defer(database, result, job, now_str, "window usage is unknown; not spending the tail blind")
+        return False
+    free = 100 - int(pct_used)
+    if free < min_pct_free:
+        # Not a failure and not a skip. The window got eaten by something
+        # else, so there is no tail left to burn -- and starting a long job
+        # one minute before a rate limit is worse than starting it late.
+        _warm_defer(database, result, job, now_str, f"only {free}% of the window free, under [warm].min_pct_free ({min_pct_free})")
+        return False
+    return True
+
+
+# ---------------------------------------------------------------------------
 # the tick
 # ---------------------------------------------------------------------------
 
@@ -277,8 +565,10 @@ def tick(
     :func:`windowsill.runner.reap`; ``probe`` is the ``/usage`` oracle (§4), called
     at most once per tick and only when a candidate's ``--window`` policy or
     ``--anchor`` status makes window state part of the decision (§4.2).
-    ``config`` supplies ``[queue].max_parallel``, ``[queue].max_sessions_per_month``
-    and ``[window].peak_band``.
+    ``config`` supplies ``[queue].max_parallel``, ``[queue].max_sessions_per_month``,
+    ``[window].peak_band``, and -- only ever consulted for a ``--warm`` job
+    (§5.5) -- ``[warm].lead``, ``[warm].min_pct_free`` and the ``[anchor]``
+    model/body its warmer is built from.
     """
     now_str = _resolve_now(now)
     now_dt = _parse_dt(now_str)
@@ -396,10 +686,14 @@ def tick(
 
                 policy = job["window_policy"] or "share"
                 is_anchor = bool(job["is_anchor"])
+                warm = bool(job["warm"])
 
                 # §4.2: probe only when the decision depends on window state,
                 # and at most once per tick -- the reading is account-global.
-                if probed is None and (window.policy_needs_probe(policy) or is_anchor):
+                # A `--warm` job forces one for the same reason an anchor does,
+                # and one more: its go/no-go includes live `pct_used` (§5.5's
+                # `min_pct_free`), which nothing cached can supply.
+                if probed is None and (window.policy_needs_probe(policy) or is_anchor or warm):
                     probed = probe()
                     result.probed = True
                     window.record_probe(database, probed, now_str=now_str)
@@ -424,11 +718,33 @@ def tick(
                     if at_ceiling:
                         _skip(database, result, job, now_str, f"30d window ceiling ({max_sessions}) reached")
                         continue
-                elif at_ceiling and not window_open:
+                elif at_ceiling and not window_open and not warm:
                     # §5.3: warn loudly on real work, never silently block it.
+                    # Not for a warm job with no window open, though: that one
+                    # is about to be deferred rather than dispatched, so it
+                    # opens nothing and the warning would be false. (Its
+                    # warmer would open the window -- and the warm gate below
+                    # refuses to spawn one at the ceiling.)
                     message = f"job {job['id']} opens a window with the 30d count already at the ceiling ({max_sessions})"
                     result.warnings.append(message)
                     db.log_event(database, ts=now_str, job_id=job["id"], kind="warning", detail=message)
+
+                # §5.5: the warming gate. Defaults off -- a job without
+                # `--warm` never enters this branch and takes exactly the path
+                # it took before the feature existed.
+                if warm and not warm_gate(
+                    database,
+                    result,
+                    job,
+                    now_str=now_str,
+                    now_dt=now_dt,
+                    window_open=window_open,
+                    probed=probed,
+                    config=config,
+                    at_ceiling=at_ceiling,
+                    max_sessions=max_sessions,
+                ):
+                    continue
 
                 if not window.policy_permits(policy, now=now_dt, peak_band=peak_band, window_open=window_open):
                     result.deferred.append(job["id"])

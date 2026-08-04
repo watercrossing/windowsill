@@ -50,6 +50,9 @@ def add_job(
     resume_from: str | None = None,
     resume_id: str | None = None,
     conversation_id: str | None = None,
+    warm: bool = False,
+    warm_lead: str | None = None,
+    warmed_by: int | None = None,
 ) -> int:
     return db.insert_job(
         conn,
@@ -69,6 +72,9 @@ def add_job(
         resume_from=resume_from,
         resume_id=resume_id,
         conversation_id=conversation_id,
+        warm=warm,
+        warm_lead=warm_lead,
+        warmed_by=warmed_by,
     )
 
 
@@ -80,13 +86,17 @@ class ProbeSpy:
     tests below. No `claude` is ever invoked.
     """
 
-    def __init__(self, *, open_until: str | None) -> None:
+    def __init__(self, *, open_until: str | None, pct_used: int | None = None) -> None:
         self.reset_at = datetime.fromisoformat(open_until) if open_until else None
+        # §5.5 cares how *full* an open window is, not just that it is open,
+        # so the percentage is settable. Left alone it keeps the reading the
+        # rest of the suite was written against.
+        self.pct_used = (15 if self.reset_at else 0) if pct_used is None else pct_used
         self.calls = 0
 
     def __call__(self) -> usage.ParsedUsage:
         self.calls += 1
-        return usage.ParsedUsage(pct_used=15 if self.reset_at else 0, reset_at=self.reset_at)
+        return usage.ParsedUsage(pct_used=self.pct_used, reset_at=self.reset_at)
 
 
 def exploding_probe() -> usage.ParsedUsage:
@@ -895,3 +905,398 @@ def test_real_job_warns_at_the_ceiling_but_still_runs(tmp_path: Path) -> None:
     assert len(result.warnings) == 1
     assert "ceiling" in result.warnings[0]
     assert [event["kind"] for event in db.list_events(conn, job_id=job_id)] == ["ready", "warning", "claimed"]
+
+
+# ---------------------------------------------------------------------------
+# window warming (§5.5)
+#
+# The clock in this section: NOW is 12:00Z. TAIL_RESET is 20 minutes later,
+# so with the default `[warm].lead` of 30m a window resetting then is already
+# in its tail; FUTURE (22:00Z) is ten hours out, so a window resetting then
+# is not. Nothing here reads a real clock or spawns anything -- a "warmer
+# dispatch" is the same recording SpawnSpy as everywhere else.
+# ---------------------------------------------------------------------------
+
+#: An open window whose reset is inside the default 30m lead.
+TAIL_RESET = "2026-07-21T12:20:00Z"
+
+#: `[warm].min_pct_free` is 20, so 95% used (5% free) is the abort case and
+#: 10% used is the "plenty left to burn" case.
+NEARLY_SPENT = 95
+PLENTY_FREE = 10
+
+
+def warm_events(conn: sqlite_utils.Database, job_id: int) -> list[str]:
+    return [event["detail"] for event in db.list_events(conn, job_id=job_id) if event["kind"] == "warm"]
+
+
+def only_warmer(conn: sqlite_utils.Database, parent_name: str = "nightly") -> dict[str, Any]:
+    warmers = db.list_jobs(conn, name=scheduler.warmer_name(parent_name))
+    assert len(warmers) == 1, f"expected exactly one warmer, got {len(warmers)}"
+    return warmers[0]
+
+
+def test_warm_job_with_no_window_spawns_a_warmer_instead_of_dispatching(tmp_path: Path) -> None:
+    """The whole point (§5.5): a warm job that arrives with no window open
+    must NOT open one itself -- doing that spends a window and owns exactly
+    one. It inserts an anchor to open the window and waits for the tail."""
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", at_time=PAST, warm=True)
+    spawn = SpawnSpy()
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=spawn, probe=ProbeSpy(open_until=None))
+
+    assert result.dispatched == []
+    assert spawn.ids == []
+    assert result.deferred == [job_id]
+    # Deferred, never terminal: a later tick asks again.
+    assert db.get_job(conn, job_id)["state"] == "ready"
+    # ... and nothing was written to the §5.3 ledger, because nothing ran.
+    assert list(conn["window"].rows) == []
+
+
+def test_the_spawned_warmer_is_an_anchor_carrying_the_anchor_config(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", state="ready", cwd="/srv/project", priority=-5, warm=True)
+
+    scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=SpawnSpy(), probe=ProbeSpy(open_until=None))
+
+    warmer = only_warmer(conn)
+    assert warmer["is_anchor"] == 1  # §5.2 does the dispatching, not §5.5
+    assert warmer["state"] == "ready"
+    assert warmer["body"] == "Reply with the single word: ok"
+    assert warmer["cwd"] == "/srv/project"
+    assert warmer["priority"] == -5  # stands in for the parent, queues where it does
+    assert warmer["timeout"] == scheduler.WARMER_TIMEOUT
+    # The model has to reach claude's argv, not just the display column --
+    # a warmer that pings Opus charges the parent's own quota for it.
+    assert warmer["model"] == "claude-haiku-4-5"
+    assert warmer["passthrough"] == ["--model", "claude-haiku-4-5"]
+    assert db.get_job(conn, job_id)["warmed_by"] == warmer["id"]
+
+
+def test_the_spawned_warmer_is_dispatched_by_the_existing_anchor_path(tmp_path: Path) -> None:
+    """§5.5 inserts a row and stops; the next tick's ordinary §5.2 anchor
+    handling is what runs it and writes the window ledger."""
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True)
+    spawn = SpawnSpy()
+
+    scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=spawn, probe=ProbeSpy(open_until=None))
+    warmer_id = only_warmer(conn)["id"]
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=spawn, probe=ProbeSpy(open_until=None))
+
+    assert result.dispatched == [warmer_id]
+    assert spawn.ids == [warmer_id]
+    assert result.deferred == [job_id]  # the parent still waits, in the same tick
+    rows = list(conn["window"].rows)
+    assert len(rows) == 1 and rows[0]["opened_by"] == warmer_id
+
+
+def test_warm_job_does_not_spawn_a_second_warmer_while_the_first_is_live(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    warmer_id = add_job(conn, name="warm-nightly", state="running", pid=4242, is_anchor=True)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True, warmed_by=warmer_id)
+
+    result = scheduler.tick(
+        conn,
+        root=tmp_path,
+        config=cfg(2),
+        now=NOW,
+        spawn_run=SpawnSpy(),
+        probe=ProbeSpy(open_until=None),
+        alive_check=lambda pid: True,
+    )
+
+    assert db.list_jobs(conn, name="warm-nightly") == [db.get_job(conn, warmer_id)]
+    assert result.deferred == [job_id]
+    assert "running" in warm_events(conn, job_id)[-1]
+
+
+def test_a_failed_warmer_is_not_replaced_on_the_next_tick(tmp_path: Path) -> None:
+    """The runaway guard. `tick` is chain-driven, so "no live warmer and no
+    window" recurs within seconds; replacing a warmer that failed would
+    submit and burn one job per tick for as long as claude stays broken."""
+    conn = make_db(tmp_path)
+    warmer_id = add_job(conn, name="warm-nightly", state="failed", is_anchor=True)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True, warmed_by=warmer_id)
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=SpawnSpy(), probe=ProbeSpy(open_until=None))
+
+    assert len(db.list_jobs(conn, name="warm-nightly")) == 1
+    assert result.deferred == [job_id]
+    assert result.dispatched == []
+    assert "failed" in warm_events(conn, job_id)[-1]
+
+
+def test_a_done_warmer_is_replaced_once_its_window_has_closed(tmp_path: Path) -> None:
+    """The other side of that guard: a warmer that worked, whose window has
+    since closed (a tick spent blocked, say), leaves the parent needing a
+    fresh one -- and five hours is not a runaway."""
+    conn = make_db(tmp_path)
+    first = add_job(conn, name="warm-nightly", state="done", is_anchor=True)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True, warmed_by=first)
+
+    scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=SpawnSpy(), probe=ProbeSpy(open_until=None))
+
+    warmers = db.list_jobs(conn, name="warm-nightly")
+    assert len(warmers) == 2
+    assert db.get_job(conn, job_id)["warmed_by"] == warmers[-1]["id"]
+
+
+def test_warm_job_defers_until_the_tail_of_an_open_window(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True)
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=SpawnSpy(), probe=ProbeSpy(open_until=FUTURE))
+
+    assert result.deferred == [job_id]
+    assert result.dispatched == []
+    assert db.get_job(conn, job_id)["state"] == "ready"
+    # The reason names the time it will go: 30m before the 22:00 reset.
+    assert warm_events(conn, job_id) == ["waiting for the window tail at 2026-07-21T21:30:00+00:00"]
+    # No warmer: there is a window already, it is just too young to spend.
+    assert db.list_jobs(conn, name="warm-nightly") == []
+
+
+def test_warm_job_dispatches_in_the_tail_with_room_left(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True)
+    spawn = SpawnSpy()
+
+    result = scheduler.tick(
+        conn,
+        root=tmp_path,
+        config=cfg(1),
+        now=NOW,
+        spawn_run=spawn,
+        probe=ProbeSpy(open_until=TAIL_RESET, pct_used=PLENTY_FREE),
+    )
+
+    assert result.dispatched == [job_id]
+    assert spawn.ids == [job_id]
+    assert db.get_job(conn, job_id)["state"] == "running"
+
+
+def test_warm_job_in_the_tail_of_a_spent_window_defers_rather_than_fails(tmp_path: Path) -> None:
+    """§5.5: a window with nothing left in it is not an error. Failing or
+    skipping the job here would throw away work over a condition that fixes
+    itself in five hours."""
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True)
+
+    result = scheduler.tick(
+        conn,
+        root=tmp_path,
+        config=cfg(1),
+        now=NOW,
+        spawn_run=SpawnSpy(),
+        probe=ProbeSpy(open_until=TAIL_RESET, pct_used=NEARLY_SPENT),
+    )
+
+    assert result.deferred == [job_id]
+    assert result.dispatched == []
+    assert result.skipped == []
+    job = db.get_job(conn, job_id)
+    assert job["state"] == "ready"
+    assert job["finished_at"] is None
+    assert warm_events(conn, job_id) == ["only 5% of the window free, under [warm].min_pct_free (20)"]
+
+
+def test_min_pct_free_is_read_from_config(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True)
+    config = {"queue": {"max_parallel": 1}, "warm": {"min_pct_free": 5}}
+
+    result = scheduler.tick(
+        conn,
+        root=tmp_path,
+        config=config,
+        now=NOW,
+        spawn_run=SpawnSpy(),
+        probe=ProbeSpy(open_until=TAIL_RESET, pct_used=NEARLY_SPENT),
+    )
+
+    assert result.dispatched == [job_id]  # 5% free clears a 5% floor
+
+
+def test_warm_lead_directive_overrides_the_configured_lead(tmp_path: Path) -> None:
+    """The 22:00 window is nowhere near its tail under a 30m lead, but a job
+    that asks for ten hours of tail is in it already."""
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True, warm_lead="10h")
+    config = {"queue": {"max_parallel": 1}, "warm": {"lead": "30m"}}
+
+    result = scheduler.tick(
+        conn,
+        root=tmp_path,
+        config=config,
+        now=NOW,
+        spawn_run=SpawnSpy(),
+        probe=ProbeSpy(open_until=FUTURE, pct_used=PLENTY_FREE),
+    )
+
+    assert result.dispatched == [job_id]
+
+
+def test_configured_lead_applies_when_the_job_names_none(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True)
+    config = {"queue": {"max_parallel": 1}, "warm": {"lead": "10h"}}
+
+    result = scheduler.tick(
+        conn,
+        root=tmp_path,
+        config=config,
+        now=NOW,
+        spawn_run=SpawnSpy(),
+        probe=ProbeSpy(open_until=FUTURE, pct_used=PLENTY_FREE),
+    )
+
+    assert result.dispatched == [job_id]
+
+
+def test_an_unparseable_lead_falls_back_instead_of_breaking_every_tick(tmp_path: Path) -> None:
+    """`warm_lead_seconds` runs inside the dispatch lock, so a ValueError
+    there would roll back the tick -- one bad job file would stop the whole
+    queue dispatching, every minute, until someone read the cron mail."""
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True, warm_lead="thirty minutes")
+
+    result = scheduler.tick(
+        conn,
+        root=tmp_path,
+        config=cfg(1),
+        now=NOW,
+        spawn_run=SpawnSpy(),
+        probe=ProbeSpy(open_until=TAIL_RESET, pct_used=PLENTY_FREE),
+    )
+
+    # Fell through to `[warm].lead` (30m), which puts TAIL_RESET in its tail.
+    assert result.dispatched == [job_id]
+    assert scheduler.warm_lead_seconds({"warm_lead": "thirty minutes"}, None) == 30 * 60
+
+
+def test_warm_job_forces_a_probe_even_on_the_share_policy(tmp_path: Path) -> None:
+    """§4.2 allows a probe only when the decision needs one -- and this
+    decision does: `min_pct_free` is about the window right now."""
+    conn = make_db(tmp_path)
+    add_job(conn, name="nightly", state="ready", window_policy="share", warm=True)
+    probe = ProbeSpy(open_until=TAIL_RESET, pct_used=PLENTY_FREE)
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=SpawnSpy(), probe=probe)
+
+    assert probe.calls == 1
+    assert result.probed is True
+
+
+def test_warming_never_bypasses_blocked_until(tmp_path: Path) -> None:
+    """Warming is an extra gate, not a way past the existing ones: a
+    rate-limit block suppresses the warmer too, or the block would be spent
+    opening windows nothing may run in."""
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True)
+    db.update_sched(conn, blocked_until=FUTURE, blocked_reason="rate limit")
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=SpawnSpy(), probe=exploding_probe)
+
+    assert result.deferred == []
+    assert db.list_jobs(conn, name="warm-nightly") == []
+    assert db.get_job(conn, job_id)["warmed_by"] is None
+
+
+def test_no_warmer_is_spawned_at_the_30d_ceiling(tmp_path: Path) -> None:
+    """§5.3: a warmer is an anchor, and an anchor gives way first. Spawning
+    one anyway would also loop -- the anchor path skips it, a skipped warmer
+    is replaceable, and the next tick submits another."""
+    conn = make_db(tmp_path)
+    _fill_window_ledger(conn, 3)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True)
+    config = {"queue": {"max_parallel": 1, "max_sessions_per_month": 3}}
+
+    result = scheduler.tick(conn, root=tmp_path, config=config, now=NOW, spawn_run=SpawnSpy(), probe=ProbeSpy(open_until=None))
+
+    assert db.list_jobs(conn, name="warm-nightly") == []
+    assert result.deferred == [job_id]
+    assert "ceiling" in warm_events(conn, job_id)[-1]
+    # And no "this job opens a window at the ceiling" warning: it doesn't.
+    assert result.warnings == []
+
+
+def test_the_tail_wait_is_logged_once_not_once_per_tick(tmp_path: Path) -> None:
+    """A warm job waits out most of a five-hour window; `tick` runs every
+    cron minute and again after every finished run. One event per decision,
+    not one per tick."""
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True)
+
+    for _ in range(3):
+        scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=SpawnSpy(), probe=ProbeSpy(open_until=FUTURE))
+
+    assert len(warm_events(conn, job_id)) == 1
+
+
+def test_a_new_window_says_so_again(tmp_path: Path) -> None:
+    """The dedupe is on the text, and the text names the time being waited
+    for -- so a different window is a different line, immediately."""
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True)
+
+    scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=SpawnSpy(), probe=ProbeSpy(open_until=FUTURE))
+    scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=SpawnSpy(), probe=ProbeSpy(open_until="2026-07-21T23:00:00Z"))
+
+    assert len(warm_events(conn, job_id)) == 2
+
+
+def test_a_window_opened_this_tick_is_not_guessed_at(tmp_path: Path) -> None:
+    """A window an earlier dispatch in this same tick opened is real but has
+    no `reset_at` yet (§5.3). Deriving one from `opened_at + [window].length`
+    is exactly the mistake §5.5 exists to avoid, so the job waits a tick."""
+    conn = make_db(tmp_path)
+    other = add_job(conn, name="ordinary", state="ready")
+    job_id = add_job(conn, name="nightly", state="ready", warm=True)
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(2), now=NOW, spawn_run=SpawnSpy(), probe=ProbeSpy(open_until=None))
+
+    assert result.dispatched == [other]
+    assert result.deferred == [job_id]
+    assert "reset time is not known" in warm_events(conn, job_id)[-1]
+    assert db.list_jobs(conn, name="warm-nightly") == []
+
+
+# ---------------------------------------------------------------------------
+# ... and none of it happens to a job that didn't ask (§5.5 defaults to off)
+# ---------------------------------------------------------------------------
+
+
+def test_a_non_warm_job_takes_the_old_path_exactly(tmp_path: Path) -> None:
+    """The default-off proof: no probe (`exploding_probe` asserts it), no
+    warmer, no warm event, and the dispatch that opens a window still opens
+    it -- byte for byte the tick a job got before §5.5 existed."""
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", at_time=PAST)
+    spawn = SpawnSpy()
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=spawn, probe=exploding_probe)
+
+    assert result.dispatched == [job_id]
+    assert spawn.ids == [job_id]
+    assert result.probed is False
+    assert result.deferred == []
+    assert db.list_jobs(conn, name="warm-nightly") == []
+    assert warm_events(conn, job_id) == []
+    assert [event["kind"] for event in db.list_events(conn, job_id=job_id)] == ["ready", "claimed"]
+    assert len(list(conn["window"].rows)) == 1
+
+
+def test_a_non_warm_job_dispatches_into_a_nearly_spent_window(tmp_path: Path) -> None:
+    """`min_pct_free` is a warming gate only. An ordinary job in a 95%-used
+    window still runs -- refusing it would be a new way for the queue to
+    silently not do the work it was given."""
+    conn = make_db(tmp_path)
+    db.insert_window(conn, opened_at=PAST, reset_at=TAIL_RESET, pct_used=NEARLY_SPENT)
+    job_id = add_job(conn, name="nightly", state="ready")
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=SpawnSpy(), probe=exploding_probe)
+
+    assert result.dispatched == [job_id]

@@ -442,6 +442,8 @@ def sub(ctx: click.Context, file, run_now: bool, home: Path | None) -> None:
             timeout=d.timeout,
             log_path=log_path,
             no_resume_on_limit=d.no_resume_on_limit,
+            warm=d.warm,
+            warm_lead=d.warm_lead,
         )
 
         # job.md -- the verbatim submission (§6.2). Written here rather than
@@ -695,6 +697,11 @@ def show(ctx: click.Context, identifier: str) -> None:
         click.echo(f"cwd: {job['cwd']}")
         click.echo(f"model: {job['model'] or '-'}")
         click.echo(f"conversation_id: {job['conversation_id'] or '-'}")
+        # Not a directive -- the scheduler writes it (§5.5) -- so it sits up
+        # here with the other run state rather than under `directives:`. It is
+        # the answer to "my --warm job has been ready for an hour, is anything
+        # actually happening": a job id to `windowsill show` in turn.
+        click.echo(f"warmed_by: {job['warmed_by'] or '-'}")
         click.echo(f"delta%: {delta if delta is not None else 'n/a'}")
         click.echo(f"permission denials (last run): {denials if denials is not None else 'n/a'}")
         # §3.2: whether the job actually kept the journal windowsill asked for.
@@ -704,6 +711,14 @@ def show(ctx: click.Context, identifier: str) -> None:
         click.echo("directives:")
         click.echo(f"  window: {job['window_policy']}")
         click.echo(f"  anchor: {bool(job['is_anchor'])}")
+        click.echo(f"  warm: {bool(job['warm'])}")
+        # The effective lead, not the raw column: the column is NULL for every
+        # job that didn't override it, and printing "-" there would read as
+        # "no lead" when the real answer is whatever `[warm].lead` says --
+        # which is the number the reader is checking before they trust the
+        # job to start at 02:30 rather than 22:00.
+        warm_lead = job["warm_lead"] or f"{cfg['warm']['lead']} (from [warm].lead)"
+        click.echo(f"  warm_lead: {warm_lead}")
         click.echo(f"  resume_id: {job['resume_id'] or '-'}")
         click.echo(f"  resume_from: {job['resume_from'] or '-'}")
         click.echo(f"  hold_jid: {job['hold_jid'] or []}")

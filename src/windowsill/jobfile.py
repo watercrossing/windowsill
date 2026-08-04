@@ -37,6 +37,7 @@ BOOLEAN_DIRECTIVES: frozenset[str] = frozenset(
         "--allow-dirty",
         "--hold",
         "--no-resume-on-limit",
+        "--warm",
     }
 )
 
@@ -56,6 +57,7 @@ VALUE_DIRECTIVES: frozenset[str] = frozenset(
         "--isolate",
         "--notify",
         "--timeout",
+        "--warm-lead",
     }
 )
 
@@ -96,6 +98,17 @@ class Directives:
     hold: bool = False
     timeout: str = "4h"
     no_resume_on_limit: bool = False
+    # §5.5 warming. `warm` is the whole switch: it asks the scheduler to open
+    # the window with a throwaway anchor first and hold this job back until
+    # the tail of that window, so the run spends the tail *and* the window
+    # that starts at the reset. `warm_lead` is how much of the tail to claim,
+    # overriding `[warm].lead`; it is left `None` rather than defaulted here
+    # because the default is config, not spec, and this module has no config.
+    # It is also inert on its own -- a job file with `--warm-lead 45m` and no
+    # `--warm` is not a warm job, exactly as `--retry 3` alone does not make a
+    # job retry something it never ran.
+    warm: bool = False
+    warm_lead: str | None = None
 
 
 @dataclass

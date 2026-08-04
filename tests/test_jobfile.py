@@ -292,6 +292,48 @@ def test_log_defaults_to_none() -> None:
     assert parse_jobfile(_read("basic.md")).directives.log is None
 
 
+# ---------------------------------------------------------------------------
+# §5.5 --warm / --warm-lead
+# ---------------------------------------------------------------------------
+
+
+def test_warm_is_a_boolean_scheduler_directive() -> None:
+    jf = parse_jobfile("#$ --warm\n\nbody\n")
+
+    assert jf.directives.warm is True
+    # A scheduler directive, so `claude` never sees it -- there is no such
+    # claude flag, and passing it through would fail the run outright.
+    assert jf.passthrough == []
+
+
+def test_warm_lead_is_a_value_directive_overriding_the_config_default() -> None:
+    jf = parse_jobfile("#$ --warm\n#$ --warm-lead 45m\n\nbody\n")
+
+    assert jf.directives.warm is True
+    assert jf.directives.warm_lead == "45m"
+    assert jf.passthrough == []
+
+
+def test_warming_directives_default_to_off() -> None:
+    """§5.5 is opt-in: a job file that says nothing about warming is not a
+    warm job, and carries no lead of its own for the scheduler to prefer
+    over `[warm].lead`."""
+    d = parse_jobfile(_read("basic.md")).directives
+
+    assert d.warm is False
+    assert d.warm_lead is None
+
+
+def test_warm_lead_without_warm_is_inert_not_an_error() -> None:
+    """The parser validates nothing (§2.2), and the pair is deliberately not
+    coupled: `--warm-lead` alone records a lead on a job that is not warm,
+    exactly as `--retry 3` records a retry count on a job that may never run."""
+    d = parse_jobfile("#$ --warm-lead 90m\n\nbody\n").directives
+
+    assert d.warm is False
+    assert d.warm_lead == "90m"
+
+
 def test_resume_and_resume_from_both_present_is_not_rejected() -> None:
     # Pass-through beats validation (§0.4): jobfile.py must not reject
     # this even though §2.3 documents them as mutually exclusive — that
