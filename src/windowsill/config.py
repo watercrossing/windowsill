@@ -52,7 +52,8 @@ DEFAULTS: dict[str, Any] = {
         # design/09-findings.md, "Settled 2026-07-31": `--allowed-tools` was
         # found by experiment to be an *additive* auto-approve list -- it does
         # not remove or bound anything (`--disallowed-tools` is the flag that
-        # actually narrows the surface, and windowsill does not set it). So
+        # actually narrows the surface; windowsill does not set it and will
+        # not -- closed 2026-08-04, the boundary is `--permission-mode`). So
         # naming a tool here costs nothing in restriction, and *omitting* one
         # an unattended orchestrator needs is a loaded gun: it does nothing
         # today, but the day permission prompting actually engages (a

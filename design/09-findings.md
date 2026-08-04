@@ -46,7 +46,7 @@ Two jobs run overnight against the live queue by the repo owner, who had configu
 | Question | Answer | Consequence |
 |---|---|---|
 | Does `claude -p "run bash echo ..." --allowed-tools Read` block Bash? | **No.** Bash ran anyway, `permission_denials: []`, exit success | `--allowed-tools` is an *additive* auto-approve list, not a boundary — [§3.3](03-execution-model.md)'s allowlist bullet was rewritten to stop implying otherwise |
-| Does `claude -p "run bash echo ..." --disallowed-tools Bash` block Bash? | **Yes.** The model reported Bash was not present in its tool set at all | `--disallowed-tools` is the flag that actually narrows the surface. Not implemented — `safety.allowed_tools` still names only an auto-approve list |
+| Does `claude -p "run bash echo ..." --disallowed-tools Bash` block Bash? | **Yes.** The model reported Bash was not present in its tool set at all | `--disallowed-tools` is the flag that actually narrows the surface. Not implemented, and **closed 2026-08-04**: the owner draws the boundary with `--permission-mode`, so windowsill will not grow a competing `safety.disallowed_tools` ([§3.3](03-execution-model.md)) |
 
 Consequence for the default itself: because `--allowed-tools` never restricted anything, the pre-existing default list's omission of `Task` was harmless by accident, not by design — and it was a loaded gun for the day permission prompting actually engages (a `--permission-mode` change, a future CLI default, a sandboxed environment). Widened to add `Task`, `TodoWrite`, `WebFetch`, `WebSearch`, `NotebookEdit` ([§8.3](08-interface.md)).
 
