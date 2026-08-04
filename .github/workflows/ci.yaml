@@ -32,9 +32,18 @@ jobs:
         # before anything ran the suite on it; this is what makes the claim true.
         python-version: ["3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
+      # Action majors are kept current because runners force-upgrade the Node
+      # they run on: checkout@v4 and setup-uv@v5 target Node 20, which was
+      # deprecated in Sept 2025, and every run warned that it was being run on
+      # Node 24 anyway. Being force-upgraded is not a supported configuration
+      # -- it works until it doesn't -- so we run the majors that ship Node 24.
+      # The breaking changes in between don't touch us: checkout's is the
+      # `pull_request_target` checkout default (we only use `push` and
+      # `pull_request`), and setup-uv's is `prune-cache` defaulting to false
+      # (a cache-size question, not a correctness one).
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v9
         with:
           enable-cache: true
 
@@ -47,9 +56,9 @@ jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@v9
         with:
           enable-cache: true
 
