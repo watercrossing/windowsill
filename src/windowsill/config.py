@@ -48,6 +48,32 @@ DEFAULTS: dict[str, Any] = {
         "model": "claude-haiku-4-5",
         "body": "Reply with the single word: ok",
     },
+    # §5.5 window warming. A subscription window is five hours long and starts
+    # at your *first* request, so a job dispatched at 22:00 owns 22:00-03:00 and
+    # nothing else does. Warming splits that: a throwaway prompt opens the
+    # window at the job's `--at` time, the real job waits until `lead` before
+    # the window resets, and the run then spends the tail of window one and
+    # rolls straight into window two -- close to two windows of quota
+    # back-to-back instead of one.
+    #
+    # `lead` is the only number that needs tuning per subscription, and it is
+    # *how much quota you want to burn first*, expressed as time. On Pro the
+    # run history says a heavy job takes a window from 0% to 100% in about
+    # half an hour (runs 10 and 16 in the ledger: 30 and 33 minutes), so 30m
+    # spends roughly a full window's worth in the tail. A Max plan buys more
+    # tokens per window and therefore needs a longer lead to spend them.
+    #
+    # `min_pct_free` is the abort: if the warmed window has been eaten by
+    # something else in the meantime, there is nothing left to burn and the
+    # job is better off waiting for a window of its own than starting one
+    # minute of work before a rate limit.
+    #
+    # The warming prompt itself is not configured here -- it is an anchor, and
+    # uses `[anchor].model` and `[anchor].body`.
+    "warm": {
+        "lead": "30m",
+        "min_pct_free": 20,
+    },
     "safety": {
         # design/09-findings.md, "Settled 2026-07-31": `--allowed-tools` was
         # found by experiment to be an *additive* auto-approve list -- it does
@@ -113,8 +139,16 @@ DEFAULTS: dict[str, Any] = {
     # postmaster ("an MX or SRV record indicated no SMTP service") -- and a
     # shipped ntfy topic is a *public* one. So: no `to`, no `topic`, and
     # `default = "none"` until the user says otherwise.
+    # `on_rate_limit` is the one notification that fires for something other
+    # than a finished job. A rate-limited run is requeued, not terminal, so the
+    # normal path stays silent by design (§7) -- which means a job that stalls
+    # at 21:21 and finishes at 07:03 says nothing for ten hours, and silence is
+    # indistinguishable from a crashed tick. Default off because the failure
+    # mode is spam: a job with `--retry 3` that keeps hitting the ceiling sends
+    # one of these per attempt.
     "notify": {
         "default": "none",
+        "on_rate_limit": False,
         "ntfy": {
             "url": "https://ntfy.sh",
         },

@@ -213,8 +213,13 @@ allowed_tools   = ["Read", "Edit", "Write", "Grep", "Glob", "Bash"]
 default_isolate = "worktree"
 allow_dirty     = false
 
+[warm]
+lead          = "30m"
+min_pct_free  = 20
+
 [notify]
-default = "email"
+default       = "email"
+on_rate_limit = true
 
 [notify.ntfy]
 url   = "https://ntfy.sh"
@@ -259,8 +264,10 @@ def test_full_example_config_round_trips(tmp_path: Path) -> None:
         "default_isolate": "worktree",
         "allow_dirty": False,
     }
+    assert cfg["warm"] == {"lead": "30m", "min_pct_free": 20}
     assert cfg["notify"] == {
         "default": "email",
+        "on_rate_limit": True,
         "ntfy": {"url": "https://ntfy.sh", "topic": "windowsill-nightly"},
         "email": {
             "to": "you@your-real-domain",

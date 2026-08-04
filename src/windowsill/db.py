@@ -59,7 +59,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   log_path      TEXT,                 -- §2.3 --log; extra transcript.md destination
   no_resume_on_limit INTEGER NOT NULL DEFAULT 0,
   conversation_id TEXT,               -- opaque; Claude's session_id
-  pid           INTEGER, exit_code INTEGER
+  pid           INTEGER, exit_code INTEGER,
+  warm          INTEGER NOT NULL DEFAULT 0,  -- §5.5 --warm: open the window early, run in its tail
+  warm_lead     TEXT,                 -- per-job override of [warm].lead
+  warmed_by     INTEGER REFERENCES jobs(id)  -- the anchor we spawned to open the window
 );
 
 CREATE TABLE IF NOT EXISTS runs (      -- one row per execution attempt
@@ -70,7 +73,10 @@ CREATE TABLE IF NOT EXISTS runs (      -- one row per execution attempt
   pct_before    INTEGER, pct_after INTEGER,   -- §4.3
   num_turns     INTEGER, duration_ms INTEGER,
   permission_denials INTEGER,        -- count of the result envelope's permission_denials (§9 2026-07-28)
-  conversation_id TEXT
+  conversation_id TEXT,
+  summary       TEXT                 -- this attempt's own last words; the job dir's stream.jsonl is
+                                     -- rewritten by the next attempt, so a requeued run's output only
+                                     -- survives if it is copied here (§8.4 multi-run summary mail)
 );
 
 CREATE TABLE IF NOT EXISTS window (    -- one row per window we opened; the §5.3 ledger
@@ -120,8 +126,13 @@ _JOB_JSON_FIELDS = ("passthrough", "hold_jid")
 #: stays the single description of the table, and an old ``~/.windowsill/windowsill.db``
 #: keeps its jobs instead of needing a rebuild.
 ADDED_COLUMNS: dict[str, dict[str, str]] = {
-    "jobs": {"log_path": "TEXT"},
-    "runs": {"permission_denials": "INTEGER"},
+    "jobs": {
+        "log_path": "TEXT",
+        "warm": "INTEGER NOT NULL DEFAULT 0",
+        "warm_lead": "TEXT",
+        "warmed_by": "INTEGER REFERENCES jobs(id)",
+    },
+    "runs": {"permission_denials": "INTEGER", "summary": "TEXT"},
 }
 
 
@@ -275,6 +286,9 @@ def insert_job(
     conversation_id: str | None = None,
     pid: int | None = None,
     exit_code: int | None = None,
+    warm: bool | int = 0,
+    warm_lead: str | None = None,
+    warmed_by: int | None = None,
 ) -> int:
     """Insert a row into ``jobs``, return its (new, monotonic) id."""
     record = _encode_job_fields(
@@ -307,6 +321,9 @@ def insert_job(
             conversation_id=conversation_id,
             pid=pid,
             exit_code=exit_code,
+            warm=int(bool(warm)),
+            warm_lead=warm_lead,
+            warmed_by=warmed_by,
         )
     )
     return database["jobs"].insert(record).last_pk  # type: ignore[return-value]
@@ -411,6 +428,7 @@ def insert_run(
     duration_ms: int | None = None,
     permission_denials: int | None = None,
     conversation_id: str | None = None,
+    summary: str | None = None,
 ) -> int:
     """Insert a row into ``runs`` (one execution attempt), return its id."""
     record = dict(
@@ -424,6 +442,7 @@ def insert_run(
         duration_ms=duration_ms,
         permission_denials=permission_denials,
         conversation_id=conversation_id,
+        summary=summary,
     )
     return database["runs"].insert(record).last_pk  # type: ignore[return-value]
 
