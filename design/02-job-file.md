@@ -53,10 +53,10 @@ Non-negotiable consequences:
 | Directive | Default | Meaning |
 |---|---|---|
 | `--name <slug>` | filename stem | Human label. Unique only among non-terminal jobs |
-| `--at <when>` | ASAP | Earliest start. ISO-8601, `tomorrow 02:00`, or `+3h` |
-| `--before <time>` | none | Do not start after this; job becomes `expired` if missed |
+| `--at <when>` | ASAP | Earliest start. ISO-8601 only today; the relative forms (`tomorrow 02:00`, `+3h`) are unimplemented and fail the submit |
+| `--before <time>` | none | Do not start after this; job becomes `expired` if missed. Compared as a string against UTC, so write it in UTC |
 | `--window <policy>` | `share` | `fresh` \| `share` \| `offpeak` ([§5.1](05-windows.md)) |
-| `--anchor` | false | This is an anchor job ([§5.2](05-windows.md)). Implies `--model claude-haiku-4-5` unless overridden |
+| `--anchor` | false | This is an anchor job ([§5.2](05-windows.md)). Does **not** imply a model today — `[anchor].model` is read only when the scheduler spawns a warmer ([§5.5](05-windows.md)) |
 | `--cwd <path>` | submit-time cwd | Working directory. `~` expanded at submit |
 | `--log <path>` | job dir only | Also write the rendered `transcript.md` here. A path ending in `/`, or an existing directory, gets `<id>-<name>.md` inside it; anything else is the file itself. `~` expanded at submit, relative paths resolved against `--cwd` at write time |
 | `--resume <conversation_id>` | — | Continue an explicit conversation |
@@ -70,5 +70,7 @@ Non-negotiable consequences:
 | `--hold` | false | Submit `held`; needs `windowsill release` |
 | `--timeout <dur>` | `4h` | Wall-clock kill |
 | `--no-resume-on-limit` | false | On rate-limit requeue, restart from the original body instead of resuming ([§5.4](05-windows.md)) |
+| `--warm` | false | Open the window at `--at`, but hold the job until near the window's end ([§5.5](05-windows.md)) |
+| `--warm-lead <dur>` | config (`30m`) | Per-job override of `[warm].lead` ([§5.5](05-windows.md)) |
 
 `--resume` and `--resume-from` are mutually exclusive. Both produce `claude --resume <id>` at dispatch.

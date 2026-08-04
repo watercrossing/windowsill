@@ -71,7 +71,8 @@ journal = true                    # ask the job to keep <job dir>/journal.md; ad
 text    = ""                      # replace the built-in prompt wholesale; "{journal}" is substituted
 
 [notify]
-default = "none"                  # opt-in; see §8.4
+default        = "none"           # opt-in; see §8.4
+on_rate_limit  = false            # §5.4 pause ping; off because --retry sends one per attempt
 
 [notify.ntfy]
 url   = "https://ntfy.sh"
@@ -90,3 +91,9 @@ sendmail = "/usr/sbin/sendmail"
 **ntfy** (POST to `url/topic`; title = job name + state; body = one-line result, Δ%, and `windowsill resume <id>`) and **email** via `sendmail -t` from the configured noreply address. Nothing else. A failed notification is logged and never fails the job.
 
 **Opt-in, and never guessed.** `[notify].default` is `none`, and neither channel has a default destination. A channel that is on with nowhere to send to sends nothing — no placeholder recipient, no topic, nothing derived from `$USER`/hostname — and records a `notify_skipped` event, because the alternative is a queue that quietly mails a stranger. (It did: the shipped `you@example.org` was mailed for real on 2026-07-30 and refused by the postmaster, "an MX or SRV record indicated no SMTP service".) `--notify <channel>:<destination>` ([§2.3](02-job-file.md)) carries a per-job address/topic for the case where the global config names nobody; `windowsill show` prints the destination a job would actually reach, never just the channel.
+
+**The summary mail covers every attempt.** A job requeued by a rate limit ([§5.4](05-window-policy.md)) runs more than once, and a mail describing only the last attempt describes three minutes of a ten-hour night. So each run copies its own closing line into `runs.summary` as it ends — the job dir holds one `stream.jsonl` and the next attempt overwrites it — and a job with more than one attempt gets an **Attempts** section: one line per run (number, local start, duration, outcome, Δ window %, turns) with that run's last words under it, a totals line (run count, wall clock from the first start to the last finish, summed running time, summed turns, total window %), and the run count in the subject. A single-attempt job's mail is unchanged.
+
+The totals report **window percentage and nothing else**. windowsill records no token counts and no dollar cost anywhere; `runs.pct_before`/`pct_after` ([§4.3](04-usage-oracle.md)) is the only cost unit in the database, and none is estimated from it. It is also not additive: a rate-limited run ends at 100% and its successor starts at 0% of a *fresh* window, so `Σ max(0, pct_after - pct_before)` is a **floor**, not a total — quota spent across a window boundary is not observable from these numbers. The mail says so on its own line.
+
+**`on_rate_limit`** is the one notification that fires for something other than a finished job: when a run is requeued at the ceiling, a one-line "out of window, resuming at 02:00" ping plus the usage block, on the job's own channel. It changes nothing about the requeue — the job is still not terminal, still gets no summary mail, and still keeps its retry count, which the ping states outright rather than leaving the reader to subtract. Default off: a job with `--retry 3` that keeps hitting the ceiling sends one per attempt. It records the same `notified` / `notify_failed` / `notify_skipped` kinds as any other send, prefixed `rate limit:` in the detail.

@@ -105,6 +105,8 @@ windowsill creates `~/.windowsill/logs/` for you on first run.
 
 A job is a UTF-8 text file: an optional shebang, a header of `#$` directives, a blank line, then the prompt body — verbatim, no templating, any length.
 
+**[`examples/`](examples/) has runnable blueprints** — from a three-line "does my install work" job up to held pipelines, isolated worktrees and anchors. Each one is mostly comment, explaining why it is shaped the way it is. Start at [`examples/01-hello.md`](examples/01-hello.md).
+
 ```
 #!/usr/bin/env ccsub
 #$ --name refactor-auth
@@ -148,10 +150,12 @@ This means a new `claude` flag works the day it ships, with no change here — a
 | Directive | Default | Meaning |
 |---|---|---|
 | `--name <slug>` | filename stem | Human label. Unique only among non-terminal jobs |
-| `--at <when>` | ASAP | Earliest start. ISO-8601, `tomorrow 02:00`, or `+3h` |
-| `--before <time>` | none | Do not start after this; job becomes `expired` if missed |
+| `--at <when>` | ASAP | Earliest start. ISO-8601 |
+| `--before <time>` | none | Do not start after this; job becomes `expired` if missed. Write it in UTC |
 | `--window <policy>` | `share` | `fresh` \| `share` \| `offpeak` |
-| `--anchor` | false | This is an anchor job. Implies `--model claude-haiku-4-5` unless overridden |
+| `--anchor` | false | This is an anchor job: a trivial prompt whose only purpose is to open a window |
+| `--warm` | false | Open the window at `--at`, but run the job near the window's end. See below |
+| `--warm-lead <dur>` | config (`30m`) | How long before the window resets a `--warm` job goes |
 | `--cwd <path>` | submit-time cwd | Working directory. `~` expanded at submit |
 | `--log <path>` | job dir only | Also write the rendered transcript here. A trailing `/` (or an existing directory) means "in there", as `<id>-<name>.md`; otherwise it is the file. Relative to `--cwd` |
 | `--resume <conversation_id>` | — | Continue an explicit conversation |
@@ -170,6 +174,29 @@ This means a new `claude` flag works the day it ships, with no change here — a
 `--resume` is the one case where a scheduler directive shadows a real `claude` flag.
 
 Every directive above is parsed *and* acted on today, with two exceptions: `--isolate worktree` is stored but not yet honoured (runs happen in `--cwd` regardless), and `--allow-dirty` is not yet checked.
+
+### `--warm`: spend the tail of one window and roll into the next
+
+A window is five hours long and starts at your **first** request, so a job dispatched at 22:00 owns 22:00–03:00 and gets one window's quota. `--warm` splits those two events apart:
+
+```
+        22:00                                   02:30      03:00              08:00
+without   |============ job runs, one window ======|          |
+with      A---------------- idle -----------------[== job ==>|=== job ====== ...
+          ^ anchor opens window 1                             ^ window 2 opens free
+```
+
+At `--at`, the scheduler spawns a throwaway anchor that opens the window and stops. The job itself waits until `[warm].lead` before the window resets, then runs — spending what is left of window one, hitting the boundary, and continuing into window two. One scheduled time, close to two windows of quota.
+
+```toml
+[warm]
+lead         = "30m"   # how much of window one to spend first, expressed as time
+min_pct_free = 20      # below this, defer rather than start a run that cannot finish
+```
+
+`lead` is the only number worth tuning, and it is a **quota budget** that happens to be measured in minutes. On a Pro plan this queue's own ledger puts the median burn at 2.76 %/min, i.e. about **36 minutes** to spend a whole window — so 30m spends most of one. The errors are not symmetric: too long only costs waiting (a rate-limit requeue consumes no `--retry` and resumes the same conversation), while too short wastes quota permanently. Err long. A Max plan buys more tokens per window at the same wall-clock length, so it needs a **longer** lead, not a shorter one.
+
+`design/05-windows.md` §5.5 has the full reasoning and the measurements.
 
 ## Commands
 
@@ -220,7 +247,8 @@ Off until you ask for them, and windowsill will not invent an address to send to
 ```toml
 # ~/.windowsill/config.toml
 [notify]
-default = "email"          # or "ntfy", or "none" (the default)
+default       = "email"    # or "ntfy", or "none" (the default)
+on_rate_limit = false      # ping when a run is paused at the window ceiling
 
 [notify.email]
 to       = "you@your-real-domain"
@@ -235,6 +263,13 @@ There is no default recipient and no default ntfy topic.
 A channel that is on with nowhere to send to sends nothing and records a `notify_skipped` event — it will not fall back to a placeholder, and it will not guess from `$USER` and your hostname.
 A single job can carry its own destination with `#$ --notify email:me@example.com`, which is the whole configuration if you only want mail from one job.
 `windowsill show <id>` prints the address a job would actually reach.
+
+The mail arrives when the job finishes, and it covers **every** attempt, not just the last one.
+A job that hit the window ceiling twice before finishing gets `(3 runs)` in the subject and an Attempts section listing each run — when it started, how long it ran, how it ended, and what it said as it stopped — over a totals line: run count, wall clock from the first start to the last finish (the ten hours, most of which was waiting), time actually running, turns, and window % spent.
+That percentage is the only cost windowsill records — there are no token counts and no dollar figures anywhere in it — and because the window resets between attempts, the total is a floor rather than a sum. The mail says so.
+
+`on_rate_limit = true` adds one short notification when a run is paused at the ceiling: when the queue will resume, the usage block, and the fact that the pause cost no retry.
+It is off by default because a job with `--retry 3` that keeps hitting the ceiling sends one per attempt.
 
 ## Similar tools
 
