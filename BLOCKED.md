@@ -1,161 +1,93 @@
-# Overnight run notes — 2026-08-04 (todo-4)
+# Overnight run notes — 2026-08-05 (todo-5)
 
-Things you should know at breakfast without reading the transcript.
-Nothing here is a blocker unless it says **BLOCKED**.
+**Nothing is blocked.** All five asks are done, committed, and verified.
+The todo-4 blocker that used to head this file — the PyPI trusted publisher
+still pointing at `watercrossing/ccq` — is **resolved**: you fixed it and 0.2.0
+uploaded on 2026-08-04. Nothing on the release path needs you now.
+
+Six commits on `main`, **not pushed**. 611 tests pass, ruff clean, and the
+pre-push hook's three checks pass, so the batch is ready when you are.
 
 ---
 
-## **BLOCKED** — the repo rename broke your PyPI trusted publisher
+## The one thing to look at first
 
-Do this before you tag 0.2.0, or the publish will fail at the upload step.
+**Job 28 (`windowsill-todo-6`, queued 2026-08-05 21:00) is the first real use
+of `--warm`.** The 21:00 in its header is no longer when it runs — it is when a
+throwaway Haiku anchor opens the window. The job itself goes ~30 minutes before
+that window resets, around 01:30, so it spends the tail of window one and rolls
+straight into window two.
 
-You registered the publisher against `watercrossing/**ccq**`. The repo is now
-`watercrossing/**windowsill**`. A trusted publisher matches the OIDC token's
-`repository` claim **literally** — GitHub's rename redirect does not rewrite
-the claim. So the token will say `windowsill`, the publisher will say `ccq`,
-and PyPI will reject the upload.
+If warming misbehaves the job **sits `ready` rather than running** — it has no
+`--before` to expire it, so the failure would be quiet. If you find in the
+morning that it never went: `ccdel 28`, delete the `--warm` line, resubmit.
 
-This is exactly the trap the last run's §6 step 2 warned about; the warning
-just arrived one release too late to be free.
+The gate was exercised against a real database before shipping, not just mocks:
+no window ⇒ exactly one `warm-nightly` warmer on Haiku with a 5m timeout; no
+duplicate on a second tick; holds at 00:29 and dispatches at 00:31 for a 01:00
+reset; refuses when only 5% of the window is free. Every decision writes a
+plain-English `warm` event, so the audit trail will say what it chose and why.
 
-**Fix (two minutes, only you can do it):** PyPI → your account → Publishing →
-the `windowsill` project → delete the old `ccq` publisher and add one with:
+## Your "is 30 minutes enough?" question — answered from your own ledger
 
-- Owner → `watercrossing`
-- Repository name → `windowsill`
-- Workflow name → `pypi.yaml`
-- Environment name → **leave blank**
+Twelve completed runs carrying both usage probes, on Pro:
 
-Everything else about the release path is unchanged and still correct.
-
-## §1 The rename is done
-
-- `~/.ssh/gh-ccq` → `~/.ssh/gh-windowsill` (and `.pub`).
-- `~/.ssh/config`: `Host gh-ccq` → `Host gh-windowsill`, `IdentityFile`
-  updated. Backup at `~/.ssh/config.bak-20260804`.
-- Remote renamed `gh-ccq` → `gh-windowsill`, URL now
-  `gh-windowsill:watercrossing/windowsill.git`. `main` still tracks it.
-- `pyproject.toml` URLs now point at `/windowsill`, plus a new `Changelog` URL.
-
-Verified: `ssh -T gh-windowsill` → "Hi watercrossing/windowsill!", and
-`git fetch` succeeds. The deploy key still works against the renamed repo.
-
-## §4 Why you never got a blocked email — no bug, a category error
-
-**The two todo-3 stalls were rate limits, not `blocked`.** Those are different
-states and only one of them notifies.
-
-The event log for job 20 settles it:
-
-```
-21:21  rate_limited   rate_limit_event; blocked until 2026-08-01T01:49
-02:34  rate_limited   rate_limit_event; blocked until 2026-08-01T07:00
-07:03  done
-07:03  notified       email
-```
-
-Two rate limits, no notification; one completion, one email. That is the code
-working as designed. `runner.py:1170` requeues a rate-limited run, and only the
-terminal branch at `:1203` calls `_notify_job` — *"Only terminal states notify
-— a requeued job hasn't finished"* (`:967`). A requeued job is back at `ready`
-and will run again, so nothing terminal has happened to report.
-
-The confusion is that **two unrelated things are both called "blocked"**:
-
-| | what it means | notifies? |
+| | %/min | 100% of a window takes |
 |---|---|---|
-| `sched.blocked_until` | the *queue* is rate-limited and paused | no — by design |
-| job state `blocked` (§7) | a *run* ended with background work still live | yes |
+| fastest | 5.10 | 20 min |
+| **median** | **2.76** | **36 min** |
+| slowest | 0.61 | 164 min |
 
-You hit the first one twice. The second has **never happened** — the distinct
-job states in the database are `done`, `cancelled`, `failed`, `running`,
-`ready`. That is still true today.
+So 30 minutes spends most of a window, not quite all of it. **I left the
+default at your 30m** rather than quietly raising it, because the real answer
+is that the errors are asymmetric and you should choose knowing that:
 
-### Correcting the last run's note
+- **Lead too long** — the job exhausts window one early and waits for the
+  reset. Costs waiting only: a rate-limit requeue consumes no `--retry` and
+  resumes the same conversation.
+- **Lead too short** — quota you already paid for expires unspent, forever.
 
-The previous BLOCKED.md called the blocked email "the least-tested branch in
-`mail.py`". That was overstated. It is unit-tested at both levels —
-`tests/test_mail.py:184-223` composes and asserts on blocked-state mail, and
-`tests/test_runner.py:976` asserts a run with live background work comes back
-`outcome=incomplete, job_state=blocked`. And the wiring is sound: `incomplete`
-is excluded from both the requeue and the retry branch, so it falls through to
-the terminal `else` and *does* send. What is untested is not the code, it is
-reality — no real job has ever gone incomplete.
+Err long. If you want the median covered, set `lead = "40m"` in `[warm]`. And
+note that **Max needs a longer lead, not a shorter one** — more tokens per
+window at the same five hours means a lower %/min.
 
-### The real gap this exposes (not a defect — a decision for you)
+## What changed for you, day to day
 
-A job that hits a rate limit at 21:21 and finishes at 07:03 tells you
-**nothing for ten hours**. Silence is indistinguishable from a crashed tick.
+- **The summary mail now covers the whole job.** todo-3 would have arrived as
+  `(done, 3 runs)`, carrying both rate-limited attempts' own closing words and
+  `10h 11m wall / 1h 07m running` — the pair of numbers that makes a ten-hour
+  stall visible. Budget is reported in window %, because that is the only cost
+  unit in the database; the mail says outright that it is a floor rather than
+  pretending to be a token count.
+- **`on_rate_limit = true` is now set in `~/.windowsill/config.toml`.** A
+  paused run sends one short line: when it resumes, the usage numbers, and the
+  fact that the pause cost no retry. That is todo-3's ten-hour silence, closed.
+  It is global config rather than a per-job directive, since it is a statement
+  about how *you* want to be told; if you want per-job control, a
+  `#$ --notify-on-limit` override is a small addition.
+- **`examples/`** — eight runnable blueprints, each mostly comment. All were
+  submitted to a throwaway `--home` to prove they parse, queue and produce the
+  argv they claim.
 
-I did not change this, because "notify on requeue" is a design change with a
-spam failure mode, and the last run's §2 lesson was that this kind of thing
-should not land unattended. If you want it, the shape I would build is a
-default-off `[notify] on_rate_limit` that sends the one line the queue already
-knows: *"paused, resuming 02:00"*. Say the word and it is a small change.
+## Three things the docs promised that the code never did
 
-## §3 CI — added, and here is how it meets your ten-commit habit
+Found by writing `examples/` against `jobfile.py` instead of against the prose.
+The docs now tell the truth; the code fixes are queued in todo-6.
 
-`.github/workflows/ci.yaml`: the suite on Python **3.13 and 3.14**, plus
-`ruff check` and `ruff format --check`, on every push to `main` and every PR.
-This is the obviously-right one — you were shipping a `Programming Language ::
-Python :: 3.14` classifier that nothing had ever tested, and "the tests pass"
-meant "on Ingolf's machine". Baseline right now: **545 pass, lint clean**.
+1. **`--before` is a real bug.** `--at` is normalised to UTC; `--before` is
+   stored verbatim and then compared as a *string* against UTC. A `--before`
+   written in local time expires at the wrong moment.
+2. **`--at tomorrow 02:00` and `--at +3h`** were documented in two places and
+   fail the submit — `_normalize_at` is bare `fromisoformat`.
+3. **`--anchor` never implied Haiku.** `[anchor].model` had no reader at all
+   until window warming gave it one.
 
-**On your ten-commits-then-push workflow.** It integrates fine, with one honest
-caveat. A `push` event triggers **one** CI run, against the tip of what you
-pushed — not one per commit. So:
+Also dead config, now written down rather than shrugged at: `[anchor].enabled`
+and `[anchor].time` (nothing schedules a daily anchor — that is a cron line),
+and `[queue].default_model` (never read).
 
-- Good: ten commits cost you one CI run, not ten. No queue backup, no cost.
-- Bad: a red build means "somewhere in those ten", and finding where is a local
-  `git bisect`. CI cannot tell you which commit broke it because it never saw
-  the middle eight.
+## Ready when you are
 
-So the workflow is the smaller half of the answer. The bigger half is
-`.githooks/pre-push`, which runs those same three checks **before** the batch
-leaves the machine — while the commits are still cheap to amend or reorder.
-It is opt-in and I did not enable it for you:
-
-```
-git config core.hooksPath .githooks     # enable
-git push --no-verify                    # skip once
-```
-
-I'd turn it on. It costs ~10s per push and it is the only thing that keeps a
-red main from being a bisect.
-
-Also: `concurrency` cancels superseded runs on branches but **never on `main`**,
-so every batch you push to main keeps its own permanent green/red record.
-
-## §5 `disallowed_tools` — closed, per your call
-
-You said the permission mode is what defines the boundary for you, so the
-question is now settled rather than open. Recorded in three places so it does
-not get re-litigated: `design/03-execution-model.md` §3.3,
-`design/09-findings.md` (the findings table), and the comment on
-`safety.allowed_tools` in `config.py`. The reasoning written down is that a
-config key would be a *second* mechanism overlapping `--permission-mode`, and
-the two could only ever disagree.
-
-Nothing was implemented and nothing was removed — `safety.allowed_tools` still
-does what it did (auto-approve, not a sandbox).
-
-## §6 0.2.0 is staged
-
-Version bumped, `CHANGELOG.md` written (0.1.0 reconstructed from the tag,
-0.2.0 covering this run), `Changelog` URL added. `v0.1.0` is tagged at the
-previous HEAD, so everything in this run is exactly the 0.2.0 delta.
-
-Verified locally: **545 tests pass**, ruff clean, `uv build` produces both
-artifacts, `twine check --strict` **PASSED** on both.
-
-Release path, once the publisher above is fixed: push, then create the GitHub
-release with tag `v0.2.0`. The workflow still guards tag-vs-version and fails
-before upload on a mismatch.
-
-Two things worth knowing:
-
-- `pypi.yaml` has now **run once for real** (0.1.0 shipped), so it is no longer
-  the untested-on-the-release-that-matters risk it was last week.
-- The 0.1.0 metadata live on PyPI still shows the `ccq` URLs. That cannot be
-  edited — a released version's metadata is immutable. 0.2.0 fixes it going
-  forward; the old page will keep pointing at a redirect.
+`CHANGELOG.md` has a written `Unreleased` section covering all of the above.
+0.3.0 is a version bump, a date and a tag whenever you want it — todo-6 asks
+for it once warming has proven itself for a night.
