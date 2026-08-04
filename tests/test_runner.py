@@ -23,7 +23,7 @@ from typing import Any
 import pytest
 
 from windowsill import config as config_module
-from windowsill import db, notify, runner, usage
+from windowsill import db, mail, notify, runner, usage
 
 # ---------------------------------------------------------------------------
 # helpers: fake "claude" scripts (never the real claude, never a network call)
@@ -1301,6 +1301,9 @@ def _reading(pct: int, reset_at: str | None = None) -> usage.ParsedUsage:
 
 
 def _run(conn, job_id, tmp_path, script=SUCCESS_SCRIPT, **kwargs):
+    # `now` is a default rather than fixed, because a job that was rate-limited
+    # and requeued runs more than once and the second run is not at 02:00.
+    kwargs.setdefault("now", iter(["2026-07-21T02:00:00+00:00", "2026-07-21T02:30:00+00:00"]).__next__)
     return runner.run_job(
         conn,
         job_id,
@@ -1308,7 +1311,6 @@ def _run(conn, job_id, tmp_path, script=SUCCESS_SCRIPT, **kwargs):
         claude_cmd=_write_script(tmp_path, "claude_fake.py", script),
         on_complete=[sys.executable, "-c", "pass"],
         sleep=noop_sleep,
-        now=iter(["2026-07-21T02:00:00+00:00", "2026-07-21T02:30:00+00:00"]).__next__,
         **kwargs,
     )
 
@@ -1593,6 +1595,258 @@ def test_failed_notification_is_logged_and_never_fails_the_job(tmp_path: Path) -
     last = db.list_events(conn, job_id=job_id)[-1]
     assert last["kind"] == "notify_failed"
     assert "refused" in last["detail"]
+
+
+# ---------------------------------------------------------------------------
+# §8.4 the multi-run summary mail: every attempt, not just the last
+# ---------------------------------------------------------------------------
+
+
+def _limited(prefix: str) -> str:
+    """A rate-limited run whose closing line is its own, so a mail listing
+    several attempts can be checked for the right one against the right run."""
+    return RATE_LIMITED_SCRIPT.replace('"Claude AI usage limit reached"', f'"{prefix} Claude AI usage limit reached"')
+
+
+def _clock(*times: str):
+    return iter(times).__next__
+
+
+def _notified_job(conn, tmp_path: Path, channel: str = "email") -> int:
+    return db.insert_job(
+        conn,
+        name="windowsill-todo-3",
+        state="running",
+        submitted_at="2026-07-20T21:00:00Z",
+        cwd=str(tmp_path),
+        body="please lint the repo",
+        passthrough=[],
+        notify=channel,
+        retry_max=3,
+    )
+
+
+def test_a_rate_limited_runs_last_words_are_persisted_to_the_run_row(tmp_path: Path) -> None:
+    """The job dir holds one stream.jsonl and the next attempt overwrites it,
+    so an attempt's summary survives only if it is copied out at the time --
+    and the rate-limited attempts are exactly the ones worth recovering."""
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _make_job(conn, tmp_path)
+
+    _run(conn, job_id, tmp_path, script=_limited("parser reworked;"), probe=FakeProbe(_reading(99, None)))
+
+    row = db.list_runs(conn, job_id=job_id)[0]
+    assert row["outcome"] == "rate_limited"
+    assert row["summary"] == "parser reworked; Claude AI usage limit reached"
+
+
+def test_a_successful_runs_summary_is_persisted_too(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _make_job(conn, tmp_path)
+
+    _run(conn, job_id, tmp_path)
+
+    assert db.list_runs(conn, job_id=job_id)[0]["summary"] == "ok: please lint the repo"
+
+
+def test_the_summary_mail_covers_every_attempt_with_its_totals(tmp_path: Path) -> None:
+    """The user's report: "the summary email only mentions the most recent run.
+    It should include the outputs from the previous, rate-limited runs. And
+    highlight that it took 3 runs, and include the total budget spent." """
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _notified_job(conn, tmp_path)
+    sent: list[tuple] = []
+
+    def fake_notify(channel, title, body, *, config, message=None):
+        sent.append((channel, title, body, message))
+        return notify.NotifyResult(True, channel)
+
+    _run(
+        conn,
+        job_id,
+        tmp_path,
+        script=_limited("parser reworked;"),
+        probe=FakeProbe(_reading(30), _reading(100)),
+        now=_clock("2026-07-20T21:21:00+00:00", "2026-07-20T21:52:00+00:00"),
+        notify_fn=fake_notify,
+    )
+    _run(
+        conn,
+        job_id,
+        tmp_path,
+        script=_limited("tests picked back up;"),
+        probe=FakeProbe(_reading(0), _reading(100)),
+        now=_clock("2026-07-21T02:00:00+00:00", "2026-07-21T02:35:00+00:00"),
+        notify_fn=fake_notify,
+    )
+    _run(
+        conn,
+        job_id,
+        tmp_path,
+        probe=FakeProbe(_reading(0), _reading(4)),
+        now=_clock("2026-07-21T07:00:00+00:00", "2026-07-21T07:03:00+00:00"),
+        notify_fn=fake_notify,
+    )
+
+    # Only the terminal run mailed; the two requeues stayed quiet (§7).
+    assert len(sent) == 1
+    _, _, _, message = sent[0]
+    assert "3 runs" in message["Subject"]
+
+    text = {part.get_content_type(): part for part in message.walk() if not part.is_multipart()}["text/plain"].get_content()
+    assert "parser reworked; Claude AI usage limit reached" in text
+    assert "tests picked back up; Claude AI usage limit reached" in text
+    # 21:21 to 07:03 is the number the reader wants; 70 + 100 + 4 is the floor.
+    assert "3 runs · 9h 42m wall" in text
+    assert "174% of the window" in text
+    assert "floor, not a sum" in text
+
+
+def test_a_single_run_job_mails_no_attempt_history(tmp_path: Path) -> None:
+    """The ordinary case must look exactly as it did before any of this."""
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _notified_job(conn, tmp_path)
+    sent: list[tuple] = []
+
+    _run(
+        conn,
+        job_id,
+        tmp_path,
+        notify_fn=lambda channel, title, body, *, config, message=None: (sent.append(message), notify.NotifyResult(True, channel))[1],
+    )
+
+    message = sent[0]
+    assert "runs" not in message["Subject"]
+    assert "Attempts" not in message.as_string()
+
+
+# ---------------------------------------------------------------------------
+# §8.4 [notify].on_rate_limit -- the "still alive, back at 02:00" ping
+# ---------------------------------------------------------------------------
+
+ON_RATE_LIMIT: dict[str, Any] = {"notify": {"on_rate_limit": True}}
+
+
+def _rate_limited_with(conn, job_id: int, tmp_path: Path, config: dict[str, Any] | None) -> list[tuple]:
+    sent: list[tuple] = []
+
+    def fake_notify(channel, title, body, *, config, message=None):
+        sent.append((channel, title, body, message))
+        return notify.NotifyResult(True, notify.split_channel(channel)[0])
+
+    _run(
+        conn,
+        job_id,
+        tmp_path,
+        script=RATE_LIMITED_SCRIPT,
+        probe=FakeProbe(_reading(30), _reading(100, "2026-07-21T07:00:00+00:00")),
+        config=config,
+        notify_fn=fake_notify,
+    )
+    return sent
+
+
+def test_a_rate_limited_requeue_is_silent_by_default(tmp_path: Path) -> None:
+    """Default off, and off means nothing at all is attempted: a job with
+    `--retry 3` that keeps hitting the ceiling would otherwise send one of
+    these per attempt."""
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _notified_job(conn, tmp_path, channel="ntfy")
+
+    sent = _rate_limited_with(conn, job_id, tmp_path, {"notify": config_module.DEFAULTS["notify"]})
+
+    assert sent == []
+    assert [event["kind"] for event in db.list_events(conn, job_id=job_id)][-1] == "rate_limited"
+
+
+def test_on_rate_limit_sends_one_ping_with_the_resume_time_usage_and_retries(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _notified_job(conn, tmp_path, channel="ntfy")
+
+    sent = _rate_limited_with(conn, job_id, tmp_path, ON_RATE_LIMIT)
+
+    assert len(sent) == 1
+    channel, title, body, message = sent[0]
+    assert channel == "ntfy"
+    # The time the *queue* will wake, which the fresh probe won over the
+    # error's own timestamp.
+    resumes = mail._local("2026-07-21T07:00:00+00:00")
+    assert title == f"windowsill-todo-3: rate-limited, back at {resumes}"
+    assert f"resuming at {resumes}." in body
+    assert "This pause cost no retry (3 still available for an actual failure)." in body
+    assert "Session window: 100% used" in body
+    assert message is None  # ntfy carries the one-liner, not a composed mail
+
+
+def test_the_rate_limit_ping_does_not_change_the_requeue(tmp_path: Path) -> None:
+    """§5.4 is untouched by §8.4: the job is still not terminal, still keeps
+    its retry count, and still gets no summary mail."""
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _notified_job(conn, tmp_path, channel="ntfy")
+
+    sent = _rate_limited_with(conn, job_id, tmp_path, ON_RATE_LIMIT)
+
+    job = db.get_job(conn, job_id)
+    assert job["state"] == "ready"
+    assert job["retry_count"] == 0
+    assert db.get_sched(conn)["blocked_until"] == "2026-07-21T07:00:00+00:00"
+    assert sent[0][3] is None  # no multipart summary body went out
+
+
+def test_the_rate_limit_ping_is_recorded_as_an_ordinary_notify_event(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _notified_job(conn, tmp_path, channel="ntfy")
+
+    _rate_limited_with(conn, job_id, tmp_path, ON_RATE_LIMIT)
+
+    last = db.list_events(conn, job_id=job_id)[-1]
+    assert last["kind"] == "notified"  # the same three kinds; which one it was is the detail
+    assert last["detail"] == "rate limit: ntfy"
+
+
+def test_the_rate_limit_ping_composes_a_plain_mail_on_the_email_channel(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _notified_job(conn, tmp_path, channel="email")
+
+    sent = _rate_limited_with(conn, job_id, tmp_path, ON_RATE_LIMIT)
+
+    message = sent[0][3]
+    assert message is not None
+    assert message["Subject"].startswith("[windowsill ")
+    assert message.get_content_type() == "text/plain"
+    assert "This pause cost no retry" in message.get_content()
+
+
+def test_notify_none_stays_silent_even_with_on_rate_limit_set(tmp_path: Path) -> None:
+    """The flag turns a notification on; it never turns a channel on."""
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _notified_job(conn, tmp_path, channel="none")
+
+    sent = _rate_limited_with(conn, job_id, tmp_path, ON_RATE_LIMIT)
+
+    assert sent == []
+    assert not [event for event in db.list_events(conn, job_id=job_id) if event["kind"].startswith("notif")]
+
+
+def test_a_failed_rate_limit_ping_is_logged_and_never_fails_the_requeue(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _notified_job(conn, tmp_path, channel="ntfy")
+
+    outcome = _run(
+        conn,
+        job_id,
+        tmp_path,
+        script=RATE_LIMITED_SCRIPT,
+        probe=FakeProbe(_reading(99, None)),
+        config=ON_RATE_LIMIT,
+        notify_fn=lambda *a, **k: notify.NotifyResult(False, "ntfy", "ConnectionError: refused"),
+    )
+
+    assert outcome.outcome == "rate_limited"
+    assert db.get_job(conn, job_id)["state"] == "ready"
+    last = db.list_events(conn, job_id=job_id)[-1]
+    assert last["kind"] == "notify_failed"
+    assert last["detail"] == "rate limit: ntfy: ConnectionError: refused"
 
 
 # ---------------------------------------------------------------------------

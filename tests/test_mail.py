@@ -334,6 +334,197 @@ def test_subject_falls_back_to_outcome_with_no_result_event() -> None:
 
 
 # ---------------------------------------------------------------------------
+# the attempt history (§5.4: a rate-limited job runs more than once)
+# ---------------------------------------------------------------------------
+
+#: Three attempts of the shape the user actually reported: two runs that hit
+#: the window ceiling overnight and a third, three-minute one that finished.
+#: 21:21 to 07:03 is 9h42m of wall clock against 1h09m of running -- the gap
+#: between those two numbers is the entire reason this section exists.
+THREE_ATTEMPTS = [
+    mail.Attempt(
+        n=1,
+        started_at="2026-07-20T21:21:00Z",
+        finished_at="2026-07-20T21:52:00Z",
+        outcome="rate_limited",
+        delta_pct=68,
+        num_turns=41,
+        duration_ms=1_860_000,
+        summary="Reworked the parser; hit the ceiling mid-test-run.",
+    ),
+    mail.Attempt(
+        n=2,
+        started_at="2026-07-21T02:00:00Z",
+        finished_at="2026-07-21T02:35:00Z",
+        outcome="rate_limited",
+        delta_pct=100,
+        num_turns=33,
+        duration_ms=2_100_000,
+        summary="Picked the tests back up; ceiling again.",
+    ),
+    mail.Attempt(
+        n=3,
+        started_at="2026-07-21T07:00:00Z",
+        finished_at="2026-07-21T07:03:00Z",
+        outcome="done",
+        delta_pct=4,
+        num_turns=6,
+        duration_ms=180_000,
+        summary="All green.",
+    ),
+]
+
+
+def test_attempt_line_carries_number_time_duration_outcome_delta_and_turns() -> None:
+    line = mail.attempt_line(THREE_ATTEMPTS[0])
+    assert line == f"#1 · {mail._local('2026-07-20T21:21:00Z')} · 31m 00s · rate_limited · Δ 68% · 41 turns"
+
+
+def test_attempt_line_falls_back_to_the_row_timestamps_without_a_duration() -> None:
+    """A killed run leaves no result envelope and therefore no duration_ms --
+    but the run row still knows when it started and stopped."""
+    attempt = mail.Attempt(n=2, started_at="2026-07-21T02:00:00Z", finished_at="2026-07-21T02:35:00Z", outcome="killed")
+    assert "35m 00s" in mail.attempt_line(attempt)
+
+
+def test_attempt_line_survives_a_half_written_run_row() -> None:
+    assert mail.attempt_line(mail.Attempt(n=1)) == "#1 · - · - · ?"
+
+
+def test_totals_line_reports_wall_clock_running_time_turns_and_window_pct() -> None:
+    assert mail.totals_line(THREE_ATTEMPTS) == (
+        f"3 runs · 9h 42m wall ({mail._local('2026-07-20T21:21:00Z')} → {mail._local('2026-07-21T07:03:00Z')})"
+        " · 1h 09m running · 80 turns · 172% of the window"
+    )
+
+
+def test_window_pct_spent_sums_the_per_run_deltas() -> None:
+    assert mail.window_pct_spent(THREE_ATTEMPTS) == 68 + 100 + 4
+
+
+def test_window_pct_spent_ignores_a_negative_delta() -> None:
+    """A window that reset mid-run leaves pct_after below pct_before; the
+    difference is then two different windows' readings, not a refund."""
+    attempts = [mail.Attempt(n=1, delta_pct=90), mail.Attempt(n=2, delta_pct=-80)]
+    assert mail.window_pct_spent(attempts) == 90
+
+
+def test_window_pct_spent_ignores_attempts_with_no_reading() -> None:
+    assert mail.window_pct_spent([mail.Attempt(n=1, delta_pct=12), mail.Attempt(n=2)]) == 12
+
+
+def test_the_mail_never_invents_a_cost_unit() -> None:
+    """windowsill records no tokens and no dollars anywhere, so the totals must
+    not imply either -- and the percentage it does record is a floor."""
+    rendered = mail.render_text(_facts(attempts=THREE_ATTEMPTS)) + mail.render_html(_facts(attempts=THREE_ATTEMPTS))
+    assert "token" not in rendered.lower()
+    assert "$" not in rendered.replace("$0.0800", "")  # the envelope's own cost field is the transcript's, not ours
+    assert "floor, not a sum" in rendered
+
+
+def test_subject_names_the_run_count_when_there_was_more_than_one() -> None:
+    facts = _facts(attempts=THREE_ATTEMPTS)
+    assert mail.subject(facts) == "[windowsill 42] refactor-auth: done (success, 3 turns, 8.4s, $0.0800, 3 runs)"
+
+
+def test_subject_of_a_single_run_job_says_nothing_about_runs() -> None:
+    assert "runs" not in mail.subject(_facts())
+
+
+def test_render_html_lists_every_attempt_with_its_own_summary() -> None:
+    html = mail.render_html(_facts(attempts=THREE_ATTEMPTS))
+    assert "Attempts" in html
+    # The whole complaint: the two rate-limited runs' output was lost.
+    assert "Reworked the parser; hit the ceiling mid-test-run." in html
+    assert "Picked the tests back up; ceiling again." in html
+    assert "9h 42m wall" in html and "172% of the window" in html
+
+
+def test_render_text_lists_every_attempt_with_its_own_summary() -> None:
+    text = mail.render_text(_facts(attempts=THREE_ATTEMPTS))
+    assert "Attempts:" in text
+    assert "Reworked the parser; hit the ceiling mid-test-run." in text
+    assert "Picked the tests back up; ceiling again." in text
+    assert "3 runs · 9h 42m wall" in text
+
+
+def test_a_single_run_mail_is_exactly_what_it_always_was() -> None:
+    """The ordinary case must not change at all: no Attempts section, no run
+    count, byte-for-byte the mail a one-attempt job sent before any of this."""
+    one = _facts(attempts=[THREE_ATTEMPTS[0]])
+    assert mail.render_html(one) == mail.render_html(_facts())
+    assert mail.render_text(one) == mail.render_text(_facts())
+    assert mail.subject(one) == mail.subject(_facts())
+    assert "Attempts" not in mail.render_html(_facts())
+    assert "Attempts" not in mail.render_text(_facts())
+
+
+def test_a_long_attempt_summary_is_clipped() -> None:
+    attempts = [THREE_ATTEMPTS[0], mail.Attempt(n=2, outcome="done", summary="word " * 400)]
+    text = mail.render_text(_facts(attempts=attempts))
+    assert "…" in text
+    assert max(len(line) for line in text.splitlines()) < 400
+
+
+def test_an_attempt_summary_is_escaped_in_the_html() -> None:
+    attempts = [THREE_ATTEMPTS[0], mail.Attempt(n=2, outcome="done", summary="<script>steal()</script>")]
+    html = mail.render_html(_facts(attempts=attempts))
+    assert "<script>steal()</script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_build_message_with_attempts_survives_as_string() -> None:
+    message = mail.build_message(_facts(attempts=THREE_ATTEMPTS))
+    rendered = message.as_string()
+    assert "3 runs" in message["Subject"]
+    assert "multipart/alternative" in rendered
+
+
+# ---------------------------------------------------------------------------
+# the rate-limit ping ([notify].on_rate_limit)
+# ---------------------------------------------------------------------------
+
+
+def test_rate_limit_notice_names_the_resume_time_in_the_title() -> None:
+    title, _ = mail.rate_limit_notice(job_id=20, name="windowsill-todo-3", blocked_until="2026-07-21T02:00:00Z")
+    assert title == f"windowsill-todo-3: rate-limited, back at {mail._local('2026-07-21T02:00:00Z')}"
+
+
+def test_rate_limit_notice_says_the_pause_cost_no_retry() -> None:
+    """§2.3: a rate limit does not consume a retry, and a bare "2 retries left"
+    would let the reader assume it had."""
+    _, body = mail.rate_limit_notice(job_id=20, name="n", blocked_until="2026-07-21T02:00:00Z", retries_left=2)
+    assert "This pause cost no retry (2 still available for an actual failure)." in body
+
+
+def test_rate_limit_notice_carries_the_usage_rows() -> None:
+    rows = [("Session window", "100% used"), ("Windows in 30d", "18 / 60")]
+    _, body = mail.rate_limit_notice(job_id=20, name="n", blocked_until=None, usage=rows)
+    assert "Session window: 100% used" in body
+    assert "Windows in 30d: 18 / 60" in body
+
+
+def test_rate_limit_notice_stays_short() -> None:
+    """A "still alive, back at 02:00" ping, not a report."""
+    _, body = mail.rate_limit_notice(
+        job_id=20,
+        name="n",
+        blocked_until="2026-07-21T02:00:00Z",
+        retries_left=1,
+        usage=[("Session window", "100% used")],
+    )
+    assert len(body.splitlines()) == 4
+
+
+def test_build_rate_limit_message_is_plain_text_under_the_usual_subject_prefix() -> None:
+    title, body = mail.rate_limit_notice(job_id=20, name="n", blocked_until="2026-07-21T02:00:00Z")
+    message = mail.build_rate_limit_message(20, title, body)
+    assert message["Subject"] == f"[windowsill 20] {title}"
+    assert message.get_content_type() == "text/plain"  # nothing to render: the run is not over
+    assert body in message.get_content()
+
+
+# ---------------------------------------------------------------------------
 # render_html / render_text / build_message
 # ---------------------------------------------------------------------------
 

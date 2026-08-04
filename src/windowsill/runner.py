@@ -884,6 +884,51 @@ def _journal_summary(job_dir: Path) -> str:
     return f"{JOURNAL_SUMMARY_NOTE}\n\n{journal}" if journal else ""
 
 
+def _attempts(rows: Sequence[Mapping[str, Any]]) -> list["mail.Attempt"]:
+    """The job's ``runs`` rows as the mail's attempt history (§8.4).
+
+    Returns nothing at all for a single row: one attempt is not a history, and
+    a mail for the ordinary case must look exactly as it always did.
+
+    The Δ is recomputed here rather than stored because the run row keeps the
+    two readings it came from, and a stored delta would be a third number to
+    keep consistent with them.
+    """
+    if len(rows) < 2:
+        return []
+    attempts: list[mail.Attempt] = []
+    for number, row in enumerate(rows, start=1):
+        before, after = row.get("pct_before"), row.get("pct_after")
+        attempts.append(
+            mail.Attempt(
+                n=number,
+                started_at=row.get("started_at"),
+                finished_at=row.get("finished_at"),
+                outcome=row.get("outcome") or "",
+                delta_pct=after - before if before is not None and after is not None else None,
+                num_turns=row.get("num_turns"),
+                duration_ms=row.get("duration_ms"),
+                summary=row.get("summary") or "",
+            )
+        )
+    return attempts
+
+
+def _usage_rows(
+    database: "db.sqlite_utils.Database",
+    reading: "usage.ParsedUsage | None",
+    *,
+    at: str,
+    config: Mapping[str, Any] | None,
+) -> list[tuple[str, str]]:
+    """The §4 window block both notifications carry, so they cannot disagree."""
+    return mail.usage_rows(
+        reading,
+        windows_in_30d=window.windows_in_last_30d(database, datetime.fromisoformat(at.replace("Z", "+00:00"))),
+        max_sessions=(config or {}).get("queue", {}).get("max_sessions_per_month"),
+    )
+
+
 def _run_facts(
     database: "db.sqlite_utils.Database",
     job: dict[str, Any],
@@ -913,9 +958,12 @@ def _run_facts(
     why the fallback is one-way. ``RunFacts`` gains no field for it: the
     journal is Markdown and the summary is Markdown, so ``mail`` renders it
     unchanged.
+
+    ``attempts`` is the one thing here that is not about *this* run: a job that
+    was rate-limited twice finished on its third attempt, and a mail describing
+    only the third describes three minutes of a ten-hour night (§8.4).
     """
     sched = db.get_sched(database)
-    settings = config or {}
     return mail.RunFacts(
         job_id=job["id"],
         name=job["name"],
@@ -929,11 +977,10 @@ def _run_facts(
         blocked_until=sched.get("blocked_until"),
         blocked_reason=sched.get("blocked_reason"),
         has_conversation=bool(conversation_id),
-        usage=mail.usage_rows(
-            reading,
-            windows_in_30d=window.windows_in_last_30d(database, datetime.fromisoformat(finished_at.replace("Z", "+00:00"))),
-            max_sessions=settings.get("queue", {}).get("max_sessions_per_month"),
-        ),
+        usage=_usage_rows(database, reading, at=finished_at, config=config),
+        # Read after this run's own row has been updated, so the history the
+        # mail prints ends with the run the mail is about.
+        attempts=_attempts(db.list_runs(database, job_id=job["id"])),
     )
 
 
@@ -964,10 +1011,12 @@ def _notify_job(
 ) -> None:
     """Send the job's completion notification and record the attempt (§8.4).
 
-    Only terminal states notify -- a requeued job hasn't finished. The result
-    is written to ``events`` whether it succeeded or not: §8.4's contract is
-    that a failed notification is *logged* and never fails the job, and
-    :func:`windowsill.notify.notify` already guarantees the second half.
+    Only terminal states send *this* mail -- a requeued job hasn't finished,
+    and the most a rate-limited pause earns is :func:`_notify_rate_limit`'s
+    one-liner. The result is written to ``events`` whether it succeeded or not:
+    §8.4's contract is that a failed notification is *logged* and never fails
+    the job, and :func:`windowsill.notify.notify` already guarantees the second
+    half.
 
     A channel that was on but had nowhere to send to is neither a send nor a
     failure, so it gets its own ``notify_skipped`` event: silently dropping the
@@ -984,19 +1033,73 @@ def _notify_job(
         live_tasks=len(facts.live_tasks),
     )
     outcome = notify_fn(job["notify"], title, body, config=config or {}, message=_compose_email(facts, job["notify"]))
+    _record_notification(database, job["id"], outcome, ts=ts)
+
+
+def _record_notification(
+    database: "db.sqlite_utils.Database",
+    job_id: int,
+    outcome: "notify.NotifyResult",
+    *,
+    ts: str,
+    what: str = "",
+) -> None:
+    """Write one notification attempt to ``events`` (§8.4).
+
+    Three kinds and no more, so anything reading the audit trail keeps reading
+    it: which notification it was goes in ``what``, not in a fourth kind.
+    """
     if outcome.channel == "none":
         return
     if outcome.skipped:
         kind = "notify_skipped"
     else:
         kind = "notified" if outcome.ok else "notify_failed"
-    db.log_event(
-        database,
-        ts=ts,
+    detail = f"{outcome.channel}{'' if outcome.ok else ': ' + outcome.detail}"
+    db.log_event(database, ts=ts, job_id=job_id, kind=kind, detail=f"{what}{detail}" if what else detail)
+
+
+def _notify_rate_limit(
+    database: "db.sqlite_utils.Database",
+    job: dict[str, Any],
+    *,
+    ts: str,
+    blocked_until: str | None,
+    reading: "usage.ParsedUsage | None",
+    config: Mapping[str, Any] | None,
+    notify_fn: Callable[..., "notify.NotifyResult"],
+) -> None:
+    """The ``[notify].on_rate_limit`` ping: "still alive, back at 02:00" (§8.4).
+
+    Off unless asked for, and this function is where "off" has to be genuinely
+    silent: a job with ``--retry 3`` that keeps hitting the ceiling would send
+    one of these per attempt, which is why the default is ``False`` (see
+    :mod:`windowsill.config`).
+
+    It changes nothing about the requeue. The job is still not terminal, still
+    gets no summary mail, and still keeps its retry count -- this only breaks
+    the silence between the run that stopped at 21:21 and the one that finishes
+    at 07:03, because from the outside that silence is indistinguishable from a
+    tick that died.
+    """
+    if not (config or {}).get("notify", {}).get("on_rate_limit"):
+        return
+    channel = job.get("notify")
+    name = notify.split_channel(channel)[0]
+    if name == "none":
+        return
+    title, body = mail.rate_limit_notice(
         job_id=job["id"],
-        kind=kind,
-        detail=f"{outcome.channel}{'' if outcome.ok else ': ' + outcome.detail}",
+        name=job["name"],
+        blocked_until=blocked_until,
+        # §2.3: the rate limit itself consumed none of these, which is the
+        # point the mail makes rather than leaving the reader to subtract.
+        retries_left=max(0, (job["retry_max"] or 0) - (job["retry_count"] or 0)),
+        usage=_usage_rows(database, reading, at=ts, config=config),
     )
+    message = mail.build_rate_limit_message(job["id"], title, body) if name == "email" else None
+    outcome = notify_fn(channel, title, body, config=config or {}, message=message)
+    _record_notification(database, job["id"], outcome, ts=ts, what="rate limit: ")
 
 
 def run_job(
@@ -1162,6 +1265,12 @@ def run_job(
         duration_ms=(result_event.get("duration_ms") if result_event else None),
         permission_denials=permission_denials,
         conversation_id=conversation_id,
+        # Every path writes this, not just the terminal one. The job dir holds
+        # exactly one stream.jsonl and the next attempt overwrites it, so a
+        # rate-limited run's last words survive only if they are copied out
+        # now -- and those are precisely the ones the multi-run summary mail
+        # goes looking for hours later (§8.4).
+        summary=_summary(result_event),
     )
 
     if conversation_id:
@@ -1176,6 +1285,18 @@ def run_job(
             conversation_id=conversation_id,
             finished_at=finished_at,
             window_length=str((config or {}).get("window", {}).get("length", _DEFAULT_WINDOW_LENGTH)),
+        )
+        _notify_rate_limit(
+            database,
+            job,
+            ts=finished_at,
+            # The queue's own answer, not the signal's: _requeue_after_limit
+            # may have preferred a fresh probe's reset time over the error's,
+            # and the ping must name the time the scheduler will actually wake.
+            blocked_until=db.get_sched(database).get("blocked_until"),
+            reading=after,
+            config=config,
+            notify_fn=notify_fn,
         )
     elif outcome not in ("done", "incomplete") and job["retry_count"] < job["retry_max"]:
         # §2.3: retries are for ordinary failure. A rate limit never consumes

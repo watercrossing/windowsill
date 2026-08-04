@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from windowsill import mail as mailer
 from windowsill import notify
 from windowsill.config import DEFAULTS
 
@@ -154,6 +155,46 @@ def test_email_pipes_a_message_to_sendmail_dash_t() -> None:
 
 
 # ---------------------------------------------------------------------------
+# the rate-limit ping ([notify].on_rate_limit): the same two transports
+# ---------------------------------------------------------------------------
+
+
+def _ping() -> tuple[str, str]:
+    return mailer.rate_limit_notice(
+        job_id=20,
+        name="windowsill-todo-3",
+        blocked_until="2026-07-21T02:00:00Z",
+        retries_left=2,
+        usage=[("Session window", "100% used")],
+    )
+
+
+def test_rate_limit_ping_goes_out_over_ntfy_as_a_title_and_body() -> None:
+    post = PostSpy()
+    title, body = _ping()
+    result = notify.notify("ntfy", title, body, config=CONFIG, http_post=post, run_sendmail=SendmailSpy())
+    assert result.ok is True
+    endpoint, data, headers = post.calls[0]
+    assert endpoint == "https://ntfy.sh/windowsill-nightly"
+    assert headers["Title"].startswith("windowsill-todo-3: rate-limited, back at ")
+    assert b"This pause cost no retry" in data
+    assert b"Session window: 100% used" in data
+
+
+def test_rate_limit_ping_goes_out_over_email_as_a_plain_message() -> None:
+    spy = SendmailSpy()
+    title, body = _ping()
+    message = mailer.build_rate_limit_message(20, title, body)
+    result = notify.notify("email", title, body, config=CONFIG, message=message, http_post=PostSpy(), run_sendmail=spy)
+    assert result.ok is True
+    _, message = spy.calls[0]
+    assert "[windowsill 20] windowsill-todo-3: rate-limited" in message  # a long subject folds onto its own line
+    assert "To: you@real.example" in message
+    assert "This pause cost no retry" in message
+    assert "multipart" not in message  # four lines want no alternative part
+
+
+# ---------------------------------------------------------------------------
 # opt-in, and no destination is ever invented (§8.4)
 # ---------------------------------------------------------------------------
 
@@ -167,6 +208,12 @@ def test_notify_is_off_by_default() -> None:
 
     assert result.channel == "none"
     assert not post.calls and not mail.calls
+
+
+def test_the_rate_limit_ping_is_off_by_default_too() -> None:
+    """A job with `--retry 3` that keeps hitting the ceiling would send one of
+    these per attempt, so it is opt-in like everything else here."""
+    assert DEFAULTS["notify"]["on_rate_limit"] is False
 
 
 def test_no_placeholder_recipient_ships_in_the_defaults() -> None:

@@ -18,6 +18,19 @@ order a person reads them:
 4. **Window usage** -- whatever the ``/usage`` oracle last read (§4), which is
    the only unit that binds (§1).
 
+A job that hit the window ceiling gets a fifth: an **attempt history**, one
+line per ``runs`` row with that attempt's own last words under it, and a totals
+line whose wall-clock span is the number that makes "this took ten hours"
+visible. It appears only when there was more than one attempt -- a job that ran
+once sends the mail it always did. The totals report window percentage and
+nothing else: windowsill records no tokens and no dollars anywhere, and the
+percentage it does record does not add up across a window boundary, which is
+what :data:`WINDOW_PCT_CAVEAT` says in the mail itself.
+
+Last, :func:`rate_limit_notice` composes the one notification that is not about
+a finished job: the ``[notify].on_rate_limit`` ping that says the queue is
+paused and when it comes back.
+
 Constraints that shape the implementation:
 
 - **Self-contained HTML.** Inline styles only; no external CSS, JS, or images.
@@ -78,6 +91,9 @@ STYLES: dict[str, str] = {
     "facttable": "margin:0;border-collapse:collapse;",
     "factkey": "padding:2px 14px 2px 0;color:#6b6f76;white-space:nowrap;",
     "factval": "padding:2px 0;",
+    "caveat": "margin:0 0 0.6em;font-size:13px;color:#6b6f76;",
+    "attempt": "margin:0.7em 0 0.1em;font-size:15px;",
+    "attemptsummary": f"margin:0 0 0.2em 1.6em;font-family:{_MONO};font-size:13px;color:#4a4d52;",
 }
 
 
@@ -279,6 +295,28 @@ _NEXT_ACTION: dict[str, str] = {
 }
 
 
+@dataclass(frozen=True)
+class Attempt:
+    """One row of the ``runs`` table (§6), as the mail reports it.
+
+    A job that hits the window ceiling is requeued rather than failed (§5.4), so
+    "the run" a completion mail describes is routinely the *last* of several,
+    and the two that came before it are where the night actually went. The job
+    dir holds only the last attempt's ``stream.jsonl`` -- the next dispatch
+    overwrites it -- so ``summary`` is the copy :mod:`windowsill.runner` wrote
+    into ``runs.summary`` while that attempt was still the current one.
+    """
+
+    n: int
+    started_at: str | None = None
+    finished_at: str | None = None
+    outcome: str = ""
+    delta_pct: int | None = None
+    num_turns: int | None = None
+    duration_ms: int | None = None
+    summary: str = ""
+
+
 @dataclass
 class RunFacts:
     """Everything the completion email says about one finished run.
@@ -310,6 +348,10 @@ class RunFacts:
     live_tasks: list[dict[str, str]] = field(default_factory=list)
     #: The window reading (§4) behind the usage block, as label/value pairs.
     usage: list[tuple[str, str]] = field(default_factory=list)
+    #: Every attempt at this job, oldest first, when there was more than one.
+    #: Left empty for a single-run job so its mail is exactly what it always
+    #: was -- an "Attempts" section listing one attempt is noise.
+    attempts: list[Attempt] = field(default_factory=list)
 
 
 def outcome_line(facts: RunFacts) -> str:
@@ -413,6 +455,116 @@ def usage_rows(
     return rows
 
 
+# ---------------------------------------------------------------------------
+# the attempt history (§5.4: a requeued job runs more than once)
+# ---------------------------------------------------------------------------
+
+#: How much of an attempt's closing line the history shows. ``runs.summary``
+#: already holds a single clipped line, but this render must survive whatever
+#: is actually in that column, including a paragraph someone wrote by hand.
+ATTEMPT_SUMMARY_CHARS = 240
+
+#: The sentence that keeps the totals honest, printed next to them.
+#:
+#: windowsill records no token counts and no dollar cost anywhere; the only
+#: cost unit in the database is window percentage (§4.3's ``pct_before`` /
+#: ``pct_after``), so that is the only one reported here and nothing is
+#: estimated from it. It is also not additive across attempts: a rate-limited
+#: run ends at 100% and its successor starts at 0% *of a different window*, so
+#: summing the deltas measures only what was spent inside each window we
+#: watched. Whatever the account burned between them -- and a window boundary
+#: is exactly where the unobserved spending lives -- is not in these numbers.
+#: Hence "floor": the true cost is this or more, never less.
+WINDOW_PCT_CAVEAT = "Window % is per-window and resets between attempts, so the total is a floor, not a sum."
+
+
+def _clip(text: str, limit: int = ATTEMPT_SUMMARY_CHARS) -> str:
+    """One line of at most ``limit`` characters, whatever came in."""
+    collapsed = " ".join(text.split())
+    return collapsed if len(collapsed) <= limit else collapsed[: limit - 1].rstrip() + "…"
+
+
+def _duration(seconds: float | None) -> str:
+    """A span as the coarsest form that still reads as a duration."""
+    if seconds is None:
+        return "-"
+    hours, rest = divmod(int(round(seconds)), 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+
+def _elapsed(start: str | None, end: str | None) -> float | None:
+    """Seconds between two stored timestamps, or ``None`` if either is missing
+    or unparseable -- a half-written ``runs`` row must not break the mail."""
+    if not start or not end:
+        return None
+    try:
+        first = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        last = datetime.fromisoformat(end.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (last - first).total_seconds()
+
+
+def window_pct_spent(attempts: Sequence[Attempt]) -> int:
+    """Window % spent across every attempt -- a floor; see :data:`WINDOW_PCT_CAVEAT`.
+
+    Negative deltas are dropped rather than subtracted: a delta goes negative
+    only when the window reset mid-run, which means the reading after is from a
+    different window than the reading before and their difference is not a cost.
+    """
+    return sum(max(0, attempt.delta_pct) for attempt in attempts if attempt.delta_pct is not None)
+
+
+def _ran_seconds(attempt: Attempt) -> float | None:
+    """How long the attempt was actually running.
+
+    The result envelope's ``duration_ms`` when there is one; otherwise the gap
+    between the run row's own timestamps, which is all a killed or timed-out
+    attempt leaves behind.
+    """
+    if attempt.duration_ms:
+        return attempt.duration_ms / 1000
+    return _elapsed(attempt.started_at, attempt.finished_at)
+
+
+def attempt_line(attempt: Attempt) -> str:
+    """One attempt as a single line: when it started, how long, how it went."""
+    parts = [f"#{attempt.n}", _local(attempt.started_at), _duration(_ran_seconds(attempt)), attempt.outcome or "?"]
+    if attempt.delta_pct is not None:
+        parts.append(f"Δ {attempt.delta_pct}%")
+    if attempt.num_turns is not None:
+        parts.append(f"{attempt.num_turns} turn{'s' if attempt.num_turns != 1 else ''}")
+    return " · ".join(parts)
+
+
+def totals_line(attempts: Sequence[Attempt]) -> str:
+    """The line that makes "it took ten hours" visible.
+
+    Wall time is measured from the *first* attempt's start to the last one's
+    finish, which is much longer than the run durations added up: the hours a
+    rate-limited job spends waiting for the next window are the whole reason
+    this section exists, and they appear in no run row.
+    """
+    first, last = attempts[0], attempts[-1]
+    wall = _elapsed(first.started_at, last.finished_at)
+    ran = sum(_ran_seconds(attempt) or 0 for attempt in attempts)
+    turns = sum(attempt.num_turns or 0 for attempt in attempts)
+    return " · ".join(
+        [
+            f"{len(attempts)} runs",
+            f"{_duration(wall)} wall ({_local(first.started_at)} → {_local(last.finished_at)})",
+            f"{_duration(ran)} running",
+            f"{turns} turns",
+            f"{window_pct_spent(attempts)}% of the window",
+        ]
+    )
+
+
 def subject(facts: RunFacts) -> str:
     """The Subject line: job id, name, state, and how it went (§8.4).
 
@@ -420,6 +572,12 @@ def subject(facts: RunFacts) -> str:
     a subject is the only part of the mail a phone shows.
     """
     detail = list(transcript.result_parts(facts.result)) if facts.result else [facts.outcome]
+    # The run count belongs in the subject or not at all: "3 runs" is the
+    # difference between a three-minute job and a job that spent the night
+    # waiting out two rate limits, and the body saying so is no use to the
+    # reader deciding on a lock screen whether to open it.
+    if len(facts.attempts) > 1:
+        detail.append(f"{len(facts.attempts)} runs")
     # A blocked run's envelope subtype is "success" (§7); on a phone that is
     # the only word the reader sees, so it must not be the last one.
     if facts.live_tasks:
@@ -464,6 +622,28 @@ def _facts_block_html(label: str, lines: Sequence[str]) -> str:
     return f"<p{_style('label')}>{html.escape(label)}</p>{body}"
 
 
+def _attempts_block_html(attempts: Sequence[Attempt]) -> str:
+    parts = [
+        f"<p{_style('label')}>Attempts</p>",
+        f"<p{_style('fact')}>{html.escape(totals_line(attempts))}</p>",
+        f"<p{_style('caveat')}>{html.escape(WINDOW_PCT_CAVEAT)}</p>",
+    ]
+    for attempt in attempts:
+        parts.append(f"<p{_style('attempt')}>{html.escape(attempt_line(attempt))}</p>")
+        if attempt.summary.strip():
+            parts.append(f"<p{_style('attemptsummary')}>{html.escape(_clip(attempt.summary))}</p>")
+    return "".join(parts)
+
+
+def _attempts_block_text(attempts: Sequence[Attempt]) -> str:
+    lines = [f"  {totals_line(attempts)}", f"  {WINDOW_PCT_CAVEAT}", ""]
+    for attempt in attempts:
+        lines.append(f"  {attempt_line(attempt)}")
+        if attempt.summary.strip():
+            lines.append(f"      {_clip(attempt.summary)}")
+    return "Attempts:\n" + "\n".join(lines)
+
+
 def _usage_block_html(rows: Iterable[tuple[str, str]]) -> str:
     cells = "".join(f"<tr><td{_style('factkey')}>{html.escape(key)}</td><td{_style('factval')}>{html.escape(value)}</td></tr>" for key, value in rows)
     return f"<p{_style('label')}>Window usage</p><table{_style('facttable')}><tbody>{cells}</tbody></table>"
@@ -476,8 +656,12 @@ def render_html(facts: RunFacts) -> str:
         summary,
         f"<hr{_style('hr')}>",
         _facts_block_html("Outcome", [outcome_line(facts)]),
-        _facts_block_html("Next", next_action(facts)),
     ]
+    # The history sits under the outcome because it is the outcome, widened:
+    # the run this mail is about is only the last of several (§5.4).
+    if len(facts.attempts) > 1:
+        sections.append(_attempts_block_html(facts.attempts))
+    sections.append(_facts_block_html("Next", next_action(facts)))
     if facts.usage:
         sections.append(_usage_block_html(facts.usage))
     card = "\n".join(sections)
@@ -501,8 +685,10 @@ def render_text(facts: RunFacts) -> str:
         facts.summary.strip() or _NO_SUMMARY_TEXT,
         "-" * 60,
         f"Outcome: {outcome_line(facts)}",
-        "Next:\n" + "\n".join(f"  {line}" for line in next_action(facts)),
     ]
+    if len(facts.attempts) > 1:
+        blocks.append(_attempts_block_text(facts.attempts))
+    blocks.append("Next:\n" + "\n".join(f"  {line}" for line in next_action(facts)))
     if facts.usage:
         blocks.append("Window usage:\n" + "\n".join(f"  {key}: {value}" for key, value in facts.usage))
     return "\n\n".join(blocks) + "\n"
@@ -519,4 +705,55 @@ def build_message(facts: RunFacts) -> EmailMessage:
     message["Subject"] = subject(facts)
     message.set_content(render_text(facts))
     message.add_alternative(render_html(facts), subtype="html")
+    return message
+
+
+# ---------------------------------------------------------------------------
+# the rate-limit ping (§5.4 + [notify].on_rate_limit)
+# ---------------------------------------------------------------------------
+
+
+def rate_limit_notice(
+    *,
+    job_id: int,
+    name: str,
+    blocked_until: str | None,
+    retries_left: int | None = None,
+    usage: Sequence[tuple[str, str]] = (),
+) -> tuple[str, str]:
+    """``(title, body)`` for the "still alive, back at 02:00" ping (§8.4).
+
+    Deliberately not a report. A rate-limited run is requeued, not finished
+    (§5.4), so the summary mail has not been earned yet and sending one now
+    would describe a job that is still going. What the reader needs at 21:21 is
+    the one thing they cannot see from silence: that the queue knows, and when
+    it will pick up again. So: one line, then the same usage block the summary
+    mail carries (:func:`usage_rows`), so the two agree.
+
+    The retry line says what it says because a rate limit deliberately does
+    *not* consume a retry -- it did not fail, it ran out of window (§2.3, and
+    :func:`windowsill.runner._requeue_after_limit`). Printing a bare "2 of 3
+    retries left" invites the reader to assume this pause used one.
+    """
+    resumes = _local(blocked_until)
+    title = f"{name}: rate-limited, back at {resumes}"
+    lines = [f"Out of window; requeued and resuming at {resumes}."]
+    if retries_left is not None:
+        lines.append(f"This pause cost no retry ({retries_left} still available for an actual failure).")
+    lines.extend(f"{key}: {value}" for key, value in usage)
+    lines.append(f"windowsill show {job_id}")
+    return title, "\n".join(lines)
+
+
+def build_rate_limit_message(job_id: int, title: str, body: str) -> EmailMessage:
+    """The pause ping as an email: the ntfy one-liner, addressed.
+
+    Plain text and nothing else. There is no summary to render -- the run is
+    not over -- so the ``multipart/alternative`` machinery above would be
+    styling four lines. The subject keeps :func:`subject`'s ``[windowsill
+    <id>]`` prefix so both mails about a job thread and sort together.
+    """
+    message = EmailMessage()
+    message["Subject"] = f"[windowsill {job_id}] {title}"
+    message.set_content(body if body.endswith("\n") else body + "\n")
     return message
