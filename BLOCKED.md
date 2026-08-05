@@ -5,8 +5,31 @@ The todo-4 blocker that used to head this file — the PyPI trusted publisher
 still pointing at `watercrossing/ccq` — is **resolved**: you fixed it and 0.2.0
 uploaded on 2026-08-04. Nothing on the release path needs you now.
 
-Six commits on `main`, **not pushed**. 611 tests pass, ruff clean, and the
-pre-push hook's three checks pass, so the batch is ready when you are.
+**Seven** commits on `main`, **not pushed**. 613 tests pass, ruff clean, and
+the pre-push hook's three checks pass, so the batch is ready when you are.
+
+---
+
+## Added on the second attempt (2026-08-05)
+
+The first attempt of this job ran out of window *after* finishing all five
+asks, so a second one picked up the single deliverable it had left behind:
+you asked for warming to be added to `examples/`, and it was not, because
+warming was still uncommitted when the examples were written.
+`examples/07-warm.md` is now there (`276b7d8`).
+
+**Writing it found a bug worth knowing about, now fixed.** `--warm` and
+`--window fresh` were a permanent, silent deadlock: warming only dispatches
+while a window is *open* (it is waiting to spend that window's tail), `fresh`
+only dispatches while a window is *closed*, and the tick applies warming
+first. Since no warming refusal is terminal, such a job would have sat `ready`
+and quiet forever rather than failing. `ccsub` now refuses the pair at submit.
+Job 28 does not use `--window`, so it was never affected.
+
+One consequence for tomorrow: job 28 was queued *before* this, so its copy of
+`tasks/windowsill-todo-6.md` still asks for the warm example as its §4. The
+repo copy of that file now says so at the top of §4; the job will check,
+find it done, and move on.
 
 ---
 
