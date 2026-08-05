@@ -28,6 +28,15 @@
 - **`examples/`** — a graded set of runnable job files, from the three-line
   "does my install work" case up to held pipelines and warmed windows.
 
+### Fixed
+
+- `ccsub` now rejects `--warm` together with `--window fresh` instead of
+  accepting a job that can never run. Warming holds a job until the tail of an
+  *open* window; `fresh` holds it until *no* window is open; the tick applies
+  warming first, so the pair deferred on every tick forever. Because a deferred
+  warm job is never terminal, the job would have sat `ready` and silent rather
+  than failing.
+
 ### Changed
 
 - GitHub Actions bumped to the Node 24 majors (`checkout` v4→v7, `setup-uv`

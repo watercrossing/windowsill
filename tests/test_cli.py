@@ -327,6 +327,34 @@ def test_sub_rejects_resume_and_resume_from_together(tmp_path: Path, runner: Cli
     assert "mutually exclusive" in result.output
 
 
+def test_sub_rejects_warm_with_window_fresh(tmp_path: Path, runner: CliRunner) -> None:
+    # §5.5 warming needs an OPEN window to spend the tail of; `--window fresh`
+    # needs a CLOSED one. The tick applies warming first, so the pair defers
+    # every tick and never reaches a terminal state -- a silently dead job.
+    home = tmp_path / "home"
+    job_file = tmp_path / "j.md"
+    job_file.write_text("#$ --warm\n#$ --window fresh\n\nbody\n")
+
+    result = run(runner, home, "sub", str(job_file))
+
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
+
+
+def test_sub_accepts_warm_with_other_window_policies(tmp_path: Path, runner: CliRunner) -> None:
+    # Only `fresh` contradicts warming. `share` is the default a warm job
+    # normally carries, and `offpeak` merely narrows when the tail may be spent.
+    home = tmp_path / "home"
+    for policy in ("share", "offpeak"):
+        job_file = tmp_path / f"j-{policy}.md"
+        job_file.write_text(f"#$ --warm\n#$ --window {policy}\n\nbody\n")
+
+        result = run(runner, home, "sub", str(job_file))
+
+        assert result.exit_code == 0, result.output
+        assert db.get_job(make_db(home), int(result.output.strip()))["warm"]
+
+
 def test_sub_writes_job_md_verbatim(tmp_path: Path, runner: CliRunner) -> None:
     # §6.2: job.md is the verbatim submission, written at submit time -- so it
     # exists even for a job that never runs.

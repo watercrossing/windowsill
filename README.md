@@ -196,7 +196,12 @@ min_pct_free = 20      # below this, defer rather than start a run that cannot f
 
 `lead` is the only number worth tuning, and it is a **quota budget** that happens to be measured in minutes. On a Pro plan this queue's own ledger puts the median burn at 2.76 %/min, i.e. about **36 minutes** to spend a whole window — so 30m spends most of one. The errors are not symmetric: too long only costs waiting (a rate-limit requeue consumes no `--retry` and resumes the same conversation), while too short wastes quota permanently. Err long. A Max plan buys more tokens per window at the same wall-clock length, so it needs a **longer** lead, not a shorter one.
 
+`--warm` cannot be combined with `--window fresh` — warming waits for the tail of an open window and `fresh` waits for there being no window at all, so the pair would defer on every tick forever. `ccsub` refuses it at submit. A warm job has no use for `fresh` regardless: the window it crosses into is empty by construction.
+
+Every warming refusal is a *defer*, never a terminal state, so a warm job that never gets its window sits `ready` and quiet rather than failing. `windowsill show <id>` prints the `warm` events explaining which gate held it. Give the job a `--before` if being late makes it worthless.
+
 `design/05-windows.md` §5.5 has the full reasoning and the measurements.
+`examples/07-warm.md` is a commented, runnable job file.
 
 ## Commands
 

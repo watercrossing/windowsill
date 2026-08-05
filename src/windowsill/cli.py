@@ -409,6 +409,20 @@ def sub(ctx: click.Context, file, run_now: bool, home: Path | None) -> None:
         if d.resume and d.resume_from:
             raise click.ClickException("--resume and --resume-from are mutually exclusive")
 
+        # §5.5 vs §5.1: the two gates want opposite worlds. `warm_gate` only
+        # lets a job through while a window is OPEN (it is waiting to spend that
+        # window's tail); `--window fresh` only lets one through while a window
+        # is CLOSED. The tick applies warming first and the policy second, so
+        # the pair never dispatches -- and because a deferred warm job is never
+        # terminal, it would sit `ready` until someone noticed. Refuse it here,
+        # where the answer is a message rather than a silent night.
+        if d.warm and (d.window or "") == "fresh":
+            raise click.ClickException(
+                "--warm and --window fresh are mutually exclusive: warming waits for the tail of "
+                "an open window, `fresh` waits for no window at all, so the job would never run. "
+                "A --warm job already gets a window of its own -- drop --window fresh."
+            )
+
         name = d.name or _default_name(file.name)
         cwd = str(Path(d.cwd).expanduser()) if d.cwd else str(Path.cwd())
         log_path = _expand_log(d.log)

@@ -35,9 +35,16 @@
 #
 #   - Any dispatched job is already its own anchor. A real job at 01:30
 #     opens the window by running. Firing a ping first to open a window
-#     the job would have opened anyway is pure waste, so there is no
-#     anchor logic anywhere on the ordinary dispatch path. If you have
-#     work to run, run the work; you do not need this file.
+#     the job would have opened anyway is pure waste, so no ordinary job
+#     ever gets an anchor fired on its behalf. If you have work to run,
+#     run the work; you do not need this file.
+#
+#     The one exception proves the rule: a `--warm` job (see
+#     `07-warm.md`) wants the window opened at a time it is deliberately
+#     NOT running, so the scheduler spawns an anchor for it -- an
+#     ordinary queued anchor job, named `warm-<the job's name>`. It is
+#     not waste there precisely because the two events are meant to be
+#     hours apart.
 #
 #   - A scheduled anchor earns its place only when NO job wants that
 #     window and you still want the boundary moved. The realistic case
@@ -90,7 +97,10 @@
 #     50 6 * * *  ccsub ~/jobs/anchor.md
 #
 # (There is an `[anchor]` table in ~/.windowsill/config.toml with
-# `enabled`, `time`, `model` and `body`. Nothing reads it yet -- the
+# `enabled`, `time`, `model` and `body`. `model` and `body` are read --
+# but only by window warming, when it spawns an anchor of its own; a
+# scheduled anchor like this one takes its model and prompt from the job
+# file, as below. `enabled` and `time` have no reader at all: the
 # automatic daily anchor is designed, not built. Submit the file.)
 #
 # Keep at most one scheduled anchor alive at a time. Two of them race for

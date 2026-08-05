@@ -12,6 +12,7 @@ the header explain why it is shaped the way it is, and never reach
 | [`04-pipeline-1-build.md`](04-pipeline-1-build.md) [`-2-test`](04-pipeline-2-test.md) [`-3-report`](04-pipeline-3-report.md) | You have stages that must happen in order — `--hold-jid`, fan-out and fan-in. |
 | [`05-isolated-worktree.md`](05-isolated-worktree.md) | The job must not touch the tree you are working in. Read the caveat at the top: `--isolate` is stored but not yet honoured. |
 | [`06-anchor.md`](06-anchor.md) | You want to move a 5-hour window boundary somewhere more useful. Explains the window model. |
+| [`07-warm.md`](07-warm.md) | The job needs more than one window's quota — `--warm` opens a window early and runs the job across its reset. Read `06` first. |
 
 **Start here:** `01-hello.md`, then `02-nightly-tests.md`. Those two cover
 most of what people write. Read `03` before you queue anything big enough
