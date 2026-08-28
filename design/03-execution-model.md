@@ -48,7 +48,7 @@ The body goes on **stdin**, never argv. Bodies will exceed `ARG_MAX` and will co
 ```
 
 - `session_id` → `jobs.conversation_id`. `is_error` and `subtype` → run outcome. `num_turns`, `duration_ms`, `usage` → `windowsill report`.
-- `stream-json` emits incrementally: write straight to `stream.jsonl` so a killed run still leaves a usable partial, and derive the result from the last event.
+- `stream-json` emits incrementally: write straight to `stream.jsonl` so a killed run still leaves a usable partial, and derive the result from the last **`result`** event — not the last event. The two are not the same line: a run that leaves background tasks behind emits its result envelope and *then* a teardown tail, one `background_tasks_changed` / `task_updated` / `task_notification` triple per task, as the CLI kills each one off ([§9](09-findings.md), settled 2026-08-28). Reading the final line and requiring `type: "result"` reported a successful run as `killed`. A stream can also carry more than one `result` event, and the run's own outcome is the last of them.
 - **Do not trust `total_cost_usd`.** The observed `0` came from a zero-turn slash command, so it is uninformative; whether it is populated for a real run on a subscription is untested ([§9](09-findings.md)). Use the Δ window % ([§4.3](04-usage-oracle.md)) as the cost metric regardless — it is the unit that actually binds.
 - Confirm whether `--model` takes the full API string (`claude-opus-4-8`) or aliases only (`opus`). Normalise in config; reject neither.
 

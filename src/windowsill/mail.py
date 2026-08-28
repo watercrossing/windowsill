@@ -337,7 +337,11 @@ class RunFacts:
     result: Mapping[str, Any] | None = None
     delta_pct: int | None = None
     permission_denials: int | None = None
-    #: ``sched.blocked_until`` when the queue is held (§5.4), and why.
+    #: ``sched.blocked_until`` when the queue is held (§5.4), and why. Set
+    #: only while the hold is *live*: an expired one is left in the ``sched``
+    #: row forever (the scheduler just stops honouring it), and this module
+    #: reads no clock, so the caller does the comparison -- see
+    #: :func:`windowsill.runner._run_facts`. Present here means "held now".
     blocked_until: str | None = None
     blocked_reason: str | None = None
     #: Whether ``windowsill resume <id>`` has a conversation to resume.

@@ -30,6 +30,30 @@
 
 ### Fixed
 
+- **A successful run whose agent left background tasks running was reported as
+  `killed`.** The result envelope is not the last line of `stream.jsonl`: the
+  CLI emits a teardown tail after it — one `background_tasks_changed` /
+  `task_updated` / `task_notification` triple per background task it kills off
+  at session exit. `parse_result_event` took §3.2's "derive the result from the
+  last event" literally, found a `system` event, and returned `None`, which the
+  outcome mapping reads as "the process died before emitting a result". It now
+  scans for the last `result` event. The label was the smallest part of the
+  damage: `conversation_id` comes off that same event, so the job kept none,
+  no `result.json` or `resume.sh` was written, and the mail said "No
+  conversation to resume" with the session id sitting in the stream. The true
+  outcome in the case that surfaced this was `incomplete` (job state `blocked`)
+  — a mail that names the tasks left hanging and tells you to `ccresume`.
+  Measured against the real capture and recorded in `design/09-findings.md`
+  (settled 2026-08-28), which also corrects the §3.2 wording the bug was
+  faithfully implementing.
+- **The completion email announced expired queue holds as current.**
+  `sched.blocked_until` is never cleared when it lapses — the scheduler and
+  `ccstat` both just stop honouring it by comparison — but `mail` reads no
+  clock by contract and tested only that the field was set, so a mail sent on
+  the 28th reported the queue blocked until the 21st. `runner._run_facts` now
+  does the comparison, against the run's own `finished_at`, and passes the hold
+  on only while it is live.
+
 - `ccsub` now rejects `--warm` together with `--window fresh` instead of
   accepting a job that can never run. Warming holds a job until the tail of an
   *open* window; `fresh` holds it until *no* window is open; the tick applies

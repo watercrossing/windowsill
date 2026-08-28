@@ -50,6 +50,22 @@ Two jobs run overnight against the live queue by the repo owner, who had configu
 
 Consequence for the default itself: because `--allowed-tools` never restricted anything, the pre-existing default list's omission of `Task` was harmless by accident, not by design — and it was a loaded gun for the day permission prompting actually engages (a `--permission-mode` change, a future CLI default, a sandboxed environment). Widened to add `Task`, `TodoWrite`, `WebFetch`, `WebSearch`, `NotebookEdit` ([§8.3](08-interface.md)).
 
+## Settled 2026-08-28
+
+The second live run of the weekly Ente rebase job (job 2) mailed `failed (killed, 2 still running)` over a run that had succeeded. Its `stream.jsonl` is the evidence: line 240 is `subtype: "success"`, `is_error: false`, `terminal_reason: "completed"`, and the process exited 0 after 6m13s.
+
+| Question | Answer | Consequence |
+|---|---|---|
+| Is the `result` event the last line of `stream.jsonl`? | **No.** Six `system` events followed it — `background_tasks_changed`, `task_updated` (`status: "killed"`), `task_notification` (`status: "stopped"`), twice, one triple per background task being torn down at session exit | `runner.parse_result_event` implemented [§3.2](03-execution-model.md)'s "last event" literally and returned `None`, which [§6](06-state.md)'s outcome mapping reads as "died before emitting a result" → `killed` → job `failed`. Fixed to scan for the last `result` event; §3.2's wording corrected with it |
+| Does the misread cost anything beyond the label? | **Yes, three things.** `conversation_id` is read off that event, so the job row kept none and the mail said "No conversation to resume" while `cb87555e-…` sat in the stream; no `result.json` and no `resume.sh` were written; `num_turns` / `duration_ms` were left null in `runs` | Everything downstream of the envelope is downstream of this one function. Job 1's dir has `result.json` and `resume.sh`; job 2's has neither, which is the cheapest on-disk tell that this happened |
+| What was the run's true outcome? | **`incomplete`, not `done`.** Two backgrounded builds (`byfox3ke2` "Build both images", `bm0hdqzjx` "ente web image build completion/errors") were live when the main thread stopped, which is exactly what `outcome_from_result` downgrades `done` to `incomplete` for | Replaying the real capture through the fixed code gives `incomplete` → job state `blocked` ([§7](07-lifecycle.md)) → the mail that names the tasks and tells the reader to `ccresume 2`. The machinery for the right answer was already there; the parse never reached it |
+
+The word "killed" in those events is about the *tasks*, not the run — a vocabulary collision with [§6](06-state.md)'s `runs.outcome`, and the reason the mail read as a plausible report of a real kill rather than as nonsense.
+
+A second, unrelated defect surfaced in the same mail: it announced "the queue is blocked until 2026-08-21 05:00" on the 28th. `sched.blocked_until` is never cleared when it lapses — the scheduler stops honouring it by comparison (`blocked_until > now`, [§3.1](03-execution-model.md)), and `ccstat` does the same ([§8.1](08-interface.md)) — but `mail` reads no clock by contract and tested `bool(blocked_until)`. The comparison now happens in `runner._run_facts`, against the run's own `finished_at`, and `RunFacts.blocked_until` means "held now".
+
+**The standing lesson for the next reader of a job's mail:** the mail is derived, and the stream is the record. `windowsill show <id>` and the job dir's `stream.jsonl` outrank the subject line.
+
 ## Still open
 
 - **Rate-limit signal shape:** exit code, a subtype in the JSON, or only a human string? Decides how brittle [§5.4](05-windows.md) is. Only learnable by hitting a real one — which M1 will do within a week of use.

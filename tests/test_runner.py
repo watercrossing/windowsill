@@ -369,7 +369,7 @@ def test_write_resume_sh_contents_and_executable(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# parse_result_event: §3.2 "derive the result from the last event"
+# parse_result_event: §3.2 "derive the result from the last result event"
 # ---------------------------------------------------------------------------
 
 
@@ -383,7 +383,7 @@ def test_parse_result_event_empty_file_returns_none(tmp_path: Path) -> None:
     assert runner.parse_result_event(path) is None
 
 
-def test_parse_result_event_reads_last_line(tmp_path: Path) -> None:
+def test_parse_result_event_reads_the_result_event(tmp_path: Path) -> None:
     path = tmp_path / "stream.jsonl"
     path.write_text(
         json.dumps({"type": "system", "subtype": "init"})
@@ -403,18 +403,72 @@ def test_parse_result_event_tolerates_trailing_blank_lines(tmp_path: Path) -> No
     assert runner.parse_result_event(path) == {"type": "result", "is_error": False}
 
 
-def test_parse_result_event_none_when_last_line_not_result(tmp_path: Path) -> None:
-    """A killed run's stream ends mid-stream, e.g. on a non-result event --
-    that must not be mistaken for a completed result."""
+def test_parse_result_event_sees_past_the_background_task_teardown(tmp_path: Path) -> None:
+    """Job 2's real shape (2026-08-28): a run that leaves background tasks
+    behind emits its result event and *then* six `system` events killing them
+    off. Reading only the final line called a successful run `killed`."""
     path = tmp_path / "stream.jsonl"
-    path.write_text(json.dumps({"type": "assistant", "message": {}}) + "\n")
+    path.write_text(
+        "\n".join(
+            json.dumps(event)
+            for event in (
+                {"type": "assistant", "message": {}},
+                {"type": "result", "subtype": "success", "is_error": False, "session_id": "cb87555e"},
+                {"type": "system", "subtype": "background_tasks_changed", "tasks": [{"task_id": "bm0hdqzjx"}]},
+                {"type": "system", "subtype": "task_updated", "task_id": "byfox3ke2", "patch": {"status": "killed"}},
+                {"type": "system", "subtype": "task_notification", "task_id": "byfox3ke2", "status": "stopped"},
+                {"type": "system", "subtype": "background_tasks_changed", "tasks": []},
+                {"type": "system", "subtype": "task_updated", "task_id": "bm0hdqzjx", "patch": {"status": "killed"}},
+                {"type": "system", "subtype": "task_notification", "task_id": "bm0hdqzjx", "status": "stopped"},
+            )
+        )
+        + "\n"
+    )
+    event = runner.parse_result_event(path)
+    assert event is not None
+    assert event["subtype"] == "success"
+    # The session id is what the mail needs to offer a resume at all.
+    assert event["session_id"] == "cb87555e"
+
+
+def test_parse_result_event_takes_the_last_of_several(tmp_path: Path) -> None:
+    """A stream can carry more than one result event; the run's own outcome is
+    the last, not the first."""
+    path = tmp_path / "stream.jsonl"
+    path.write_text(
+        json.dumps({"type": "result", "subtype": "success", "n": 1})
+        + "\n"
+        + json.dumps({"type": "assistant", "message": {}})
+        + "\n"
+        + json.dumps({"type": "result", "subtype": "error_during_execution", "n": 2})
+        + "\n"
+    )
+    assert runner.parse_result_event(path) == {"type": "result", "subtype": "error_during_execution", "n": 2}
+
+
+def test_parse_result_event_none_when_the_stream_holds_no_result(tmp_path: Path) -> None:
+    """A killed run's stream ends mid-stream, before a result event was ever
+    emitted -- that must not be mistaken for a completed result."""
+    path = tmp_path / "stream.jsonl"
+    path.write_text(
+        json.dumps({"type": "assistant", "message": {}}) + "\n" + json.dumps({"type": "system", "subtype": "task_started", "task_id": "t1"}) + "\n"
+    )
     assert runner.parse_result_event(path) is None
 
 
-def test_parse_result_event_none_when_last_line_malformed(tmp_path: Path) -> None:
+def test_parse_result_event_none_when_no_result_and_last_line_malformed(tmp_path: Path) -> None:
     path = tmp_path / "stream.jsonl"
-    path.write_text(json.dumps({"type": "result"}) + "\nnot valid json{{{\n")
+    path.write_text(json.dumps({"type": "assistant", "message": {}}) + "\nnot valid json{{{\n")
     assert runner.parse_result_event(path) is None
+
+
+def test_parse_result_event_survives_a_torn_final_line(tmp_path: Path) -> None:
+    """`iter_events` skips a half-written line by design (a run killed
+    mid-write still yields everything up to the truncation), so a result
+    event that *was* written is not hidden by the tear that followed it."""
+    path = tmp_path / "stream.jsonl"
+    path.write_text(json.dumps({"type": "result", "is_error": False}) + "\nnot valid json{{{\n")
+    assert runner.parse_result_event(path) == {"type": "result", "is_error": False}
 
 
 # ---------------------------------------------------------------------------
@@ -2413,3 +2467,40 @@ def test_run_facts_summary_ignores_an_empty_journal(tmp_path: Path) -> None:
     facts = _facts(conn, db.get_job(conn, job_id), dir_, [])
 
     assert facts.summary == ""
+
+
+# ---------------------------------------------------------------------------
+# §5.4 the mail reports the sched hold only while it is still holding
+# ---------------------------------------------------------------------------
+
+
+def test_run_facts_passes_on_a_live_block(tmp_path: Path) -> None:
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _make_job(conn, tmp_path)
+    dir_ = tmp_path / "jobdir"
+    dir_.mkdir()
+    # `_facts` finishes the run at 2026-07-21T02:30.
+    db.update_sched(conn, blocked_until="2026-07-21T05:00:00+00:00", blocked_reason="rate limit")
+
+    facts = _facts(conn, db.get_job(conn, job_id), dir_, [])
+
+    assert facts.blocked_until == "2026-07-21T05:00:00+00:00"
+    assert facts.blocked_reason == "rate limit"
+
+
+def test_run_facts_drops_an_expired_block(tmp_path: Path) -> None:
+    """`blocked_until` is never cleared when it lapses -- the scheduler just
+    stops honouring it -- so the row outlives the hold. Job 2's mail announced
+    a hold that had expired a week before the run it was reporting on."""
+    conn = db.connect(tmp_path / "windowsill.db")
+    job_id = _make_job(conn, tmp_path)
+    dir_ = tmp_path / "jobdir"
+    dir_.mkdir()
+    db.update_sched(conn, blocked_until="2026-07-14T05:00:00+00:00", blocked_reason="rate limit")
+
+    facts = _facts(conn, db.get_job(conn, job_id), dir_, [])
+
+    assert facts.blocked_until is None
+    # The reason goes with it: half a lapsed hold is not a fact about the queue.
+    assert facts.blocked_reason is None
+    assert not any("blocked until" in line for line in mail.next_action(facts))

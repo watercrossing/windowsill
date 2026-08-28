@@ -426,37 +426,48 @@ def wait_with_timeout(
 
 
 # ---------------------------------------------------------------------------
-# result derivation (§3.2: "derive the result from the last event")
+# result derivation (§3.2: "derive the result from the last result event")
 # ---------------------------------------------------------------------------
 
 
 def parse_result_event(stream_path: Path) -> dict[str, Any] | None:
-    """Read ``stream.jsonl`` and return its last event, iff it's a
-    ``"result"`` event. ``None`` for a missing/empty file, a malformed
-    last line, or a stream that ends mid-run (killed before a result
-    event was ever emitted).
+    """Read ``stream.jsonl`` and return the **last ``"result"`` event in it**.
+    ``None`` for a missing/empty file, or a stream that ends mid-run (killed
+    before a result event was ever emitted).
+
+    Not "the last event", which is what §3.2 says and what this used to do.
+    The result event is not reliably the final line: a run that leaves
+    background tasks behind gets a teardown tail after it, as the CLI kills
+    them and reports each one. Job 2's real capture (2026-08-28) ends
+
+        240 result                  subtype=success, is_error=false
+        241 system background_tasks_changed
+        242 system task_updated      status=killed
+        243 system task_notification status=stopped
+        244 system background_tasks_changed  tasks: []
+        245 system task_updated      status=killed
+        246 system task_notification status=stopped
+
+    -- six lines of teardown for the two backgrounded builds it had started.
+    Reading line 246 and finding no ``"result"`` reported the run as
+    ``killed`` (:func:`outcome_from_result`) with ``summary`` "no result
+    event", six lines below a ``subtype: "success"`` envelope; it also cost
+    the ``conversation_id``, so the mail said there was nothing to resume
+    while the session id sat in the stream. The word "killed" in those events
+    is about the *tasks*, not the run.
+
+    *Last*, not first: a stream can carry more than one result event (see
+    :func:`windowsill.transcript.live_background_tasks` on job 16), and the
+    last one is the run's own outcome.
     """
     if not stream_path.exists():
         return None
 
-    last_line: str | None = None
-    with stream_path.open("r", encoding="utf-8") as f:
-        for line in f:
-            stripped = line.strip()
-            if stripped:
-                last_line = stripped
-
-    if last_line is None:
-        return None
-
-    try:
-        event = json.loads(last_line)
-    except json.JSONDecodeError:
-        return None
-
-    if not isinstance(event, dict) or event.get("type") != "result":
-        return None
-    return event
+    result_event: dict[str, Any] | None = None
+    for event in transcript.iter_events(stream_path):
+        if event.get("type") == "result":
+            result_event = event
+    return result_event
 
 
 def outcome_from_result(
@@ -962,8 +973,20 @@ def _run_facts(
     ``attempts`` is the one thing here that is not about *this* run: a job that
     was rate-limited twice finished on its third attempt, and a mail describing
     only the third describes three minutes of a ten-hour night (§8.4).
+
+    The ``sched`` hold is passed on only while it is *live*. ``blocked_until``
+    is never cleared when it expires -- the scheduler simply stops honouring
+    it (``blocked_until > now``, §3.1) -- so the row outlives the hold by
+    however long it has been since the last rate limit. ``mail`` reads no
+    clock by contract, and cannot tell the difference: job 2's mail announced
+    "the queue is blocked until 2026-08-21 05:00" on the 28th, quoting a hold
+    that had lapsed a week earlier. ``finished_at`` is the comparison, not a
+    fresh clock reading -- it is the instant this mail describes, and every
+    other time in it is keyed to the same one.
     """
     sched = db.get_sched(database)
+    blocked_until = sched.get("blocked_until")
+    live_block = blocked_until is not None and blocked_until > finished_at
     return mail.RunFacts(
         job_id=job["id"],
         name=job["name"],
@@ -974,8 +997,8 @@ def _run_facts(
         live_tasks=[dict(task) for task in live_tasks],
         delta_pct=delta_pct,
         permission_denials=permission_denials,
-        blocked_until=sched.get("blocked_until"),
-        blocked_reason=sched.get("blocked_reason"),
+        blocked_until=blocked_until if live_block else None,
+        blocked_reason=sched.get("blocked_reason") if live_block else None,
         has_conversation=bool(conversation_id),
         usage=_usage_rows(database, reading, at=finished_at, config=config),
         # Read after this run's own row has been updated, so the history the
