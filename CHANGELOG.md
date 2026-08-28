@@ -64,9 +64,11 @@
 ### Changed
 
 - GitHub Actions bumped to the Node 24 majors (`checkout` v4→v7, `setup-uv`
-  v5→v9, `setup-python` v5→v7). Every run was warning that Node 20 was
+  v5→v10.0.1, `setup-python` v5→v7). Every run was warning that Node 20 was
   deprecated and that it was being force-upgraded, which is not a supported
-  configuration.
+  configuration. `setup-uv` is an exact tag rather than a major because it
+  stopped publishing floating major tags after v7 — `@v8`, `@v9` and `@v10`
+  are unresolvable refs, not old versions.
 
 ## 0.2.0 — 2026-08-04
 

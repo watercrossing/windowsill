@@ -41,9 +41,18 @@ jobs:
       # `pull_request_target` checkout default (we only use `push` and
       # `pull_request`), and setup-uv's is `prune-cache` defaulting to false
       # (a cache-size question, not a correctness one).
+      #
+      # setup-uv is pinned to an exact tag, and has to be: it stopped
+      # publishing floating major tags after v7, so `@v8`/`@v9`/`@v10` are
+      # unresolvable refs, not old versions. `@v9` was set here on the
+      # strength of the release list and failed every run from 2026-08-06 to
+      # 2026-08-28 with "unable to find version `v9`" -- at "Set up job",
+      # before a single test ran. Bump this by reading
+      # `gh api repos/astral-sh/setup-uv/releases --jq '.[].tag_name'`, and
+      # do not shorten it back to a major.
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v9
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
 
@@ -58,7 +67,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: astral-sh/setup-uv@v9
+      # Exact tag, not a major -- see the note in the `test` job above.
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
 
