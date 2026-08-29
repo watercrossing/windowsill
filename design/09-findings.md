@@ -50,6 +50,19 @@ Two jobs run overnight against the live queue by the repo owner, who had configu
 
 Consequence for the default itself: because `--allowed-tools` never restricted anything, the pre-existing default list's omission of `Task` was harmless by accident, not by design — and it was a loaded gun for the day permission prompting actually engages (a `--permission-mode` change, a future CLI default, a sandboxed environment). Widened to add `Task`, `TodoWrite`, `WebFetch`, `WebSearch`, `NotebookEdit` ([§8.3](08-interface.md)).
 
+## Settled 2026-08-27
+
+The first live run of the weekly Ente rebase job (a job file outside this repo) died in one turn, at $0, on `#$ --model claude-opus`. Nine spellings then probed directly against `claude` 2.1.247:
+
+| Question | Answer | Consequence |
+|---|---|---|
+| Does `--model` take a full API string, an alias, or both? | **Both, and only those two shapes.** `opus`/`sonnet`/`haiku` work; `claude-opus-5`/`claude-opus-4-8`/`claude-haiku-4-5` work. `claude-opus`, `claude-sonnet` and `opus-5` all fail | Answers the open question in [§3.2](03-execution-model.md). The `claude-` prefix is mandatory *with* a version and forbidden *without* one — the two failures are the hybrids, not the prefix itself |
+| Does the CLI reject an unknown model locally? | **No.** It prints an `unrecognized_model` warning about its context-window assumption, then sends the string anyway; the 404 comes back from the API | A bad `--model` is not catchable at submit time by anything windowsill could reasonably do — it costs a dispatch and, on a job with `--at`, a night. The mitigation is documentation, not validation ([§0.4](00-instructions.md) "pass-through beats validation") |
+
+Consequence for the shipped defaults: every example, the README and `[queue].default_model` pinned `claude-opus-4-8`, which works but names a version the reader did not choose. Switched to `opus`, and `[anchor].model` to `haiku` ([§8.3](08-interface.md)). The test suite deliberately keeps `claude-opus-4-8` in its pass-through fixtures — those assert that an arbitrary string reaches argv unaltered, and a full id is the better witness for that.
+
+`[queue].default_model` is read by nothing in `src/` — it is documented in [§8.3](08-interface.md) and merged by `load_config`, but no caller consults it. Still open below.
+
 ## Settled 2026-08-28
 
 The second live run of the weekly Ente rebase job (job 2) mailed `failed (killed, 2 still running)` over a run that had succeeded. Its `stream.jsonl` is the evidence: line 240 is `subtype: "success"`, `is_error: false`, `terminal_reason: "completed"`, and the process exited 0 after 6m13s.
@@ -69,4 +82,5 @@ A second, unrelated defect surfaced in the same mail: it announced "the queue is
 ## Still open
 
 - **Rate-limit signal shape:** exit code, a subtype in the JSON, or only a human string? Decides how brittle [§5.4](05-windows.md) is. Only learnable by hitting a real one — which M1 will do within a week of use.
+- **`[queue].default_model` is dead config.** Defined, documented and tested, but nothing reads it — a job with no `--model` gets whatever `claude` itself defaults to, not this. Either wire it into `build_argv` as an injected default (with the same yield rule the system prompt and allowlist use, [§3.2](03-execution-model.md)) or delete it from [§8.3](08-interface.md). Shipping a setting that silently does nothing is the worse of the three.
 - **How much does `--resume` actually cost** at high context? [§5.4](05-windows.md)'s guidance assumes it is expensive, on the basis that one >150k-context turn cost 15% of a window. Now measurable: probe, resume a long conversation with a trivial turn, probe again. Worth doing early — it is the difference between resume-on-limit being a safety net and being a trap.
