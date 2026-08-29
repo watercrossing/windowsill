@@ -78,11 +78,10 @@
 #              operation instructions into a one-word ping is absurd.
 #
 #   --model    is set explicitly here on purpose. The README says
-#              `--anchor` implies claude-haiku-4-5 unless overridden;
-#              that implication is documented but not implemented, so a
-#              model you do not name is whatever `claude` defaults to.
-#              Name it. Haiku both for cost and because it does not touch
-#              the weekly buckets.
+#              `--anchor` implies haiku unless overridden; that implication
+#              is documented but not implemented, so a model you do not name
+#              is whatever `claude` defaults to. Name it. Haiku both for cost
+#              and because it does not touch the weekly buckets.
 #
 #   --timeout  a ping that has not answered in a minute is not going to.
 #
@@ -114,7 +113,7 @@
 #$ --name morning-anchor
 #$ --at 2026-08-05T07:00
 #$ --anchor
-#$ --model claude-haiku-4-5
+#$ --model haiku
 #$ --timeout 1m
 #$ --notify none
 

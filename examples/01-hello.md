@@ -20,10 +20,18 @@
 #   --model    is *not* a scheduler directive, and that is the point.
 #              windowsill recognises a fixed set of `#$` directives and
 #              hands everything else to `claude` as argv, in order, without
-#              inspecting it. This line becomes `claude --model
-#              claude-haiku-4-5`. Any claude flag works here the day it
-#              ships, because windowsill never learns what it means.
-#              Haiku because a smoke test should not cost Opus tokens.
+#              inspecting it. This line becomes `claude --model haiku`. Any
+#              claude flag works here the day it ships, because windowsill
+#              never learns what it means. Haiku because a smoke test should
+#              not cost Opus tokens.
+#
+#              `haiku`, not `claude-haiku-4-5`: claude takes either a bare
+#              family alias (`opus`, `sonnet`, `haiku`) or a full versioned
+#              id (`claude-haiku-4-5`), and the alias is the one that does
+#              not pin a version. The two halves do not mix -- `claude-haiku`
+#              and `haiku-4-5` are both rejected. windowsill passes whatever
+#              you write through untouched, so a wrong one is a 404 at
+#              dispatch, hours after you submitted.
 #
 #   --timeout  because the failure mode you are testing for is a hang. The
 #              default is 4h; a broken install that sits waiting for input
@@ -43,7 +51,7 @@
 # Watch:   ccstat            (then: windowsill show <id>)
 #
 #$ --name hello
-#$ --model claude-haiku-4-5
+#$ --model haiku
 #$ --timeout 5m
 
 Report the absolute path of your working directory and the name of the git

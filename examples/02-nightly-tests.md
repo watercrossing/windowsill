@@ -60,7 +60,7 @@
 #$ --name nightly-tests
 #$ --at 2026-08-05T02:00
 #$ --cwd ~/code/myapp
-#$ --model claude-opus-4-8
+#$ --model opus
 #$ --log transcripts/
 #$ --permission-mode auto
 #$ --notify email

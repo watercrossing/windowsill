@@ -47,7 +47,7 @@
 #$ --name pipeline-test
 #$ --hold-jid pipeline-build
 #$ --cwd ~/code/myapp
-#$ --model claude-opus-4-8
+#$ --model opus
 #$ --log transcripts/
 #$ --permission-mode auto
 #$ --timeout 2h

@@ -970,8 +970,8 @@ def test_the_spawned_warmer_is_an_anchor_carrying_the_anchor_config(tmp_path: Pa
     assert warmer["timeout"] == scheduler.WARMER_TIMEOUT
     # The model has to reach claude's argv, not just the display column --
     # a warmer that pings Opus charges the parent's own quota for it.
-    assert warmer["model"] == "claude-haiku-4-5"
-    assert warmer["passthrough"] == ["--model", "claude-haiku-4-5"]
+    assert warmer["model"] == "haiku"
+    assert warmer["passthrough"] == ["--model", "haiku"]
     assert db.get_job(conn, job_id)["warmed_by"] == warmer["id"]
 
 

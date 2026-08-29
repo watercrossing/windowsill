@@ -29,7 +29,7 @@ from typing import Any
 DEFAULTS: dict[str, Any] = {
     "queue": {
         "max_parallel": 1,
-        "default_model": "claude-opus-4-8",
+        "default_model": "opus",
         "default_timeout": "4h",
         "max_sessions_per_month": 60,
     },
@@ -45,7 +45,7 @@ DEFAULTS: dict[str, Any] = {
     "anchor": {
         "enabled": True,
         "time": "07:00",
-        "model": "claude-haiku-4-5",
+        "model": "haiku",
         "body": "Reply with the single word: ok",
     },
     # §5.5 window warming. A subscription window is five hours long and starts

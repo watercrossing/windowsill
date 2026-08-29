@@ -6,7 +6,7 @@ A job is a UTF-8 text file: a directive header, a blank line, then the prompt bo
 #!/usr/bin/env windowsill
 #$ --name refactor-auth
 #$ --at 2026-07-18T02:00
-#$ --model claude-opus-4-8
+#$ --model opus
 #$ --cwd ~/code/myapp
 #$ --resume-from audit-auth
 #$ --window fresh
@@ -39,7 +39,7 @@ Two kinds of directive, distinguished by lookup rather than syntax:
 - **Scheduler directives** are consumed by `windowsill` and never reach the CLI ([§2.3](02-job-file.md)).
 - **Everything else is passed through verbatim to `claude`**, in order, as argv.
 
-`#$ --model claude-opus-4-8` becomes `claude --model claude-opus-4-8`. `#$ --max-turns 60` becomes `--max-turns 60`. `windowsill` never needs to know what those mean, so a new Claude Code flag works on day one with no parser change.
+`#$ --model opus` becomes `claude --model opus`. `#$ --max-turns 60` becomes `--max-turns 60`. `windowsill` never needs to know what those mean, so a new Claude Code flag works on day one with no parser change.
 
 Non-negotiable consequences:
 

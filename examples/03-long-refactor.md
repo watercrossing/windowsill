@@ -121,7 +121,7 @@
 #$ --at 2026-08-05T01:30
 #$ --before 2026-08-05T05:00:00+00:00
 #$ --cwd ~/code/myapp
-#$ --model claude-opus-4-8
+#$ --model opus
 #$ --log transcripts/
 #$ --window fresh
 #$ --timeout 4h

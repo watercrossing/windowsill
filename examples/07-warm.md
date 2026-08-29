@@ -143,7 +143,7 @@
 #$ --name nightly-audit
 #$ --at 2026-08-05T22:00
 #$ --cwd ~/code/myapp
-#$ --model claude-opus-4-8
+#$ --model opus
 #$ --log transcripts/
 #$ --warm
 #$ # --warm-lead 45m

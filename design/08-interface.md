@@ -46,7 +46,7 @@ In rough order of how likely each is to be the thing that's broken:
 ```toml
 [queue]
 max_parallel            = 1
-default_model           = "claude-opus-4-8"
+default_model           = "opus"
 default_timeout         = "4h"
 max_sessions_per_month  = 60      # §5.3; benchmark is 50, this is deliberately near it
 
@@ -57,7 +57,7 @@ peak_band = { days = "mon-fri", start = "13:00", end = "19:00", tz = "Europe/Lon
 [anchor]
 enabled = true
 time    = "07:00"
-model   = "claude-haiku-4-5"
+model   = "haiku"
 body    = "Reply with the single word: ok"
 
 [safety]

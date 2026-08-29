@@ -32,7 +32,7 @@
 #$ --name pipeline-report
 #$ --hold-jid pipeline-build,pipeline-test
 #$ --cwd ~/code/myapp
-#$ --model claude-haiku-4-5
+#$ --model haiku
 #$ --log transcripts/
 #$ --priority 5
 #$ --permission-mode auto

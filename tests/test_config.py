@@ -21,7 +21,7 @@ def test_defaults_used_when_no_file_exists(tmp_path: Path) -> None:
     cfg = load_config(tmp_path / "does-not-exist" / "config.toml")
 
     assert cfg["queue"]["max_parallel"] == 1
-    assert cfg["queue"]["default_model"] == "claude-opus-4-8"
+    assert cfg["queue"]["default_model"] == "opus"
     assert cfg["queue"]["default_timeout"] == "4h"
     assert cfg["queue"]["max_sessions_per_month"] == 60
 
@@ -36,7 +36,7 @@ def test_defaults_used_when_no_file_exists(tmp_path: Path) -> None:
     assert cfg["anchor"] == {
         "enabled": True,
         "time": "07:00",
-        "model": "claude-haiku-4-5",
+        "model": "haiku",
         "body": "Reply with the single word: ok",
     }
 
@@ -119,7 +119,7 @@ def test_partial_top_level_override_merges_with_defaults(tmp_path: Path) -> None
 
     assert cfg["queue"]["max_parallel"] == 4
     # untouched queue keys keep their defaults
-    assert cfg["queue"]["default_model"] == "claude-opus-4-8"
+    assert cfg["queue"]["default_model"] == "opus"
     assert cfg["queue"]["default_timeout"] == "4h"
     assert cfg["queue"]["max_sessions_per_month"] == 60
 
@@ -194,7 +194,7 @@ def test_list_values_are_replaced_not_merged(tmp_path: Path) -> None:
 FULL_CONFIG_TOML = """
 [queue]
 max_parallel            = 1
-default_model           = "claude-opus-4-8"
+default_model           = "opus"
 default_timeout         = "4h"
 max_sessions_per_month  = 60
 
@@ -205,7 +205,7 @@ peak_band = { days = "mon-fri", start = "13:00", end = "19:00", tz = "Europe/Lon
 [anchor]
 enabled = true
 time    = "07:00"
-model   = "claude-haiku-4-5"
+model   = "haiku"
 body    = "Reply with the single word: ok"
 
 [safety]
@@ -240,7 +240,7 @@ def test_full_example_config_round_trips(tmp_path: Path) -> None:
 
     assert cfg["queue"] == {
         "max_parallel": 1,
-        "default_model": "claude-opus-4-8",
+        "default_model": "opus",
         "default_timeout": "4h",
         "max_sessions_per_month": 60,
     }
@@ -256,7 +256,7 @@ def test_full_example_config_round_trips(tmp_path: Path) -> None:
     assert cfg["anchor"] == {
         "enabled": True,
         "time": "07:00",
-        "model": "claude-haiku-4-5",
+        "model": "haiku",
         "body": "Reply with the single word: ok",
     }
     assert cfg["safety"] == {

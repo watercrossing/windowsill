@@ -1,6 +1,6 @@
 # 11. Acceptance criteria
 
-1. A job submitted at 18:00 with `--at 02:00 --model claude-opus-4-8` runs at ~02:00 unattended and leaves a `done` job dir. ✔
+1. A job submitted at 18:00 with `--at 02:00 --model opus` runs at ~02:00 unattended and leaves a `done` job dir. ✔
 2. `windowsill resume <id>` at 08:00 drops into the finished conversation, right cwd, full context. ✔
 3. A job that hits the 5-hour limit mid-run does not fail: requeued, resumed from its own conversation id after the window resets, completes. ✔
 4. An unknown directive (`#$ --some-new-flag x`) reaches `claude` untouched; `windowsill` needs no change. ✔

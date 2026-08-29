@@ -75,7 +75,7 @@
 #$ --name audit-deps
 #$ --at 2026-08-05T02:00
 #$ --cwd ~/code/myapp-audit
-#$ --model claude-opus-4-8
+#$ --model opus
 #$ --log ~/reports/
 #$ --isolate worktree
 #$ --allow-dirty

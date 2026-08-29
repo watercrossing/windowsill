@@ -69,6 +69,21 @@
   configuration. `setup-uv` is an exact tag rather than a major because it
   stopped publishing floating major tags after v7 — `@v8`, `@v9` and `@v10`
   are unresolvable refs, not old versions.
+- **Nothing windowsill ships pins a model version any more.** Every example,
+  the README and `[queue].default_model` named `claude-opus-4-8`, and
+  `[anchor].model` named `claude-haiku-4-5`; they now use the bare family
+  aliases `opus` and `haiku`. Both spellings work — `claude` accepts a full
+  versioned id or a bare alias — but a shipped default should not choose a
+  version on the reader's behalf. The pass-through fixtures in `tests/` keep
+  the full id on purpose: they assert that an arbitrary string reaches argv
+  unaltered, and a versioned id is the better witness for that.
+- `README.md` and `examples/01-hello.md` now say which model spellings are
+  valid. The two halves do not mix: `claude-opus` (prefix, no version) and
+  `opus-5` (version, no prefix) are both rejected, and because `--model` is
+  pass-through the rejection is a 404 at dispatch rather than an error at
+  submit — on a job with `--at`, that costs a night. Measured and recorded in
+  `design/09-findings.md` (settled 2026-08-27), which also closes the open
+  question in `design/03-execution-model.md` §3.2.
 
 ## 0.2.0 — 2026-08-04
 

@@ -21,7 +21,7 @@ An anchor does not create capacity. It moves a boundary. **A window opened at 01
 [anchor]
 enabled = true
 time    = "07:00"
-model   = "claude-haiku-4-5"
+model   = "haiku"
 body    = "Reply with the single word: ok"
 ```
 

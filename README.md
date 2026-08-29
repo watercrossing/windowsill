@@ -111,7 +111,7 @@ A job is a UTF-8 text file: an optional shebang, a header of `#$` directives, a 
 #!/usr/bin/env ccsub
 #$ --name refactor-auth
 #$ --at 2026-07-18T02:00
-#$ --model claude-opus-4-8
+#$ --model opus
 #$ --cwd ~/code/myapp
 #$ --resume-from audit-auth
 #$ --window fresh
@@ -142,8 +142,10 @@ Parsing rules that matter:
 
 **Two kinds of directive.**
 windowsill recognises a fixed set of *scheduler* directives (below); everything else is passed through verbatim, in order, to `claude` as argv.
-`#$ --model claude-opus-4-8` becomes `claude --model claude-opus-4-8`.
+`#$ --model opus` becomes `claude --model opus`.
 This means a new `claude` flag works the day it ships, with no change here — and windowsill never validates or rejects a directive it doesn't recognise; unknown ones flow straight through and `claude` complains if they're wrong.
+That cuts both ways, and `--model` is where it bites: the name is checked by the API at dispatch, not by `ccsub` at submit, so a bad one is a 404 hours later rather than an error you see when you type it.
+`claude` takes either a **bare family alias** — `opus`, `sonnet`, `haiku` — or a **full versioned id** — `claude-opus-5`, `claude-haiku-4-5`. The halves do not mix: `claude-opus` (prefix, no version) and `opus-5` (version, no prefix) are both rejected. Use the alias unless you specifically want a version pinned.
 
 ### Scheduler directives
 
