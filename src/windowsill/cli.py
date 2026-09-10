@@ -611,7 +611,13 @@ def _permission_denials(database: sqlite_utils.Database, job_id: int) -> int | N
 @click.option("--with-timezone", is_flag=True, help="Show times with their UTC offset instead of bare system local time.")
 @click.pass_context
 def report(ctx: click.Context, since: str, with_timezone: bool) -> None:
-    """Digest: what ran, delta%, duration, state -- one line each."""
+    """Digest: what ran, delta%, duration, state -- one line each.
+
+    This is the command read at 08:00, so it has to be readable in five
+    seconds: one screen, one line per job, each ending in the
+    ``windowsill resume <id>`` that picks it up. Anything zero or unknown
+    (a denial count) is left off rather than printed.
+    """
     from windowsill import db  # deferred: see module docstring
 
     with _session(_home(ctx)) as (database, _cfg, _root):
@@ -630,9 +636,9 @@ def report(ctx: click.Context, since: str, with_timezone: bool) -> None:
                 total_delta += delta
             delta_text = f"Δ {delta}%" if delta is not None else "Δ -"
             denials = _permission_denials(database, job["id"])
-            # Terse and silent when zero/unknown (§8.1 one-screen constraint) --
-            # only a non-zero count is worth a reader's attention (§9
-            # "Settled 2026-07-28, second sitting").
+            # Terse and silent when zero/unknown (the report's one-screen rule,
+            # see :func:`report`) -- only a non-zero count is worth a reader's
+            # attention (§9 "Settled 2026-07-28, second sitting").
             denial_text = f" denied={denials}" if denials else ""
             click.echo(
                 f"{job['id']:<5} {job['name']:<24} {job['state']:<10} {_elapsed(job, now_str):<9} "
@@ -686,7 +692,7 @@ def show(ctx: click.Context, identifier: str) -> None:
             system_prompt=prompt_plan.text,
             add_dirs=[str(prompt_plan.add_dir)] if prompt_plan.add_dir else (),
         )
-        # §8.1's one-screen constraint: windowsill's own prompt is ~950
+        # The same one-screen rule as :func:`report`: windowsill's own prompt is ~950
         # characters of prose a reader already knows the content of. Elide it
         # to its length -- the flag being *there*, and the --add-dir beside
         # it, is what they came to check. A job's own prompt is never elided:

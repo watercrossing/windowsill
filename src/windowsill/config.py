@@ -31,6 +31,8 @@ DEFAULTS: dict[str, Any] = {
         "max_parallel": 1,
         "default_model": "opus",
         "default_timeout": "4h",
+        # The trailing-30d window ceiling. The benchmark is 50 windows a
+        # month; 60 sits deliberately near it, not comfortably above.
         "max_sessions_per_month": 60,
     },
     "window": {

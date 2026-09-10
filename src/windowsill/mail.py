@@ -479,6 +479,7 @@ ATTEMPT_SUMMARY_CHARS = 240
 #: watched. Whatever the account burned between them -- and a window boundary
 #: is exactly where the unobserved spending lives -- is not in these numbers.
 #: Hence "floor": the true cost is this or more, never less.
+#: See design/decisions/window-percent-not-dollars.md.
 WINDOW_PCT_CAVEAT = "Window % is per-window and resets between attempts, so the total is a floor, not a sum."
 
 

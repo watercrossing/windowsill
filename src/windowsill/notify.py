@@ -14,7 +14,7 @@ to a placeholder: there is no default recipient and none is derived from
 the placeholder this module used to ship was mailed for real and refused by
 the postmaster. That case is a *skip*, not a failure of the transport, and
 :class:`NotifyResult` distinguishes them so the caller can record it (§8.4:
-logged, never silent, never fatal).
+logged, never silent, never fatal). See design/decisions/notifications-are-opt-in.md.
 
 The non-negotiable contract (§8.4): **a failed notification is logged and
 never fails the job.** So :func:`notify` catches everything a transport can

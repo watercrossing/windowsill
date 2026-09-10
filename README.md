@@ -255,6 +255,15 @@ Designed but not implemented yet — do not rely on these:
 | `windowsill gc [--older-than 30d]` | Remove terminal job dirs and worktrees |
 | `windowsill doctor` | Environment/config sanity check |
 
+Until `doctor` exists, these are the checks it would run, most-likely-broken first:
+
+- `claude` on `PATH` and authenticated under cron's environment (`env -i HOME=$HOME PATH=$PATH`) — re-check after every `claude` update; see [`design/decisions/auth-survives-cron.md`](design/decisions/auth-survives-cron.md).
+- The cron line is installed and firing (if you redirect `tick` to `~/.windowsill/logs/tick.log`, how recent its last line is).
+- `windowsill usage --probe` still parses live `/usage` output, including the closed state; see [`design/decisions/reset-clause-is-the-discriminator.md`](design/decisions/reset-clause-is-the-discriminator.md).
+- Probes are still free: two probes into a closed window must both read closed; see [`design/decisions/probes-are-free.md`](design/decisions/probes-are-free.md).
+- `ccstat`'s 30d count is below `max_sessions_per_month`.
+- `sendmail` exists and is executable, or the ntfy URL answers.
+
 Correspondingly, the two things those cover — `--isolate worktree` and the dirty-tree refusal — are part of the design but not yet functional.
 Everything else is live: window policies decide dispatch from a `/usage` probe, rate limits requeue instead of failing, `--retry` retries, and finished jobs notify.
 
