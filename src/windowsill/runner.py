@@ -347,7 +347,9 @@ def spawn(
     """Spawn ``argv`` detached in its own process group.
 
     The body goes on stdin via a file in ``dir_`` (never argv -- §3.2:
-    bodies exceed ``ARG_MAX`` and contain everything a shell hates).
+    bodies exceed ``ARG_MAX`` and contain everything a shell hates). Never
+    ``shell=True``: pass-through directives are user text headed for argv,
+    and a shell would turn a quoted directive into a command.
     stdout is redirected straight to ``dir_/stream.jsonl`` so a killed run
     still leaves a usable partial transcript (§3.2). stderr is discarded
     rather than interleaved into the same file, which would corrupt the

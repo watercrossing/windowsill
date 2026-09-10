@@ -153,9 +153,9 @@ That cuts both ways, and `--model` is where it bites: the name is checked by the
 |---|---|---|
 | `--name <slug>` | filename stem | Human label. Unique only among non-terminal jobs |
 | `--at <when>` | ASAP | Earliest start. ISO-8601 |
-| `--before <time>` | none | Do not start after this; job becomes `expired` if missed. Write it in UTC |
+| `--before <time>` | none | Do not start after this; job becomes `expired` if missed. Compared as a plain string against the current UTC time, so write it in UTC |
 | `--window <policy>` | `share` | `fresh` \| `share` \| `offpeak` |
-| `--anchor` | false | This is an anchor job: a trivial prompt whose only purpose is to open a window |
+| `--anchor` | false | This is an anchor job: a trivial prompt whose only purpose is to open a window. Does not choose a model — name one with `--model`; `[anchor].model` applies only to the anchors the scheduler spawns for `--warm` |
 | `--warm` | false | Open the window at `--at`, but run the job near the window's end. See below |
 | `--warm-lead <dur>` | config (`30m`) | How long before the window resets a `--warm` job goes |
 | `--cwd <path>` | submit-time cwd | Working directory. `~` expanded at submit |
@@ -297,7 +297,7 @@ What separates these tools isn't the queue — it's what *triggers* a dispatch.
 - **[`gruckion/claude-scheduler`](https://github.com/gruckion/claude-scheduler)** — *triggered by the wall clock,* one-shot.
   Small, but it captures the conversation id and hands you click-to-resume notifications — the ergonomics `ccresume` is aiming at.
 - **Claude Code's own scheduling** — *triggered by the wall clock.*
-  `/loop` with the `Cron*` tools schedules within a session; the desktop app's scheduled tasks use a `SKILL.md` with YAML frontmatter, which is Anthropic's own take on a job file and worth reading before changing [`design/02-job-file.md`](design/02-job-file.md).
+  `/loop` with the `Cron*` tools schedules within a session; the desktop app's scheduled tasks use a `SKILL.md` with YAML frontmatter, which is Anthropic's own take on a job file and worth reading before changing the job-file format.
 
 Every one of these except `claude-code-queue` dispatches on a clock.
 A clock knows what time it is; it doesn't know whether you have a window open.
