@@ -1224,7 +1224,9 @@ def run_job(
     # §4.3: probe immediately before and after the run; the delta is what the
     # job cost in the only unit that binds. The "before" reading doubles as the
     # first read of a window this job's dispatch just opened, so it completes
-    # that ledger row's reset_at (§5.3).
+    # that ledger row's reset_at (§5.3). Approximate: another surface can move
+    # the number during the run -- acceptable for a single user who is mostly
+    # asleep.
     before = _safe_probe(probe)
     if before is not None:
         window.record_probe(database, before, now_str=started_at, opened_by=job_id)

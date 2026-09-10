@@ -314,7 +314,7 @@ windowsill is **opportunistic** — it exists to spend windows that would otherw
 Three things follow from that, none of which have a counterpart above:
 
 - **Window state is read, not inferred.**
-  A `/usage` probe ([`design/04-usage-oracle.md`](design/04-usage-oracle.md)) is free and answers *before* dispatch, which is what makes `--window fresh` and `--window offpeak` expressible at all.
+  A `/usage` probe ([`design/decisions/probes-are-free.md`](design/decisions/probes-are-free.md)) is free and answers *before* dispatch, which is what makes `--window fresh` and `--window offpeak` expressible at all.
   Learning a window's state by crashing into it can only ever produce retry logic.
 - **Anchors.**
   An anchor doesn't create capacity, it moves a boundary — and it fires conditionally, no-opping if a window is already open.

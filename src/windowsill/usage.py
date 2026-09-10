@@ -16,11 +16,21 @@ The load-bearing rules, verbatim from §4.1:
   reads ``0% used · resets …`` -- still open. State is never inferred from %.
 - **A missing reset is ``None``, never ``now + 5h``.** Defaulting it would read
   the closed state as a window live until morning and starve ``--window fresh``
-  jobs forever.
+  jobs forever -- and since the cache would then report the window live,
+  nothing would re-probe to correct it.
 - **No year in the timestamp.** The year is inferred by choosing the candidate
   (``now.year`` ± 1) that puts the reset nearest to now and in the future.
 - **The timezone is parenthesised.** Resolve it via :mod:`zoneinfo`, store UTC.
-- **The extra weekly bucket's name is read, not hardcoded** (``Fable`` today).
+- **The extra weekly bucket's name is read, not hardcoded, and the bucket is
+  optional.** Support docs said Opus-only; the client printed ``Fable``, and
+  on 2026-07-28 printed no extra bucket at all. Absent is ``None``, not a
+  parse failure (design/decisions/extra-weekly-bucket-is-optional.md).
+
+Everything after the weekly lines -- the "What's contributing to your limits
+usage?" block -- is deliberately not parsed. It is machine-local ("does not
+include other devices or claude.ai") and counts conversations, not windows,
+so it must never feed a dispatch decision. The session and week lines are
+server-side account truth.
 
 Clock-injected: :func:`parse_usage` takes an explicit ``now`` and
 :func:`probe` an injectable ``run`` command seam, so nothing here reads a real
@@ -330,6 +340,13 @@ def probe(
     Free and account-global (§4.2): reads server-side truth, sees other
     surfaces, and does not open a window. ``run`` is the injectable command
     seam; ``now`` defaults to the real UTC clock but is injectable for tests.
+
+    That a probe is free is a behavioural finding on one client version
+    (2026-07-17), not a documented guarantee; if ``/usage`` ever starts
+    costing a window, the failure is silent and expensive
+    (design/decisions/probes-are-free.md). Each probe returns a
+    ``session_id`` and may leave a conversation record on disk; it does not
+    move the local conversation counter.
     """
     envelope = invoke(run=run, claude_cmd=claude_cmd)
     resolved_now = now if now is not None else datetime.now(timezone.utc)
