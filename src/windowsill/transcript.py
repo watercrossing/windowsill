@@ -120,6 +120,10 @@ def result_parts(event: Mapping[str, Any]) -> list[str]:
 
     Shared with the email body (§8.4), which reports the same run in the same
     terms -- one description of "how the run went", rendered twice.
+
+    ``total_cost_usd`` is shown when present but is not a cost metric
+    here: on a subscription it is a shadow price, and the window-%
+    delta is the unit that binds (design/decisions/window-percent-not-dollars.md).
     """
     parts = [str(event.get("subtype", "?"))]
     if event.get("num_turns") is not None:

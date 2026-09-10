@@ -140,7 +140,11 @@ def _setting(config: Mapping[str, Any] | None, table: str, key: str) -> Any:
 
 
 def _max_parallel(config: Mapping[str, Any] | None) -> int:
-    """``[queue].max_parallel`` (§8.3), defaulting to 1 (§3.1)."""
+    """``[queue].max_parallel`` (§8.3), defaulting to 1 (§3.1).
+
+    Concurrent runs drain the shared window faster and fight over the
+    working tree, so more than one is opt-in.
+    """
     return int(_setting(config, "queue", "max_parallel"))
 
 

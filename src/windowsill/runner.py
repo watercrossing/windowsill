@@ -257,6 +257,9 @@ def build_argv(
     ``--add-dir`` per entry, nested under the same yield check: granting
     directory access for a journal the prompt never told the agent about
     would be pointless, so it rises and falls with ``system_prompt``.
+    ``--add-dir`` is variadic on the CLI (it swallows tokens until the
+    next flag), so it is always the last injected token, directly
+    abutting pass-through, whose every token is itself a flag.
     """
     argv = list(claude_cmd) + ["-p", "--output-format", "stream-json", "--verbose"]
     if resume:
@@ -598,6 +601,8 @@ RESUME_ON_LIMIT_BODY = "Continue where you left off."
 #: The filename windowsill writes/advertises the per-job status journal
 #: under, always directly inside the job dir (never the working tree/
 #: worktree -- it must not pollute the branch left for morning review).
+#: Being keyed on the job id, not the conversation, is what lets it
+#: survive a fresh-context re-dispatch.
 JOURNAL_FILENAME = "journal.md"
 
 #: Injected whenever ``[prompt].enabled`` (byte-identical every run, no

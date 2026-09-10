@@ -73,10 +73,13 @@ Either way, a TAB press costs about 70-90ms now — imperceptible; it was ~220ms
 
 ## Running on a schedule (cron)
 
-windowsill dispatches jobs two ways (see [`design/03-execution-model.md`](design/03-execution-model.md)).
+windowsill dispatches jobs two ways, and the split follows from one asymmetry.
+Idle time inside an open window is lost for good; idle time with no window open costs nothing, because the next window only starts at the next message.
+So latency matters only between jobs in a live window.
 The fast path is the *chain*: when a job finishes it kicks the next tick itself, so back-to-back jobs in one open window start seconds apart.
 Cron is the *liveness floor* underneath that — it catches a broken chain, an `--at` coming due, and a rate-limit `blocked_until` expiring.
 Fifteen minutes is fine precisely because it is never the latency path.
+Cron, not a systemd timer: no `loginctl enable-linger`, no unit files, and it works the same on any always-on box.
 
 Add one line to your crontab (`crontab -e`):
 
@@ -176,6 +179,7 @@ That cuts both ways, and `--model` is where it bites: the name is checked by the
 `--resume` is the one case where a scheduler directive shadows a real `claude` flag.
 
 Every directive above is parsed *and* acted on today, with two exceptions: `--isolate worktree` is stored but not yet honoured (runs happen in `--cwd` regardless), and `--allow-dirty` is not yet checked.
+When it lands, `worktree` runs the job in `~/.windowsill/worktrees/<id>-<name>` on a new branch `windowsill/<name>`, left for morning review; worktrees are never removed automatically, only by `windowsill gc`.
 
 ### `--warm`: spend the tail of one window and roll into the next
 
