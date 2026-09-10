@@ -181,6 +181,14 @@ That cuts both ways, and `--model` is where it bites: the name is checked by the
 Every directive above is parsed *and* acted on today, with two exceptions: `--isolate worktree` is stored but not yet honoured (runs happen in `--cwd` regardless), and `--allow-dirty` is not yet checked.
 When it lands, `worktree` runs the job in `~/.windowsill/worktrees/<id>-<name>` on a new branch `windowsill/<name>`, left for morning review; worktrees are never removed automatically, only by `windowsill gc`.
 
+### Scope a job to finish inside one window
+
+A rate limit requeues a job for free and resumes its conversation, but treat that as a safety net, not a plan.
+Resuming re-pays for the whole conversation: past ~150k of context a single turn has been measured at 15% of a window, so a job resumed across three windows costs more than three jobs doing a third each.
+Resume-on-limit is for the job that overran by ten minutes, not the one that was always going to take twelve hours.
+Split long work with `--hold-jid`, and see [`examples/03-long-refactor.md`](examples/03-long-refactor.md) for writing a body that survives a restart.
+For scale, a job whose Δ% reads 40% is not a job, it is a project.
+
 ### `--warm`: spend the tail of one window and roll into the next
 
 A window is five hours long and starts at your **first** request, so a job dispatched at 22:00 owns 22:00–03:00 and gets one window's quota. `--warm` splits those two events apart:
@@ -200,14 +208,13 @@ lead         = "30m"   # how much of window one to spend first, expressed as tim
 min_pct_free = 20      # below this, defer rather than start a run that cannot finish
 ```
 
-`lead` is the only number worth tuning, and it is a **quota budget** that happens to be measured in minutes. On a Pro plan this queue's own ledger puts the median burn at 2.76 %/min, i.e. about **36 minutes** to spend a whole window — so 30m spends most of one. The errors are not symmetric: too long only costs waiting (a rate-limit requeue consumes no `--retry` and resumes the same conversation), while too short wastes quota permanently. Err long. A Max plan buys more tokens per window at the same wall-clock length, so it needs a **longer** lead, not a shorter one.
+`lead` is the only number worth tuning, and it is a **quota budget** that happens to be measured in minutes. On a Pro plan this queue's own ledger puts the median burn at 2.76 %/min, i.e. about **36 minutes** to spend a whole window — so 30m spends most of one. The errors are not symmetric: too long only costs waiting (a rate-limit requeue consumes no `--retry` and resumes the same conversation), while too short wastes quota permanently. Err long. A Max plan buys more tokens per window at the same wall-clock length, so it needs a **longer** lead, not a shorter one. Measured over 12 runs; to set your own, divide 100 by your observed %/min.
 
 `--warm` cannot be combined with `--window fresh` — warming waits for the tail of an open window and `fresh` waits for there being no window at all, so the pair would defer on every tick forever. `ccsub` refuses it at submit. A warm job has no use for `fresh` regardless: the window it crosses into is empty by construction.
 
 Every warming refusal is a *defer*, never a terminal state, so a warm job that never gets its window sits `ready` and quiet rather than failing. `windowsill show <id>` prints the `warm` events explaining which gate held it. Give the job a `--before` if being late makes it worthless.
 
-`design/05-windows.md` §5.5 has the full reasoning and the measurements.
-`examples/07-warm.md` is a commented, runnable job file.
+[`examples/07-warm.md`](examples/07-warm.md) is a commented, runnable job file with the tick-by-tick behaviour and the measurements.
 
 ## Commands
 
@@ -318,7 +325,7 @@ Three things follow from that, none of which have a counterpart above:
   Learning a window's state by crashing into it can only ever produce retry logic.
 - **Anchors.**
   An anchor doesn't create capacity, it moves a boundary — and it fires conditionally, no-opping if a window is already open.
-  See [`design/05-windows.md`](design/05-windows.md) §5.2 for why a fixed cron time can't do this.
+  [`examples/06-anchor.md`](examples/06-anchor.md) explains why a fixed cron time can't do this.
 - **A ceiling.**
   30-day rolling window accounting against a configured monthly limit.
 

@@ -119,7 +119,7 @@
 #     lead         = "30m"
 #     min_pct_free = 20
 #
-# design/05-windows.md §5.5 has the reasoning and the measurements.
+# The README's `--warm` section has the summary.
 #
 # ---------------------------------------------------------------------
 # When NOT to use this

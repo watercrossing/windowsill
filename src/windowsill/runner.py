@@ -869,9 +869,10 @@ def _requeue_after_limit(
 
     Unless ``--no-resume-on-limit``, the requeued job carries the conversation
     it got as far as, with §5.4's continuation body. The original submission
-    survives on disk as ``job.md`` (§6.2) either way. Read §5.4's closing
-    paragraph before leaning on this: resuming re-pays for the whole
-    conversation, so it is a safety net for a job that overran, not a plan.
+    survives on disk as ``job.md`` (§6.2) either way. Resuming re-pays for the
+    whole conversation, so a job resumed across several windows costs more
+    than the same work split into jobs; this is a safety net for a job that
+    overran, not a plan (README, "Scope a job to finish inside one window").
     """
     blocked_until = _limit_reset_at(signal, probed, now_str=finished_at, window_length=window_length)
     db.update_sched(database, blocked_until=blocked_until, blocked_reason=f"rate limit ({signal.source}: {signal.detail})")

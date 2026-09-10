@@ -108,7 +108,7 @@
 #
 #   --retry 2        two crashes tolerated. Three attempts total.
 #
-# And the honest advice, which the design docs put more bluntly than this
+# And the honest advice, which the README puts more bluntly than this
 # example does: scope a job to finish inside one window. Everything above
 # is a safety net for the job that overran by ten minutes, not a plan for
 # the job that was always going to take twelve hours.
