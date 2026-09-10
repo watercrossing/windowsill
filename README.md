@@ -90,7 +90,7 @@ PATH=/home/you/.local/bin:/usr/bin:/bin
   Both `windowsill` *and* `claude` have to be findable on it — a tick with a due job spawns `windowsill run`, which spawns `claude`.
   `uv tool install windowsill` puts `windowsill` in `~/.local/bin`, where `claude` usually already lives; confirm with `command -v windowsill claude` and set the `PATH=` line to match.
   (If you run from a checkout instead of installing, use `uv run --project /path/to/windowsill windowsill tick -q` and make sure `uv` is on that `PATH` too.)
-- **`HOME`** is set by cron automatically, which is all `claude` needs to find its credentials — a non-interactive job with no TTY authenticates fine (verified in [`design/09-findings.md`](design/09-findings.md)).
+- **`HOME`** is set by cron automatically, which is all `claude` needs to find its credentials — a non-interactive job with no TTY authenticates fine (verified in [`design/decisions/auth-survives-cron.md`](design/decisions/auth-survives-cron.md)).
 
 To keep a heartbeat and capture any errors, redirect to a log instead:
 
