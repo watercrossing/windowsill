@@ -338,4 +338,5 @@ Three things follow from that, none of which have a counterpart above:
 - **A ceiling.**
   30-day rolling window accounting against a configured monthly limit.
 
-See `design/index.md` for the full design, including the execution model, window accounting, and SQLite schema.
+How windowsill behaves is documented next to the code: the docstrings in `src/windowsill/`, the tests, and [`examples/`](examples/).
+[`design/`](design/index.md) keeps what the code can't say for itself: the motivation, the questions already decided, and one record per empirical finding that shaped it.

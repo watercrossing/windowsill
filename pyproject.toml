@@ -44,7 +44,7 @@ Changelog = "https://github.com/watercrossing/windowsill/blob/main/CHANGELOG.md"
 [project.scripts]
 # The SGE-shaped short verbs are the daily interface; `windowsill` stays as
 # the dispatcher so `--help` lists everything in one place and cron keeps
-# calling `windowsill tick` (design/08-interface.md §8.1).
+# calling `windowsill tick` (README.md, "Commands").
 ccsub = "windowsill.cli:sub"
 ccstat = "windowsill.cli:stat"
 ccdel = "windowsill.cli:del_"
