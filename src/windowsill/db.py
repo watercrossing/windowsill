@@ -17,6 +17,16 @@ whenever a helper doesn't cover what they need.
 The DB path is always explicit or derived from an explicit ``home`` —
 mirroring :mod:`windowsill.config` — so tests (and any caller that cares) never
 touch the real ``~/.windowsill``.
+
+A job has exactly three identifiers, and a fourth should not be added.
+``id`` is the monotonic integer you type (``windowsill del 42``, SGE
+muscle memory); ``AUTOINCREMENT`` rather than a bare rowid is what
+guarantees it is never reused, even after old rows are deleted. ``name``
+is a human label and deliberately *not* unique -- resubmit
+``nightly-lint`` every night and every one of those jobs carries it --
+so it resolves only among live jobs (:func:`resolve_identifier`).
+``conversation_id`` is Claude's ``session_id``: opaque, and the only
+identifier windowsill never invents.
 """
 
 from __future__ import annotations
@@ -58,7 +68,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   notify        TEXT, timeout TEXT,
   log_path      TEXT,                 -- §2.3 --log; extra transcript.md destination
   no_resume_on_limit INTEGER NOT NULL DEFAULT 0,
-  conversation_id TEXT,               -- opaque; Claude's session_id
+  conversation_id TEXT,               -- opaque; Claude's session_id, the one identifier we never invent
   pid           INTEGER, exit_code INTEGER,
   warm          INTEGER NOT NULL DEFAULT 0,  -- §5.5 --warm: open the window early, run in its tail
   warm_lead     TEXT,                 -- per-job override of [warm].lead
@@ -72,7 +82,9 @@ CREATE TABLE IF NOT EXISTS runs (      -- one row per execution attempt
   outcome       TEXT,                 -- done | failed | rate_limited | timeout | killed | incomplete
   pct_before    INTEGER, pct_after INTEGER,   -- §4.3
   num_turns     INTEGER, duration_ms INTEGER,
-  permission_denials INTEGER,        -- count of the result envelope's permission_denials (§9 2026-07-28)
+  permission_denials INTEGER,        -- a run refused every write still reports success;
+                                     -- this count is the only trace
+                                     -- (design/decisions/permission-denials-are-counted.md)
   conversation_id TEXT,
   summary       TEXT                 -- this attempt's own last words; the job dir's stream.jsonl is
                                      -- rewritten by the next attempt, so a requeued run's output only
