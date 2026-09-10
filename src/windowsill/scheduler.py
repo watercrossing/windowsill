@@ -649,6 +649,9 @@ def tick(
             # 3. Promote: queued -> ready once --at is due (or unset) and every
             #    --hold-jid / --resume-from dependency is done (§7). Not held
             #    (a distinct, CLI-controlled state), not blocked (above).
+            #    An --at that passed while the machine was down is simply due: the job
+            #    runs late rather than being dropped. Step 2 has already expired it if
+            #    its --before said late is worthless.
             for job in db.list_jobs(database, state="queued"):
                 at_time = job["at_time"]
                 if at_time is not None and at_time > now_str:

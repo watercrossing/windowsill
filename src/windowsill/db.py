@@ -114,8 +114,8 @@ CREATE TABLE IF NOT EXISTS events (    -- audit trail; feeds windowsill report
 );
 """
 
-# Job states treated as "finished" for §6.1 name resolution. This is the
-# terminal set from the design/07-lifecycle.md §7 lifecycle exactly -- note "killed" and
+# Job states treated as "finished" for §6.1 name resolution. This is
+# the lifecycle's terminal set exactly -- note "killed" and
 # "timeout" are run *outcomes* (§6 runs.outcome), not job states, so they are
 # not here; a killed/timed-out run leaves a "failed" job.
 #
@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS events (    -- audit trail; feeds windowsill report
 # worry membership would have answered is handled structurally instead --
 # the scheduler selects by explicit state name ("queued", "ready", "running"),
 # never by "not terminal", so a blocked job is never picked up again.
+# Rationale: design/decisions/blocked-not-failed.md.
 TERMINAL_STATES: frozenset[str] = frozenset({"done", "failed", "expired", "skipped", "cancelled"})
 
 _JOB_JSON_FIELDS = ("passthrough", "hold_jid")

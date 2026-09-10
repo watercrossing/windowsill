@@ -155,7 +155,7 @@ That cuts both ways, and `--model` is where it bites: the name is checked by the
 | Directive | Default | Meaning |
 |---|---|---|
 | `--name <slug>` | filename stem | Human label. Unique only among non-terminal jobs |
-| `--at <when>` | ASAP | Earliest start. ISO-8601 |
+| `--at <when>` | ASAP | Earliest start. ISO-8601. A missed `--at` (machine off) runs late; add `--before` if late is worthless |
 | `--before <time>` | none | Do not start after this; job becomes `expired` if missed. Compared as a plain string against the current UTC time, so write it in UTC |
 | `--window <policy>` | `share` | `fresh` \| `share` \| `offpeak` |
 | `--anchor` | false | This is an anchor job: a trivial prompt whose only purpose is to open a window. Does not choose a model — name one with `--model`; `[anchor].model` applies only to the anchors the scheduler spawns for `--warm` |
