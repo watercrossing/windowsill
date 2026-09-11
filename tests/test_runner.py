@@ -1,4 +1,4 @@
-"""Tests for windowsill.runner — invocation, detached spawn, reap, timeout (§3.2, §3.3, §6.2).
+"""Tests for windowsill.runner — invocation, detached spawn, reap, timeout.
 
 These tests never spawn a real `claude`, never touch the network, and never
 depend on the real wall clock for correctness: every clock/sleep the runner
@@ -78,8 +78,8 @@ sys.stdin.read()
 print(json.dumps({"type": "system", "subtype": "init"}))
 """
 
-# The regression shape from design/09-findings.md, "Settled 2026-07-28, second
-# sitting": subtype "success", is_error False -- an ordinary "done" run -- but
+# The regression shape from design/decisions/permission-denials-are-counted.md:
+# subtype "success", is_error False -- an ordinary "done" run -- but
 # two Write calls were refused, visible only in permission_denials.
 #: A run that ends its turn with a subagent still going: a clean success
 #: envelope (this is the point -- job 16's looked exactly like this) preceded by
@@ -198,7 +198,7 @@ def noop_sleep(_seconds: float) -> None:
 
 
 # ---------------------------------------------------------------------------
-# job_dir: §6.2 layout (zero-padded id-name so ls sorts)
+# job_dir: layout (zero-padded id-name so ls sorts)
 # ---------------------------------------------------------------------------
 
 
@@ -213,7 +213,7 @@ def test_job_dir_does_not_create_directory(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# build_argv: §3.2 invocation, minus "cd <cwd> &&" and minus the body
+# build_argv: invocation, minus "cd <cwd> &&" and minus the body
 # ---------------------------------------------------------------------------
 
 
@@ -258,7 +258,7 @@ def test_build_argv_claude_cmd_is_injectable() -> None:
 
 
 # ---------------------------------------------------------------------------
-# build_argv: §3.3 safety.allowed_tools default, and the yield rule
+# build_argv: safety.allowed_tools default, and the yield rule
 # ---------------------------------------------------------------------------
 
 
@@ -338,7 +338,7 @@ def test_names_tool_permission_flag_false_for_empty_or_unrelated() -> None:
 
 
 # ---------------------------------------------------------------------------
-# cmd.json / resume.sh: §6.2 artifacts the runner writes
+# cmd.json / resume.sh: artifacts the runner writes
 # ---------------------------------------------------------------------------
 
 
@@ -369,7 +369,7 @@ def test_write_resume_sh_contents_and_executable(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# parse_result_event: §3.2 "derive the result from the last result event"
+# parse_result_event: "derive the result from the last result event"
 # ---------------------------------------------------------------------------
 
 
@@ -498,7 +498,7 @@ def test_outcome_timeout_overrides_everything() -> None:
 
 def test_outcome_incomplete_when_background_work_was_still_live() -> None:
     """The envelope is a clean success; only the live-task ledger says the run
-    stopped early (§7 "blocked")."""
+    stopped early (design/decisions/blocked-not-failed.md)."""
     event = {"type": "result", "is_error": False, "subtype": "success"}
     live = [{"task_id": "aAAA", "description": "d", "task_type": "local_agent"}]
     assert runner.outcome_from_result(event, timed_out=False, live_tasks=live) == "incomplete"
@@ -769,7 +769,7 @@ def test_reap_dead_process_no_result_is_killed(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# log_destination: resolving --log (§2.3)
+# log_destination: resolving --log
 # ---------------------------------------------------------------------------
 
 
@@ -806,7 +806,7 @@ def test_log_destination_relative_directory_resolves_against_job_cwd(tmp_path: P
 
 
 # ---------------------------------------------------------------------------
-# run_job: the full detached-run-wrapper integration (§3.1/§3.2/§3.3/§6.2)
+# run_job: the full detached-run-wrapper integration
 # ---------------------------------------------------------------------------
 
 
@@ -881,7 +881,7 @@ def test_run_job_success_updates_db_and_writes_artifacts(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# run_job: §3.3 safety.allowed_tools -- injection and the yield rule
+# run_job: safety.allowed_tools -- injection and the yield rule
 # ---------------------------------------------------------------------------
 
 
@@ -961,8 +961,8 @@ def test_run_job_does_not_log_yield_when_config_has_no_allowed_tools(tmp_path: P
 
 
 def test_run_job_copies_transcript_to_log_destination(tmp_path: Path) -> None:
-    """§2.3 --log: the rendered transcript is written to the requested path
-    *as well as* the canonical job-dir copy (§6.2), parents created."""
+    """--log: the rendered transcript is written to the requested path
+    *as well as* the canonical job-dir copy, parents created."""
     conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path, log_path="logs/nightly/")
     claude_cmd = _write_script(tmp_path, "claude_ok.py", SUCCESS_SCRIPT)
@@ -1028,10 +1028,11 @@ def test_run_job_failure_marks_job_failed(tmp_path: Path) -> None:
 
 
 def test_run_job_with_live_background_work_is_blocked_not_done(tmp_path: Path) -> None:
-    """§7 "blocked". The result envelope is a clean success -- is_error false,
-    subtype "success", stop_reason "end_turn" -- and the run still is not
-    finished, because a subagent was live when the main thread stopped. This is
-    job 16 exactly, which windowsill recorded as "done" and emailed as such."""
+    """design/decisions/blocked-not-failed.md: "blocked". The result envelope
+    is a clean success -- is_error false, subtype "success", stop_reason
+    "end_turn" -- and the run still is not finished, because a subagent was
+    live when the main thread stopped. This is job 16 exactly, which
+    windowsill recorded as "done" and emailed as such."""
     conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path)
     claude_cmd = _write_script(tmp_path, "claude_live.py", LIVE_SUBAGENT_SCRIPT)
@@ -1065,7 +1066,8 @@ def test_blocked_is_not_terminal_so_ccstat_still_shows_it() -> None:
 
 def test_a_blocked_job_does_not_consume_a_retry(tmp_path: Path) -> None:
     """Re-running the body would start a second copy of work whose first copy
-    may still be live, and the job needs a human either way (§7)."""
+    may still be live, and the job needs a human either way
+    (design/decisions/blocked-not-failed.md)."""
     conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path)
     db.update_job(conn, job_id, retry_max=3)
@@ -1110,8 +1112,8 @@ def test_reap_reports_live_background_work_as_incomplete(tmp_path: Path) -> None
 
 
 def test_run_job_counts_permission_denials_even_when_envelope_reads_success(tmp_path: Path) -> None:
-    """§9 "Settled 2026-07-28, second sitting": a job blocked from doing
-    anything must not just read "done" -- the denial count has to land
+    """design/decisions/permission-denials-are-counted.md: a job blocked from
+    doing anything must not just read "done" -- the denial count has to land
     somewhere. The run outcome itself is untouched: still whatever the
     envelope says, "done" here, no new job state invented."""
     conn = db.connect(tmp_path / "windowsill.db")
@@ -1202,8 +1204,8 @@ def test_run_job_timeout_marks_job_failed_with_timeout_outcome(tmp_path: Path) -
 
 def test_run_job_killed_midrun_marks_job_failed_not_killed(tmp_path: Path) -> None:
     """A run that dies mid-flight without a result event (kill -9 / OOM) has
-    run outcome "killed" (§6) but must leave a *failed* job -- "killed" is not
-    a §7 job state -- with a readable partial transcript (§11 acceptance #10)."""
+    run outcome "killed" but must leave a *failed* job -- "killed" is not
+    a job state -- with a readable partial transcript."""
     conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path)
     claude_cmd = _write_script(tmp_path, "claude_noresult.py", NO_RESULT_SCRIPT)
@@ -1320,10 +1322,10 @@ def test_run_job_writes_under_injected_root_only(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §4.3 Δ window %, §5.4 rate limits, §2.3 retries, §8.4 notifications
+# Δ window %, rate limits, retries, notifications
 # ---------------------------------------------------------------------------
 
-# A fake claude that reports a rate limit rather than a failure (§5.4).
+# A fake claude that reports a rate limit rather than a failure.
 RATE_LIMITED_SCRIPT = """
 import json, sys
 sys.stdin.read()
@@ -1398,8 +1400,8 @@ def test_a_failing_probe_does_not_fail_the_run(tmp_path: Path) -> None:
 
 
 def test_pre_run_probe_completes_the_ledger_row_the_tick_opened(tmp_path: Path) -> None:
-    """§5.3: the tick opens a window row with no reset_at (it can't know one);
-    the run's own pre-probe is the first read that does."""
+    """window.record_probe: the tick opens a window row with no reset_at (it
+    can't know one); the run's own pre-probe is the first read that does."""
     conn = db.connect(tmp_path / "windowsill.db")
     job_id = _make_job(conn, tmp_path)
     db.insert_window(conn, opened_at="2026-07-21T01:59:00+00:00", opened_by=job_id)
@@ -1423,7 +1425,7 @@ def test_rate_limited_run_requeues_and_blocks_the_scheduler(tmp_path: Path) -> N
     assert outcome.outcome == "rate_limited"
 
     job = db.get_job(conn, job_id)
-    assert job["state"] == "ready"  # §5.4: schedulable event, not a failure
+    assert job["state"] == "ready"  # runner._requeue_after_limit: schedulable event, not a failure
     assert job["retry_count"] == 0  # retry count untouched
     assert job["conversation_id"] == "fake-session-limited"
     assert job["resume_id"] == "fake-session-limited"
@@ -1553,8 +1555,9 @@ def test_successful_run_notifies_on_the_jobs_channel(tmp_path: Path) -> None:
 
 
 def test_notification_flags_nonzero_permission_denials(tmp_path: Path) -> None:
-    """§8.4/§9: the completion notification is exactly where an unattended
-    "done" that wrote nothing must be caught before the morning after."""
+    """design/decisions/permission-denials-are-counted.md: the completion
+    notification is exactly where an unattended "done" that wrote nothing
+    must be caught before the morning after."""
     conn = db.connect(tmp_path / "windowsill.db")
     job_id = db.insert_job(
         conn,
@@ -1607,8 +1610,9 @@ def test_requeued_run_does_not_notify(tmp_path: Path) -> None:
 
 
 def test_notification_with_no_destination_is_recorded_as_skipped(tmp_path: Path) -> None:
-    """§8.4: notify on with nowhere to send is not a send and not a failure --
-    but it is not silent either, or you find out the morning you needed it."""
+    """design/decisions/notifications-are-opt-in.md: notify on with nowhere to
+    send is not a send and not a failure -- but it is not silent either, or
+    you find out the morning you needed it."""
     conn = db.connect(tmp_path / "windowsill.db")
     job_id = db.insert_job(
         conn,
@@ -1652,7 +1656,7 @@ def test_failed_notification_is_logged_and_never_fails_the_job(tmp_path: Path) -
 
 
 # ---------------------------------------------------------------------------
-# §8.4 the multi-run summary mail: every attempt, not just the last
+# the multi-run summary mail: every attempt, not just the last
 # ---------------------------------------------------------------------------
 
 
@@ -1742,7 +1746,8 @@ def test_the_summary_mail_covers_every_attempt_with_its_totals(tmp_path: Path) -
         notify_fn=fake_notify,
     )
 
-    # Only the terminal run mailed; the two requeues stayed quiet (§7).
+    # Only the terminal run mailed; the two requeues stayed quiet
+    # (design/decisions/blocked-not-failed.md).
     assert len(sent) == 1
     _, _, _, message = sent[0]
     assert "3 runs" in message["Subject"]
@@ -1775,7 +1780,7 @@ def test_a_single_run_job_mails_no_attempt_history(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §8.4 [notify].on_rate_limit -- the "still alive, back at 02:00" ping
+# [notify].on_rate_limit -- the "still alive, back at 02:00" ping
 # ---------------------------------------------------------------------------
 
 ON_RATE_LIMIT: dict[str, Any] = {"notify": {"on_rate_limit": True}}
@@ -1833,8 +1838,9 @@ def test_on_rate_limit_sends_one_ping_with_the_resume_time_usage_and_retries(tmp
 
 
 def test_the_rate_limit_ping_does_not_change_the_requeue(tmp_path: Path) -> None:
-    """§5.4 is untouched by §8.4: the job is still not terminal, still keeps
-    its retry count, and still gets no summary mail."""
+    """runner._requeue_after_limit is untouched by notify: the job is still
+    not terminal, still keeps its retry count, and still gets no summary
+    mail."""
     conn = db.connect(tmp_path / "windowsill.db")
     job_id = _notified_job(conn, tmp_path, channel="ntfy")
 
@@ -1904,12 +1910,12 @@ def test_a_failed_rate_limit_ping_is_logged_and_never_fails_the_requeue(tmp_path
 
 
 # ---------------------------------------------------------------------------
-# §3.2 the default appended system prompt -- constants and the byte budget
+# the default appended system prompt -- constants and the byte budget
 # ---------------------------------------------------------------------------
 
 
 def test_system_prompt_byte_budget() -> None:
-    """§0.1: context is *the* cost driver, and the way a system prompt goes bad
+    """Context is *the* cost driver, and the way a system prompt goes bad
     is by quietly accreting -- a sentence here, a caveat there, none of them
     individually worth arguing about. So the budget is a failing test, not a
     comment. The numbers are the plan's, with the headroom deliberately tight
@@ -1949,14 +1955,14 @@ def test_journal_prompt_names_the_absolute_path_and_the_four_headings() -> None:
     assert "/state/jobs/00042-refactor-auth/journal.md" in plan.text
     for heading in ("Goal", "Done", "Next", "Notes"):
         assert heading in plan.text
-    # BLOCKED.md is deliberate: design/02-job-file.md's own example job file
+    # BLOCKED.md is deliberate: README.md's own example job file
     # already writes this instruction by hand. The prompt hoists that
     # boilerplate rather than competing with it -- same filename, same idea.
     assert "BLOCKED.md" in plan.text
 
 
 # ---------------------------------------------------------------------------
-# build_argv: §3.2 system prompt / --add-dir injection and ordering
+# build_argv: system prompt / --add-dir injection and ordering
 # ---------------------------------------------------------------------------
 
 
@@ -2009,7 +2015,7 @@ def test_build_argv_injects_add_dir_even_without_prompt_text() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §3.2 the yield rule: a job that names any system-prompt flag gets its own
+# the yield rule: a job that names any system-prompt flag gets its own
 # ---------------------------------------------------------------------------
 
 
@@ -2077,7 +2083,7 @@ def test_resolve_system_prompt_does_not_claim_a_yield_when_nothing_was_on_offer(
 
 
 # ---------------------------------------------------------------------------
-# §5.2 anchor jobs are never injected
+# examples/06-anchor.md: anchor jobs are never injected
 # ---------------------------------------------------------------------------
 
 
@@ -2174,7 +2180,7 @@ def test_resolve_system_prompt_reads_the_real_shipped_defaults(tmp_path: Path) -
 
 
 # ---------------------------------------------------------------------------
-# §3.2 the re-execution gate -- the rule most likely to regress
+# the re-execution gate -- the rule most likely to regress
 # ---------------------------------------------------------------------------
 
 
@@ -2281,10 +2287,10 @@ def test_run_job_injects_the_system_prompt_and_the_job_dir(tmp_path: Path) -> No
 
 
 def test_run_job_journal_lives_in_the_job_dir_never_the_working_tree(tmp_path: Path) -> None:
-    """§3.3 leaves the branch for morning review. A journal in the worktree
-    pollutes that branch and the agent may well commit it. The job dir is also
-    keyed on job id, so it survives every re-dispatch of the job -- which is
-    the entire point."""
+    """README's `--isolate worktree` (not yet implemented) leaves the branch
+    for morning review. A journal in the worktree pollutes that branch and the
+    agent may well commit it. The job dir is also keyed on job id, so it
+    survives every re-dispatch of the job -- which is the entire point."""
     cwd = tmp_path / "worktree"
     cwd.mkdir()
     conn = db.connect(tmp_path / "windowsill.db")
@@ -2386,7 +2392,7 @@ def test_run_job_resumed_dispatch_gets_no_reexec_line(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §8.4 the completion email falls back to the journal only when there is no prose
+# the completion email falls back to the journal only when there is no prose
 # ---------------------------------------------------------------------------
 
 
@@ -2470,7 +2476,7 @@ def test_run_facts_summary_ignores_an_empty_journal(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §5.4 the mail reports the sched hold only while it is still holding
+# the mail reports the sched hold only while it is still holding
 # ---------------------------------------------------------------------------
 
 
