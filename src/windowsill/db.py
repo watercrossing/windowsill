@@ -1,4 +1,4 @@
-"""windowsill state layer: ``~/.windowsill/windowsill.db`` (see design/06-state.md §6).
+"""windowsill state layer: ``~/.windowsill/windowsill.db`` (schema: :data:`SCHEMA_SQL`).
 
 One SQLite database holds all mutable state: ``jobs``, ``runs``,
 ``window``, ``sched``, ``events``. It doubles as the scheduler's lock —
@@ -42,14 +42,14 @@ import sqlite_utils
 from windowsill import config
 
 # ---------------------------------------------------------------------------
-# schema (design/06-state.md §6, verbatim)
+# schema
 # ---------------------------------------------------------------------------
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS jobs (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   name          TEXT NOT NULL,
-  state         TEXT NOT NULL,        -- §7
+  state         TEXT NOT NULL,        -- lifecycle state; see TERMINAL_STATES below
   is_anchor     INTEGER NOT NULL DEFAULT 0,
   submitted_at  TEXT NOT NULL,
   started_at    TEXT, finished_at TEXT,
@@ -66,11 +66,11 @@ CREATE TABLE IF NOT EXISTS jobs (
   priority      INTEGER NOT NULL DEFAULT 0,
   isolate       TEXT, allow_dirty INTEGER NOT NULL DEFAULT 0,
   notify        TEXT, timeout TEXT,
-  log_path      TEXT,                 -- §2.3 --log; extra transcript.md destination
+  log_path      TEXT,                 -- --log; extra transcript.md destination
   no_resume_on_limit INTEGER NOT NULL DEFAULT 0,
   conversation_id TEXT,               -- opaque; Claude's session_id, the one identifier we never invent
   pid           INTEGER, exit_code INTEGER,
-  warm          INTEGER NOT NULL DEFAULT 0,  -- §5.5 --warm: open the window early, run in its tail
+  warm          INTEGER NOT NULL DEFAULT 0,  -- --warm: open the window early, run in its tail
   warm_lead     TEXT,                 -- per-job override of [warm].lead
   warmed_by     INTEGER REFERENCES jobs(id)  -- the anchor we spawned to open the window
 );
@@ -80,7 +80,7 @@ CREATE TABLE IF NOT EXISTS runs (      -- one row per execution attempt
   job_id        INTEGER NOT NULL REFERENCES jobs(id),
   started_at    TEXT NOT NULL, finished_at TEXT,
   outcome       TEXT,                 -- done | failed | rate_limited | timeout | killed | incomplete
-  pct_before    INTEGER, pct_after INTEGER,   -- §4.3
+  pct_before    INTEGER, pct_after INTEGER,   -- design/decisions/window-percent-not-dollars.md
   num_turns     INTEGER, duration_ms INTEGER,
   permission_denials INTEGER,        -- a run refused every write still reports success;
                                      -- this count is the only trace
@@ -88,13 +88,13 @@ CREATE TABLE IF NOT EXISTS runs (      -- one row per execution attempt
   conversation_id TEXT,
   summary       TEXT                 -- this attempt's own last words; the job dir's stream.jsonl is
                                      -- rewritten by the next attempt, so a requeued run's output only
-                                     -- survives if it is copied here (§8.4 multi-run summary mail)
+                                     -- survives if it is copied here (windowsill.mail)
 );
 
-CREATE TABLE IF NOT EXISTS window (    -- one row per window we opened; the §5.3 ledger
+CREATE TABLE IF NOT EXISTS window (    -- one row per window we opened; the ledger (windowsill.window)
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   opened_at     TEXT NOT NULL,        -- our dispatch that opened it
-  reset_at      TEXT,                 -- from /usage; NULL ⇒ closed (§4.1)
+  reset_at      TEXT,                 -- from /usage; NULL ⇒ closed (design/decisions/reset-clause-is-the-discriminator.md)
   probed_at     TEXT,
   pct_used      INTEGER,
   weekly_pct    INTEGER, weekly_reset_at TEXT,
@@ -114,12 +114,12 @@ CREATE TABLE IF NOT EXISTS events (    -- audit trail; feeds windowsill report
 );
 """
 
-# Job states treated as "finished" for §6.1 name resolution. This is
-# the lifecycle's terminal set exactly -- note "killed" and
-# "timeout" are run *outcomes* (§6 runs.outcome), not job states, so they are
+# Job states treated as "finished" for resolve_identifier's name resolution.
+# This is the lifecycle's terminal set exactly -- note "killed" and
+# "timeout" are run *outcomes* (runs.outcome), not job states, so they are
 # not here; a killed/timed-out run leaves a "failed" job.
 #
-# "blocked" (§7) is deliberately **not** here even though nothing moves it on
+# "blocked" is deliberately **not** here even though nothing moves it on
 # its own. It means "needs a human", and every consequence of this set is one
 # a blocked job wants the non-terminal side of: `ccstat` without `-a` filters
 # on exactly this set, and the blocked job is precisely the one the reader
@@ -133,7 +133,7 @@ TERMINAL_STATES: frozenset[str] = frozenset({"done", "failed", "expired", "skipp
 
 _JOB_JSON_FIELDS = ("passthrough", "hold_jid")
 
-#: Columns added to the §6 schema after a database may already exist on
+#: Columns added to :data:`SCHEMA_SQL` after a database may already exist on
 #: disk. ``CREATE TABLE IF NOT EXISTS`` leaves an existing table's shape
 #: alone, so :func:`connect` ALTERs these in explicitly — the schema above
 #: stays the single description of the table, and an old ``~/.windowsill/windowsill.db``
@@ -155,7 +155,7 @@ ADDED_COLUMNS: dict[str, dict[str, str]] = {
 
 
 class IdentifierError(Exception):
-    """Base class for §6.1 identifier resolution failures."""
+    """Base class for :func:`resolve_identifier` failures."""
 
 
 class UnknownIdentifierError(IdentifierError):
@@ -187,14 +187,14 @@ def connect(
     home: Path | None = None,
     timeout: float = 5.0,
 ) -> sqlite_utils.Database:
-    """Open (creating if needed) the windowsill state DB with the §6 schema.
+    """Open (creating if needed) the windowsill state DB with the schema in :data:`SCHEMA_SQL`.
 
     Resolution of the file to open mirrors :func:`windowsill.config.load_config`:
     ``db_path`` if given, otherwise ``<home>/.windowsill/windowsill.db``.
 
-    Enables WAL and foreign-key enforcement, creates any of the five §6
-    tables that don't already exist (safe to call repeatedly against the
-    same file), and seeds the single ``sched`` row if it's missing.
+    Enables WAL and foreign-key enforcement, creates any of the five tables
+    in :data:`SCHEMA_SQL` that don't already exist (safe to call repeatedly
+    against the same file), and seeds the single ``sched`` row if it's missing.
     """
     path = db_path if db_path is not None else default_db_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -385,7 +385,7 @@ def resolve_identifier(
 ) -> int:
     """Resolve a ``--hold-jid`` / ``--resume-from`` argument to a job id.
 
-    Per §6.1: parses as ``int`` ⇒ id lookup (existence still checked,
+    Parses as ``int`` ⇒ id lookup (existence still checked,
     regardless of that job's state). Otherwise ⇒ treated as a ``name``,
     resolved among *non-terminal* jobs only — names are only guaranteed
     unique there. Zero non-terminal matches is an
@@ -498,7 +498,7 @@ def insert_window(
     extra_pct: int | None = None,
     opened_by: int | None = None,
 ) -> int:
-    """Insert a row into ``window`` (§5.3 ledger), return its id."""
+    """Insert a row into ``window`` (the ledger; see :mod:`windowsill.window`), return its id."""
     record = dict(
         opened_at=opened_at,
         reset_at=reset_at,
@@ -528,7 +528,7 @@ def current_window(database: sqlite_utils.Database, now: str) -> dict[str, Any] 
     """The open window, if any: latest row where ``reset_at > now``.
 
     A window with no ``reset_at`` yet (never probed) or an expired one
-    doesn't count — no row ⇒ closed (§4.1/§6).
+    doesn't count — no row ⇒ closed (design/decisions/reset-clause-is-the-discriminator.md).
     """
     rows = list(database["window"].rows_where("reset_at IS NOT NULL AND reset_at > ?", [now], order_by="id desc", limit=1))
     return rows[0] if rows else None
