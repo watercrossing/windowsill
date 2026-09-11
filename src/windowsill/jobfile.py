@@ -1,14 +1,14 @@
 """windowsill job files: directive parsing and the pass-through split.
 
-Implements design/02-job-file.md §2 exactly. A job file is a UTF-8 text file: a
+A job file is a UTF-8 text file: a
 directive header, a blank line, then the prompt body (verbatim, no
 templating, no substitution).
 
-The central design rule (§2.2) is that directives are split into two
+The central design rule is that directives are split into two
 kinds *by lookup, not by syntax*:
 
-- **Scheduler directives** (§2.3, the complete, enumerated set) are
-  consumed here and never reach ``claude``.
+- **Scheduler directives** (the complete, enumerated set in
+  :data:`SCHEDULER_DIRECTIVES`) are consumed here and never reach ``claude``.
 - **Everything else** is passed through untouched, in order, as argv
   elements destined for ``claude``. This module never validates or
   rejects an unrecognised directive — that is the entire point: a new
@@ -24,10 +24,10 @@ import re
 import shlex
 from dataclasses import dataclass, field
 
-# Directive lines: "^#\$\s+(.*)$" (§2.1 rule 1).
+# Directive lines: "^#\$\s+(.*)$" (rule 1).
 _DIRECTIVE_RE = re.compile(r"^#\$\s+(.*)$")
 
-# §2.3, the complete set of scheduler directives, split by arity. A
+# The complete set of scheduler directives, split by arity. A
 # boolean directive takes no value; everything else takes exactly one
 # logical value (possibly several shlex tokens, rejoined with spaces —
 # see e.g. "--at tomorrow 02:00").
@@ -70,7 +70,7 @@ _COMMA_LIST_DIRECTIVES = {"--hold-jid"}
 
 @dataclass
 class Directives:
-    """The scheduler directives enumerated in design/02-job-file.md §2.3.
+    """The scheduler directives, as listed in README's "Scheduler directives" table.
 
     Fields left at their dataclass default mean "absent from the job
     file" — for defaults that depend on context this module doesn't
@@ -98,7 +98,8 @@ class Directives:
     hold: bool = False
     timeout: str = "4h"
     no_resume_on_limit: bool = False
-    # §5.5 warming. `warm` is the whole switch: it asks the scheduler to open
+    # Warming (see README's "`--warm`" section and examples/07-warm.md).
+    # `warm` is the whole switch: it asks the scheduler to open
     # the window with a throwaway anchor first and hold this job back until
     # the tail of that window, so the run spends the tail *and* the window
     # that starts at the reset. `warm_lead` is how much of the tail to claim,
@@ -117,9 +118,9 @@ class JobFile:
 
     ``passthrough`` is the pass-through argv list, in the order
     directives appeared in the file — argv elements, never a
-    concatenated shell string (§2.2). ``body`` is the verbatim prompt
+    concatenated shell string. ``body`` is the verbatim prompt
     body. ``model`` mirrors a ``--model`` pass-through value, if any
-    (§2.2: "Mirror, don't intercept" — it also still appears in
+    ("Mirror, don't intercept" — it also still appears in
     ``passthrough``).
     """
 
@@ -157,9 +158,10 @@ def _apply_directive(directives: Directives, name: str, tokens: list[str]) -> No
 def _mirrored_model(passthrough: list[str]) -> str | None:
     """Find the value of a "--model" pass-through directive, if any.
 
-    --model is pass-through (§2.2), never consumed — this only mirrors
-    its value for display/anchor-default purposes elsewhere. The last
-    occurrence wins, matching ordinary flag-overriding behaviour.
+    --model is pass-through (see design/tensions.md), never consumed —
+    this only mirrors its value for display/anchor-default purposes
+    elsewhere. The last occurrence wins, matching ordinary
+    flag-overriding behaviour.
     """
     model: str | None = None
     for i, tok in enumerate(passthrough):
@@ -171,7 +173,7 @@ def _mirrored_model(passthrough: list[str]) -> str | None:
 def parse_jobfile(text: str) -> JobFile:
     """Parse job-file text into directives, pass-through argv, and body.
 
-    See module docstring and design/02-job-file.md §2 for the exact rules. Pure:
+    See module docstring for the exact rules. Pure:
     no I/O, no clock — ``text`` is the entire job file's contents.
     """
     raw_lines = text.splitlines(keepends=True)

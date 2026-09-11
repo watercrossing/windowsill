@@ -5,7 +5,7 @@ on disk as newline-delimited JSON (``~/.claude/projects/<slug>/<id>.jsonl``),
 and ``claude -p --output-format stream-json --verbose`` -- what a windowsill run
 captures into ``stream.jsonl`` -- is that same event stream, one JSON object
 per line. So "the format Claude Code uses" *is* JSONL; the readable form is
-whatever you render it into. design/06-state.md §6.2 chose Markdown
+whatever you render it into. Markdown was chosen for that
 (``transcript.md`` in the job dir), so this module turns the stream into
 Markdown.
 
@@ -24,8 +24,9 @@ that speaks *for the run* -- :func:`final_summary` above all -- has to filter
 those out (:func:`is_subagent`), and the Markdown marks them.
 
 Two pieces of that reading are shared rather than re-derived: :func:`final_summary`
-(the last *orchestrator* turn that said something -- the body of the completion
-email, §8.4) and :func:`result_parts` (the footer fields of the ``result`` event). Both
+(the last *orchestrator* turn that said something -- the body of the
+completion email, see :mod:`windowsill.mail`) and :func:`result_parts`
+(the footer fields of the ``result`` event). Both
 consume the same events the Markdown renderer does, so this module stays the only
 parser of the stream.
 
@@ -118,8 +119,9 @@ def result_parts(event: Mapping[str, Any]) -> list[str]:
     """The footer fields of a ``result`` event, in print order: the subtype,
     then turns, duration and cost where the envelope carries them.
 
-    Shared with the email body (§8.4), which reports the same run in the same
-    terms -- one description of "how the run went", rendered twice.
+    Shared with the email body (see :mod:`windowsill.mail`), which reports
+    the same run in the same terms -- one description of "how the run
+    went", rendered twice.
 
     ``total_cost_usd`` is shown when present but is not a cost metric
     here: on a subscription it is a shadow price, and the window-%
@@ -169,7 +171,8 @@ _TASK_COMPLETED = "completed"
 
 
 def live_background_tasks(events: Iterable[dict[str, Any]]) -> list[dict[str, str]]:
-    """The background tasks still running when the stream ended (§7 ``blocked``).
+    """The background tasks still running when the stream ended (see
+    design/decisions/blocked-not-failed.md's ``blocked``).
 
     An orchestrator can end its turn while work it dispatched is still in
     flight -- a ``Task`` subagent, or a backgrounded ``Bash``. Nothing in the
@@ -236,7 +239,7 @@ def live_background_tasks(events: Iterable[dict[str, Any]]) -> list[dict[str, st
 
 def final_summary(events: Iterable[dict[str, Any]]) -> str:
     """The run's closing prose: the text of the last *orchestrator* turn that
-    said anything (§8.4's email body).
+    said anything (the email body, see :mod:`windowsill.mail`).
 
     Turns carrying only ``tool_use`` blocks are skipped -- a run's literal last
     assistant message is often a lone ``Write``, and the message a reader wants
@@ -307,7 +310,8 @@ def iter_events(stream_path: Path) -> Iterable[dict[str, Any]]:
 
     Blank and malformed lines are skipped, so a run killed mid-write still
     yields everything up to the truncation. Shared with :mod:`windowsill.runner`,
-    which reads the same stream looking for rate-limit signals (§5.4).
+    which reads the same stream looking for rate-limit signals
+    (:func:`windowsill.runner._requeue_after_limit`).
     """
     with stream_path.open("r", encoding="utf-8") as f:
         for line in f:
@@ -331,17 +335,19 @@ def render_stream(stream_path: Path, *, prompt: str | None = None) -> str:
 
 
 def write_transcript(dir_: Path, *, prompt: str | None = None, extra_path: Path | None = None) -> Path | None:
-    """Render ``<dir_>/stream.jsonl`` to ``<dir_>/transcript.md`` (§6.2).
+    """Render ``<dir_>/stream.jsonl`` to ``<dir_>/transcript.md`` (see
+    :func:`windowsill.runner.job_dir`).
 
     Returns the written path, or ``None`` if there is no ``stream.jsonl`` to
     render (nothing ran). An empty-but-present stream still writes a
     transcript -- a killed run leaves a file, and the prompt alone is worth
     recording.
 
-    ``extra_path`` is the job's resolved ``--log`` destination (§2.3): the
-    same rendering is written there as well, missing parent directories
-    created. It is an *addition*, never a move -- the job dir stays the
-    canonical location everything else addresses (§6.2). A failure to write
+    ``extra_path`` is the job's resolved ``--log`` destination (see README
+    "Scheduler directives"): the same rendering is written there as well,
+    missing parent directories created. It is an *addition*, never a
+    move -- the job dir stays the canonical location everything else
+    addresses (see :func:`windowsill.runner.job_dir`). A failure to write
     it (unwritable directory, a path that is really a directory) is
     swallowed: the run has already happened, and losing the copy must not
     lose the transcript.

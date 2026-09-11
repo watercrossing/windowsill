@@ -1,12 +1,11 @@
 """windowsill configuration: ``~/.windowsill/config.toml``.
 
 Loads the user's config file with :mod:`tomllib` and fills in anything
-missing — at any nesting level — with the defaults documented in
-design/08-interface.md §8.3. If the file doesn't exist at all, the defaults are used
-as-is.
+missing — at any nesting level — with the defaults in :data:`DEFAULTS`.
+If the file doesn't exist at all, the defaults are used as-is.
 
-``peak_band`` (see design/08-interface.md §8.3) is Anthropic pricing/rate-limit policy
-that changes over time, so it is loaded here purely as data — a plain
+``peak_band`` is Anthropic pricing/rate-limit policy that changes over
+time, so it is loaded here purely as data — a plain
 nested mapping under ``window.peak_band`` — and no code in this module
 interprets or hardcodes it.
 
@@ -25,7 +24,7 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-# The exact defaults shown in the design/08-interface.md §8.3 config example.
+# Every setting and its shipped value; a key a user file omits falls back to these.
 DEFAULTS: dict[str, Any] = {
     "queue": {
         "max_parallel": 1,
@@ -50,8 +49,9 @@ DEFAULTS: dict[str, Any] = {
         "model": "haiku",
         "body": "Reply with the single word: ok",
     },
-    # §5.5 window warming. A subscription window is five hours long and starts
-    # at your *first* request, so a job dispatched at 22:00 owns 22:00-03:00 and
+    # Window warming (see README's "`--warm`" section and examples/07-warm.md).
+    # A subscription window is five hours long and starts at your *first*
+    # request, so a job dispatched at 22:00 owns 22:00-03:00 and
     # nothing else does. Warming splits that: a throwaway prompt opens the
     # window at the job's `--at` time, the real job waits until `lead` before
     # the window resets, and the run then spends the tail of window one and
@@ -77,11 +77,11 @@ DEFAULTS: dict[str, Any] = {
         "min_pct_free": 20,
     },
     "safety": {
-        # design/09-findings.md, "Settled 2026-07-31": `--allowed-tools` was
+        # design/decisions/allowed-tools-is-additive.md: `--allowed-tools` was
         # found by experiment to be an *additive* auto-approve list -- it does
         # not remove or bound anything (`--disallowed-tools` is the flag that
         # actually narrows the surface; windowsill does not set it and will
-        # not -- closed 2026-08-04, the boundary is `--permission-mode`). So
+        # not -- see design/decisions/permission-mode-is-the-boundary.md). So
         # naming a tool here costs nothing in restriction, and *omitting* one
         # an unattended orchestrator needs is a loaded gun: it does nothing
         # today, but the day permission prompting actually engages (a
@@ -108,16 +108,18 @@ DEFAULTS: dict[str, Any] = {
         "default_isolate": "worktree",
         "allow_dirty": False,
     },
-    # §3.2: windowsill appends a short system prompt to every non-anchor job,
-    # telling it the one thing its own body can't know -- that nobody is
-    # watching, so a question ends the run -- and asking it to keep a status
-    # journal at `<job dir>/journal.md`. This is a *default*, not a new
-    # capability: `--append-system-prompt` has always been passable straight
-    # through as a `#$` directive, and a job that names any system-prompt flag
+    # windowsill appends a short system prompt to every non-anchor job (see
+    # runner.resolve_system_prompt), telling it the one thing its own body
+    # can't know -- that nobody is watching, so a question ends the run --
+    # and asking it to keep a status journal at `<job dir>/journal.md`. This
+    # is a *default*, not a new capability: `--append-system-prompt` has
+    # always been passable straight through as a `#$` directive, and a job
+    # that names any system-prompt flag
     # of its own (`--append-system-prompt`, `--append-system-prompt-file`,
     # `--system-prompt`, `--system-prompt-file`) gets its own, untouched, with
     # nothing of windowsill's added -- which is also the free per-job opt-out:
-    # `#$ --append-system-prompt ""`. Anchor jobs (§5.2) are never injected.
+    # `#$ --append-system-prompt ""`. Anchor jobs (see examples/06-anchor.md)
+    # are never injected.
     #
     # The two switches are separate because they cost differently. `enabled`
     # buys ~250 tokens once, in the cached prefix: free. `journal` is the
@@ -135,16 +137,18 @@ DEFAULTS: dict[str, Any] = {
         "journal": True,
         "text": "",
     },
-    # §8.4: notifications are opt-in, and there is no default destination for
-    # either channel. A shipped recipient is an address that bounces -- the
+    # Notifications are opt-in (design/decisions/notifications-are-opt-in.md),
+    # and there is no default destination for either channel. A shipped
+    # recipient is an address that bounces -- the
     # placeholder that used to sit here was mailed for real and refused by the
     # postmaster ("an MX or SRV record indicated no SMTP service") -- and a
     # shipped ntfy topic is a *public* one. So: no `to`, no `topic`, and
     # `default = "none"` until the user says otherwise.
     # `on_rate_limit` is the one notification that fires for something other
     # than a finished job. A rate-limited run is requeued, not terminal, so the
-    # normal path stays silent by design (§7) -- which means a job that stalls
-    # at 21:21 and finishes at 07:03 says nothing for ten hours, and silence is
+    # normal path stays silent by design (requeued is not in
+    # db.TERMINAL_STATES) -- which means a job that stalls at 21:21 and
+    # finishes at 07:03 says nothing for ten hours, and silence is
     # indistinguishable from a crashed tick. Default off because the failure
     # mode is spam: a job with `--retry 3` that keeps hitting the ceiling sends
     # one of these per attempt.

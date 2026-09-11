@@ -1,4 +1,4 @@
-"""Notifications: ntfy and email (design/08-interface.md §8.4).
+"""Notifications: ntfy and email.
 
 Exactly two channels. **ntfy** POSTs to ``<url>/<topic>`` with the job name +
 state as the title and a one-line body carrying the result, the Δ window %,
@@ -6,17 +6,17 @@ and the ``windowsill resume <id>`` command that is the morning-after path. **ema
 pipes an RFC-822 message to ``sendmail -t`` from the configured noreply
 address. Nothing else.
 
-Notifications are **opt-in and never guessed** (§8.4). Nothing is sent unless
+Notifications are **opt-in and never guessed**. Nothing is sent unless
 ``[notify].default`` or a job's ``--notify`` names a channel, and a named
 channel with no destination configured sends nothing rather than falling back
 to a placeholder: there is no default recipient and none is derived from
 ``$USER``/hostname. A guessed address either bounces or reaches a stranger --
 the placeholder this module used to ship was mailed for real and refused by
 the postmaster. That case is a *skip*, not a failure of the transport, and
-:class:`NotifyResult` distinguishes them so the caller can record it (§8.4:
-logged, never silent, never fatal). See design/decisions/notifications-are-opt-in.md.
+:class:`NotifyResult` distinguishes them so the caller can record it. See
+design/decisions/notifications-are-opt-in.md.
 
-The non-negotiable contract (§8.4): **a failed notification is logged and
+The non-negotiable contract: **a failed notification is logged and
 never fails the job.** So :func:`notify` catches everything a transport can
 throw and returns a :class:`NotifyResult` the caller records to ``events`` --
 it never raises.
@@ -42,7 +42,7 @@ class NotifyResult:
     ``detail`` explains a failure (or the skip reason for ``none``).
 
     ``skipped`` marks the one case that is neither: the channel was on but had
-    nowhere to send to, so nothing was attempted and nothing failed (§8.4).
+    nowhere to send to, so nothing was attempted and nothing failed.
     """
 
     ok: bool
@@ -52,7 +52,7 @@ class NotifyResult:
 
 
 # ---------------------------------------------------------------------------
-# message composition (§8.4)
+# message composition
 # ---------------------------------------------------------------------------
 
 
@@ -72,14 +72,15 @@ def compose(
     when known, and ``windowsill resume <id>`` -- each on its own line so the resume
     command is tappable.
 
-    ``permission_denials`` (design/09-findings.md, "Settled 2026-07-28, second
-    sitting") only earns a line when non-zero: a run can read ``state ==
+    ``permission_denials`` (see design/decisions/permission-denials-are-counted.md)
+    only earns a line when non-zero: a run can read ``state ==
     "done"`` while having written nothing because every ``Write``/``Edit`` was
     refused, and that is exactly the case the morning-after reader must not
     breeze past.
 
-    ``live_tasks`` earns a line for the same reason: a ``blocked`` job (§7)
-    stopped with work still in flight, and the ``summary`` above it is the
+    ``live_tasks`` earns a line for the same reason: a ``blocked`` job (see
+    design/decisions/blocked-not-failed.md) stopped with work still in flight,
+    and the ``summary`` above it is the
     run's own closing message, which describes work that had not finished.
     """
     title = f"{name}: {state}"
@@ -97,7 +98,7 @@ def compose(
 
 
 # ---------------------------------------------------------------------------
-# where a notification goes (§8.4: configured or not at all)
+# where a notification goes: configured or not at all
 # ---------------------------------------------------------------------------
 
 #: The ``[notify.<channel>]`` key naming *where* that channel sends. Neither
@@ -109,8 +110,9 @@ DESTINATION_KEY: dict[str, str] = {"email": "to", "ntfy": "topic"}
 def split_channel(value: str | None) -> tuple[str, str | None]:
     """Split a ``--notify`` value into ``(channel, destination override)``.
 
-    §2.3's ``--notify`` names a channel and may append ``:<destination>`` --
-    the recipient for ``email``, the topic for ``ntfy``. One grammar for both,
+    ``--notify`` (see README "Scheduler directives") names a channel and may
+    append ``:<destination>`` -- the recipient for ``email``, the topic for
+    ``ntfy``. One grammar for both,
     because a job file that carries its own address is the only way to be
     notified about *this* job on a machine whose global config names nobody:
     ``#$ --notify email:me@example.com``.
@@ -125,7 +127,7 @@ def split_channel(value: str | None) -> tuple[str, str | None]:
 
 
 def destination(channel: str, config: Mapping[str, Any], override: str | None = None) -> str | None:
-    """Where ``channel`` would actually send, or ``None`` if nowhere (§8.4).
+    """Where ``channel`` would actually send, or ``None`` if nowhere.
 
     An ``override`` from the job file wins over ``[notify.<channel>]`` in the
     global config. There is no further fallback: not a placeholder, not
@@ -173,8 +175,8 @@ def _send_email(
     """Pipe one message to ``sendmail -t``.
 
     ``message`` is a body someone else already composed -- the
-    ``multipart/alternative`` completion mail from :mod:`windowsill.mail`
-    (§8.4). Without one, ``title``/``body`` become a plain text message, which
+    ``multipart/alternative`` completion mail from :mod:`windowsill.mail`.
+    Without one, ``title``/``body`` become a plain text message, which
     is what the ntfy-shaped one-liner degrades to.
 
     Addressing is this module's business either way: the caller composes the
@@ -210,7 +212,7 @@ def notify(
     http_post: Callable[[str, bytes, dict], None] = _default_http_post,
     run_sendmail: Callable[[str, str], None] = _default_run_sendmail,
 ) -> NotifyResult:
-    """Send one notification on ``channel``. Never raises (§8.4).
+    """Send one notification on ``channel``. Never raises.
 
     ``channel`` is ``"none"`` (or empty/``None``) to skip, ``"ntfy"``, or
     ``"email"``, each optionally carrying its own destination as
@@ -220,8 +222,8 @@ def notify(
     transport failure -- unreachable ntfy, missing sendmail -- comes back as
     ``ok=False`` with the reason in ``detail``.
 
-    ``message`` is the composed email body for the ``email`` channel (§8.4,
-    :func:`windowsill.mail.build_message`); ``title``/``body`` are the ntfy
+    ``message`` is the composed email body for the ``email`` channel
+    (:func:`windowsill.mail.build_message`); ``title``/``body`` are the ntfy
     one-liner and the fallback when no message was composed.
     """
     name, override = split_channel(channel)
@@ -232,7 +234,7 @@ def notify(
     where = destination(name, config, override)
     if name in DESTINATION_KEY and where is None:
         # Notify is on but nothing says where to. Sending nothing is the only
-        # safe answer (§8.4); saying so is the caller's job.
+        # safe answer; saying so is the caller's job.
         key = DESTINATION_KEY[name]
         return NotifyResult(False, name, f"no destination configured (notify.{name}.{key} or --notify {name}:<{key}>)", skipped=True)
 
@@ -243,6 +245,6 @@ def notify(
             _send_email(notify_cfg.get("email", {}) or {}, title, body, to=str(where), message=message, run_sendmail=run_sendmail)
         else:
             return NotifyResult(False, name, f"unknown channel {name!r}")
-    except Exception as exc:  # noqa: BLE001 -- a notification must never fail the job (§8.4)
+    except Exception as exc:  # noqa: BLE001 -- a notification must never fail the job
         return NotifyResult(False, name, f"{type(exc).__name__}: {exc}")
     return NotifyResult(True, name)
