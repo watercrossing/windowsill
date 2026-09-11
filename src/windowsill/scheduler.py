@@ -1,7 +1,7 @@
-"""windowsill dispatch scheduler: the ``windowsill tick`` step (design/03-execution-model.md §3.1)
-and the §7 job-lifecycle state machine.
+"""windowsill dispatch scheduler: the ``windowsill tick`` step and the job-lifecycle
+state machine (:data:`windowsill.db.TERMINAL_STATES`).
 
-``tick`` is chain-driven and cron-floored (§3.1). One tick:
+``tick`` is chain-driven and cron-floored. One tick:
 
 1. acquires the dispatch lock (:func:`windowsill.db.dispatch_lock`, a
    ``BEGIN IMMEDIATE``);
@@ -10,12 +10,13 @@ and the §7 job-lifecycle state machine.
    reboot or a run wrapper that was itself killed;
 3. **evaluates** the queue: expire past-deadline jobs, then promote due
    ``queued`` jobs whose ``--hold-jid`` / ``--resume-from`` dependencies
-   are satisfied to ``ready`` (§7);
+   are satisfied to ``ready``;
 4. **dispatches** up to ``max_parallel`` ready jobs, lowest ``--priority``
-   first, subject to each job's ``--window`` policy (§5.1, decided from at
-   most one ``/usage`` probe per tick), the anchor rule (§5.2), the 30d
-   ceiling (§5.3) and -- for a ``--warm`` job only -- the warming gate
-   (§5.5, :func:`warm_gate`); and
+   first, subject to each job's ``--window`` policy
+   (:func:`windowsill.window.policy_permits`, decided from at most one
+   ``/usage`` probe per tick), the anchor rule (examples/06-anchor.md), the
+   30d ceiling (:func:`windowsill.window.at_or_over_ceiling`) and -- for a
+   ``--warm`` job only -- the warming gate (:func:`warm_gate`); and
 5. commits and exits, **never blocking on a running job**.
 
 ``tick`` must never call :func:`windowsill.runner.run_job` inline -- ``run_job``
@@ -29,8 +30,8 @@ Dispatch is **claim-then-spawn**:
   ``running``. A racing tick that blocked on ``BEGIN IMMEDIATE`` then
   acquires the lock, sees the committed claim, counts it toward
   ``max_parallel``, and no-ops. This is how concurrent ticks serialise
-  (§3.1) without a fast-failing job fork-bombing through recursive
-  in-process ticks. ``run_job`` re-asserting ``running`` is idempotent.
+  without a fast-failing job fork-bombing through recursive in-process
+  ticks. ``run_job`` re-asserting ``running`` is idempotent.
 * The detached run is spawned **after** the lock commits, so the run's own
   DB writes never contend with the tick's transaction.
 
@@ -38,8 +39,8 @@ Chain seam (the next module, ``cli.py``, owns this): ``spawn_run``'s
 production default Popens ``windowsill run <id>`` (:data:`RUN_ARGV`) detached in
 its own session. That ``windowsill run`` subcommand must call
 ``runner.run_job(..., on_complete=<the ``windowsill tick`` argv>)``
-(:data:`TICK_ARGV`) so a finished run chain-dispatches the next tick
-(§3.1). It is kept fully behind the ``spawn_run`` injectable so the test
+(:data:`TICK_ARGV`) so a finished run chain-dispatches the next tick.
+It is kept fully behind the ``spawn_run`` injectable so the test
 suite spawns no process.
 
 Everything a test must fake -- ``now``, ``spawn_run``, ``alive_check``,
@@ -70,7 +71,7 @@ from windowsill import db, runner, transcript, usage, window
 RUN_ARGV: tuple[str, ...] = ("windowsill", "run")
 
 #: argv of the next-tick chain command. ``windowsill run <id>`` must pass this to
-#: ``run_job(on_complete=...)`` so a finished run kicks the next tick (§3.1).
+#: ``run_job(on_complete=...)`` so a finished run kicks the next tick.
 TICK_ARGV: tuple[str, ...] = ("windowsill", "tick")
 
 
@@ -106,7 +107,7 @@ def _default_spawn_run(
 ) -> None:
     """Production ``spawn_run``: Popen ``windowsill run <id>`` detached, own session.
 
-    Popen-and-exit only (§3.1): the tick never awaits it, so a fast-failing
+    Popen-and-exit only: the tick never awaits it, so a fast-failing
     run cannot fork-bomb. Kept behind the ``spawn_run`` injectable so tests
     never actually spawn it.
     """
@@ -140,7 +141,7 @@ def _setting(config: Mapping[str, Any] | None, table: str, key: str) -> Any:
 
 
 def _max_parallel(config: Mapping[str, Any] | None) -> int:
-    """``[queue].max_parallel`` (§8.3), defaulting to 1 (§3.1).
+    """``[queue].max_parallel`` (:data:`windowsill.config.DEFAULTS`), defaulting to 1.
 
     Concurrent runs drain the shared window faster and fight over the
     working tree, so more than one is opt-in.
@@ -160,15 +161,15 @@ def _parse_dt(value: str) -> datetime:
 
 
 # ---------------------------------------------------------------------------
-# dependencies (§2.3 --hold-jid / --resume-from, §7 "deps met")
+# dependencies (``--hold-jid`` / ``--resume-from``; README "Scheduler directives")
 # ---------------------------------------------------------------------------
 
 
 def dependency_status(database: sqlite_utils.Database, job: Mapping[str, Any]) -> tuple[str, str]:
     """Evaluate one job's ``--hold-jid`` / ``--resume-from`` dependencies.
 
-    Returns ``("ready", "")`` when everything it waits on has reached ``done``
-    (§2.3), ``("wait", why)`` while one is still in flight, and
+    Returns ``("ready", "")`` when everything it waits on has reached ``done``,
+    ``("wait", why)`` while one is still in flight, and
     ``("dead", why)`` when one reached a terminal state that is *not* ``done``
     -- a dependent whose dependency failed can never run, so leaving it queued
     forever would be a job that silently never happens.
@@ -195,7 +196,7 @@ def dependency_status(database: sqlite_utils.Database, job: Mapping[str, Any]) -
 
 
 def resolve_resume(database: sqlite_utils.Database, job: Mapping[str, Any]) -> str | None:
-    """The conversation id this job should be dispatched with, if any (§2.3).
+    """The conversation id this job should be dispatched with, if any.
 
     An explicit ``--resume`` wins outright. ``--resume-from`` is resolved
     *here*, at dispatch, because the conversation it names does not exist
@@ -230,16 +231,17 @@ class TickResult:
     promoted: list[int] = field(default_factory=list)
     dispatched: list[int] = field(default_factory=list)
     #: Jobs this tick took out of the queue for good: an anchor that found a
-    #: window already open (§5.2), or a job whose dependency can never finish.
+    #: window already open, or a job whose dependency can never finish.
     skipped: list[int] = field(default_factory=list)
-    #: Ready jobs a ``--window`` policy held back (§5.1). Not an error and not
+    #: Ready jobs a ``--window`` policy held back
+    #: (:func:`windowsill.window.policy_permits`). Not an error and not
     #: terminal -- a later tick asks again.
     deferred: list[int] = field(default_factory=list)
-    #: Whether this tick spent a ``/usage`` probe (§4.2: only when a dispatch
+    #: Whether this tick spent a ``/usage`` probe (only when a dispatch
     #: decision actually depended on window state).
     probed: bool = False
     #: Things worth saying out loud but never worth blocking on -- currently
-    #: the §5.3 ceiling warning on a real job.
+    #: the :func:`windowsill.window.at_or_over_ceiling` warning on a real job.
     warnings: list[str] = field(default_factory=list)
 
 
@@ -250,14 +252,15 @@ def _skip(
     now_str: str,
     reason: str,
 ) -> None:
-    """Take a job out of the queue as ``skipped`` (§7), recording why."""
+    """Take a job out of the queue as ``skipped``
+    (:data:`windowsill.db.TERMINAL_STATES`), recording why."""
     db.update_job(database, job["id"], state="skipped", finished_at=now_str)
     db.log_event(database, ts=now_str, job_id=job["id"], kind="skipped", detail=reason)
     result.skipped.append(job["id"])
 
 
 # ---------------------------------------------------------------------------
-# window warming (§5.5)
+# window warming (README "``--warm``")
 # ---------------------------------------------------------------------------
 #
 # A subscription window is five hours long and starts at your *first*
@@ -275,9 +278,9 @@ def _skip(
 #
 # 1. **The warmer is an ordinary anchor job.** Nothing here dispatches
 #    anything. Warming inserts a `jobs` row with `is_anchor=1` and leaves
-#    it to the §5.2 anchor path in `tick` to run -- which already probes,
+#    it to the anchor path in `tick` to run -- which already probes,
 #    already no-ops if a window turned out to be open after all, already
-#    refuses to fire over the 30d ceiling, and already writes the §5.3
+#    refuses to fire over the 30d ceiling, and already writes the
 #    ledger row. A second dispatch path here would be a second copy of all
 #    four of those rules, and the copy is the one that would rot. The cost
 #    of that choice is that the warmer starts on the *next* tick rather
@@ -327,8 +330,9 @@ def warmer_name(parent_name: str) -> str:
 
     Derived rather than fixed so `windowsill stat` answers "what is this
     ``warm-nightly-audit`` row" without a lookup, and so two warm jobs
-    queued at once do not both produce a job called ``warmer``, which §6.1
-    name resolution would then refuse to resolve as ambiguous.
+    queued at once do not both produce a job called ``warmer``, which
+    :func:`windowsill.db.resolve_identifier` would then refuse to resolve
+    as ambiguous.
     """
     return f"warm-{parent_name}"
 
@@ -384,7 +388,7 @@ def _warm_defer(
     now_str: str,
     reason: str,
 ) -> None:
-    """Hold a warm job back for this tick, saying why. Never terminal (§5.5)."""
+    """Hold a warm job back for this tick, saying why. Never terminal."""
     _log_warm(database, job["id"], now_str, reason)
     result.deferred.append(job["id"])
 
@@ -403,11 +407,12 @@ def insert_warmer(
     and a warmer that had to be promoted first would lose a tick doing it.
 
     ``[anchor].body`` and ``[anchor].model`` are the prompt and the model,
-    per §5.2 -- the cheapest thing that counts as a request, on a model that
-    touches neither weekly bucket. The model is written into **both** the
-    ``model`` column and the pass-through argv, because those two are not
-    the same thing: the column is display-only (§6, "mirrored from
-    pass-through"), and only the ``--model`` in the argv actually reaches
+    per examples/06-anchor.md -- the cheapest thing that counts as a
+    request, on a model that touches neither weekly bucket. The model is
+    written into **both** the ``model`` column and the pass-through argv,
+    because those two are not the same thing: the column is display-only
+    (:data:`windowsill.db.SCHEMA_SQL`: "mirrored from pass-through, display
+    only"), and only the ``--model`` in the argv actually reaches
     ``claude``. Writing just the column would warm the window on Opus and
     charge the parent's own quota for the privilege.
 
@@ -456,7 +461,7 @@ def _ensure_warmer(
         # The one already in flight has not opened a window yet -- it may not
         # even have been dispatched (it is queued behind this very job in the
         # same candidate list). Spawning another would double the anchors,
-        # and §5.2 wants at most one.
+        # and the anchor rule (examples/06-anchor.md) wants at most one.
         _warm_defer(database, result, job, now_str, f"warmer job {existing_id} is {existing['state']}; waiting for it to open a window")
         return
 
@@ -466,8 +471,9 @@ def _ensure_warmer(
         return
 
     if at_ceiling:
-        # §5.3: a warmer is an anchor, and an anchor is the first thing to
-        # give up at the ceiling. Refusing here rather than letting the
+        # :func:`windowsill.window.at_or_over_ceiling`: a warmer is an
+        # anchor, and an anchor is the first thing to give up at the
+        # ceiling. Refusing here rather than letting the
         # anchor path refuse it also closes a loop: a skipped warmer is
         # re-warmable, so spawning one that is certain to be skipped would
         # submit a fresh job on every tick for as long as the ceiling holds.
@@ -493,7 +499,7 @@ def warm_gate(
     at_ceiling: bool,
     max_sessions: int,
 ) -> bool:
-    """Whether a ``--warm`` job may dispatch now (§5.5). Handles it if not.
+    """Whether a ``--warm`` job may dispatch now. Handles it if not.
 
     Returns ``True`` only for the one case that is worth a dispatch: a
     window is open, ``now`` has reached ``reset_at - lead``, and enough of
@@ -512,8 +518,8 @@ def warm_gate(
     row = db.current_window(database, now_str)
     if row is None or not row.get("reset_at"):
         # A window this tick's own earlier dispatch opened: real, but its
-        # ledger row cannot carry a `reset_at` yet (§5.3 -- nothing knows one
-        # until the run's pre-probe). Guessing the end of it is exactly the
+        # ledger row cannot carry a `reset_at` yet -- nothing knows one
+        # until the run's pre-probe. Guessing the end of it is exactly the
         # mistake this feature turns on not making, so wait a tick and read it.
         _warm_defer(database, result, job, now_str, "window is open but its reset time is not known yet")
         return False
@@ -558,7 +564,7 @@ def tick(
     alive_check: Callable[[int], bool] = runner.is_alive,
     probe: Callable[[], usage.ParsedUsage] = usage.probe,
 ) -> TickResult:
-    """Run one ``windowsill tick`` (§3.1): reap, evaluate the queue, dispatch up to
+    """Run one ``windowsill tick``: reap, evaluate the queue, dispatch up to
     ``max_parallel`` -- all under the dispatch lock -- then spawn the claimed
     runs detached, never blocking on a running job.
 
@@ -566,12 +572,13 @@ def tick(
     comparisons are lexicographic ISO string comparisons, as elsewhere in
     the codebase). ``spawn_run(job_id)`` launches the detached run for a
     claimed job; ``alive_check`` is the pid-liveness predicate passed to
-    :func:`windowsill.runner.reap`; ``probe`` is the ``/usage`` oracle (§4), called
-    at most once per tick and only when a candidate's ``--window`` policy or
-    ``--anchor`` status makes window state part of the decision (§4.2).
+    :func:`windowsill.runner.reap`; ``probe`` is the ``/usage`` oracle
+    (:mod:`windowsill.usage`), called at most once per tick and only when a
+    candidate's ``--window`` policy or ``--anchor`` status makes window
+    state part of the decision (design/decisions/probes-are-free.md).
     ``config`` supplies ``[queue].max_parallel``, ``[queue].max_sessions_per_month``,
-    ``[window].peak_band``, and -- only ever consulted for a ``--warm`` job
-    (§5.5) -- ``[warm].lead``, ``[warm].min_pct_free`` and the ``[anchor]``
+    ``[window].peak_band``, and -- only ever consulted for a ``--warm`` job --
+    ``[warm].lead``, ``[warm].min_pct_free`` and the ``[anchor]``
     model/body its warmer is built from.
     """
     now_str = _resolve_now(now)
@@ -597,8 +604,9 @@ def tick(
             if status.alive:
                 continue
             # "killed"/"timeout"/"failed" run outcomes are all the terminal job
-            # state "failed" (§7); "done" is "done"; "incomplete" (background
-            # work still live) is "blocked". Read straight off the runner's
+            # state "failed" (:data:`windowsill.db.TERMINAL_STATES`); "done" is
+            # "done"; "incomplete" (background work still live) is "blocked"
+            # (design/decisions/blocked-not-failed.md). Read straight off the runner's
             # table rather than restated here -- a second copy of this mapping
             # is a second thing to forget to update.
             job_state = runner.JOB_STATE_FOR_OUTCOME.get(status.outcome or "", "failed")
@@ -625,7 +633,8 @@ def tick(
             result.reaped.append(job["id"])
 
         # 2. Expire: a queued/ready job whose --before deadline has passed can
-        #    never run in time -> expired (§7; do not silently run stale work).
+        #    never run in time -> expired (:data:`windowsill.db.TERMINAL_STATES`;
+        #    do not silently run stale work).
         for state_name in ("queued", "ready"):
             for job in db.list_jobs(database, state=state_name):
                 before_time = job["before_time"]
@@ -640,14 +649,15 @@ def tick(
                     )
                     result.expired.append(job["id"])
 
-        # The global block gate (§3.1): a live `blocked_until` suppresses both
+        # The global block gate: a live `blocked_until` suppresses both
         # promotion and dispatch until it expires (cron/chain catches that).
         blocked_until = db.get_sched(database).get("blocked_until")
         blocked = blocked_until is not None and blocked_until > now_str
 
         if not blocked:
             # 3. Promote: queued -> ready once --at is due (or unset) and every
-            #    --hold-jid / --resume-from dependency is done (§7). Not held
+            #    --hold-jid / --resume-from dependency is done
+            #    (:data:`windowsill.db.TERMINAL_STATES`). Not held
             #    (a distinct, CLI-controlled state), not blocked (above).
             #    An --at that passed while the machine was down is simply due: the job
             #    runs late rather than being dropped. Step 2 has already expired it if
@@ -673,7 +683,7 @@ def tick(
                 result.promoted.append(job["id"])
 
             # 4. Dispatch: claim up to the free slots' worth of ready jobs,
-            #    lowest --priority first and FIFO within it (§2.3). The claim
+            #    lowest --priority first and FIFO within it. The claim
             #    (state=running) IS the ready->running transition and the
             #    concurrency mutex; the detached run is spawned after the lock
             #    commits.
@@ -682,7 +692,7 @@ def tick(
             probed: usage.ParsedUsage | None = None
             # A window this tick's own dispatch just opened. The ledger row we
             # write for it has no reset_at yet (we won't know one until the
-            # run's pre-probe, §4.3), so db.current_window can't see it -- and
+            # run's pre-probe), so db.current_window can't see it -- and
             # a second dispatch in the same tick would count a second window.
             opened_this_tick = False
 
@@ -695,11 +705,14 @@ def tick(
                 is_anchor = bool(job["is_anchor"])
                 warm = bool(job["warm"])
 
-                # §4.2: probe only when the decision depends on window state,
-                # and at most once per tick -- the reading is account-global.
+                # design/decisions/probes-are-free.md: probe only when the
+                # decision depends on window state, and at most once per tick
+                # -- the reading is account-global
+                # (design/decisions/usage-is-account-global.md).
                 # A `--warm` job forces one for the same reason an anchor does,
-                # and one more: its go/no-go includes live `pct_used` (§5.5's
-                # `min_pct_free`), which nothing cached can supply.
+                # and one more: its go/no-go includes live `pct_used`
+                # (:func:`warm_gate`'s `min_pct_free`), which nothing cached
+                # can supply.
                 if probed is None and (window.policy_needs_probe(policy) or is_anchor or warm):
                     probed = probe()
                     result.probed = True
@@ -714,19 +727,19 @@ def tick(
                 at_ceiling = window.at_or_over_ceiling(database, now_dt, max_sessions=max_sessions)
 
                 if is_anchor:
-                    # §5.2: an anchor exists to move a window boundary. A window
+                    # An anchor exists to move a window boundary. A window
                     # that is already open has no boundary left to move, so the
                     # anchor no-ops rather than spending one for nothing.
                     if window_open:
                         _skip(database, result, job, now_str, "window already open")
                         continue
-                    # §5.3: an anchor is discretionary; over the ceiling it is
+                    # An anchor is discretionary; over the ceiling it is
                     # the first thing to give up.
                     if at_ceiling:
                         _skip(database, result, job, now_str, f"30d window ceiling ({max_sessions}) reached")
                         continue
                 elif at_ceiling and not window_open and not warm:
-                    # §5.3: warn loudly on real work, never silently block it.
+                    # Warn loudly on real work, never silently block it.
                     # Not for a warm job with no window open, though: that one
                     # is about to be deferred rather than dispatched, so it
                     # opens nothing and the warning would be false. (Its
@@ -736,7 +749,7 @@ def tick(
                     result.warnings.append(message)
                     db.log_event(database, ts=now_str, job_id=job["id"], kind="warning", detail=message)
 
-                # §5.5: the warming gate. Defaults off -- a job without
+                # The warming gate. Defaults off -- a job without
                 # `--warm` never enters this branch and takes exactly the path
                 # it took before the feature existed.
                 if warm and not warm_gate(
@@ -757,13 +770,13 @@ def tick(
                     result.deferred.append(job["id"])
                     continue
 
-                # §2.3: --resume-from names a conversation that did not exist
+                # --resume-from names a conversation that did not exist
                 # when the job was submitted, so it resolves here.
                 resume_id = resolve_resume(database, job)
                 if resume_id and resume_id != job["resume_id"]:
                     db.update_job(database, job["id"], resume_id=resume_id)
 
-                # §5.3: the ledger. A dispatch made while no window was open is
+                # The ledger. A dispatch made while no window was open is
                 # the dispatch that opened one.
                 if not window_open:
                     db.insert_window(
@@ -787,7 +800,7 @@ def tick(
                 to_spawn.append(job["id"])
                 slots -= 1
 
-    # 5. Spawn the claimed runs detached, OUTSIDE the lock (§3.1: Popen-and-
+    # 5. Spawn the claimed runs detached, OUTSIDE the lock (Popen-and-
     #    exit, never an inline run_job -- that would block the tick).
     for job_id in to_spawn:
         spawn_run(job_id)
