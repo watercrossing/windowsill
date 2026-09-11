@@ -1,10 +1,12 @@
 """windowsill run execution: invocation, detached spawn, reap, timeout.
 
-Implements design/03-execution-model.md §3.2 (the invocation), §3.3 (safety for unattended
-runs), and the parts of §6.2 (the job-directory filesystem layout) that a
-run touches: ``cmd.json``, ``stream.jsonl``, ``result.json``, ``resume.sh``.
-(``job.md`` is the verbatim submission and is written at submit time, not
-here.)
+Builds the invocation and derives its outcome (:func:`build_argv`,
+:func:`parse_result_event`, :func:`resolve_system_prompt`), enforces safety
+for unattended runs (decisions/allowed-tools-is-additive.md,
+decisions/permission-mode-is-the-boundary.md), and writes the parts of the
+job-directory filesystem layout that a run touches: ``cmd.json``,
+``stream.jsonl``, ``result.json``, ``resume.sh``. (``job.md`` is the
+verbatim submission and is written at submit time, not here.)
 
 Every seam a caller might need to fake is a keyword argument with a real
 default:
@@ -29,8 +31,9 @@ default:
   never awaiting it in-process, so a fast-failing job can't fork-bomb.
 
 Runs are spawned in their own process group (``start_new_session=True``,
-i.e. ``setsid``) so §3.3's "SIGTERM the process group, then SIGKILL after
-the grace period" can target the whole tree with :func:`os.killpg`.
+i.e. ``setsid``) so :func:`wait_with_timeout`'s "SIGTERM the process group,
+then SIGKILL after the grace period" can target the whole tree with
+:func:`os.killpg`.
 """
 
 from __future__ import annotations
@@ -51,12 +54,12 @@ from typing import Any, Callable, Mapping, Sequence
 from windowsill import db, mail, notify, transcript, usage, window
 
 # ---------------------------------------------------------------------------
-# job directory layout (§6.2)
+# job directory layout
 # ---------------------------------------------------------------------------
 
 
 def job_dir(root: Path, job_id: int, name: str) -> Path:
-    """``<root>/jobs/<5-digit zero-padded id>-<name>`` (§6.2: "so ls sorts").
+    """``<root>/jobs/<5-digit zero-padded id>-<name>`` (so ls sorts).
 
     Pure path arithmetic -- does not create the directory.
     """
@@ -64,12 +67,13 @@ def job_dir(root: Path, job_id: int, name: str) -> Path:
 
 
 def log_destination(log_path: str | None, *, job_id: int, name: str, cwd: str) -> Path | None:
-    """Resolve a job's ``--log`` (§2.3) into the extra file its rendered
-    transcript is written to, or ``None`` when the job didn't ask for one.
+    """Resolve a job's ``--log`` (a :mod:`windowsill.jobfile` directive) into
+    the extra file its rendered transcript is written to, or ``None`` when
+    the job didn't ask for one.
 
     A value ending in a path separator, or naming a directory that already
     exists, means "in there", under the same ``<5-digit id>-<name>`` naming
-    the job dir uses (§6.2); anything else is taken as the file itself. A
+    the job dir uses; anything else is taken as the file itself. A
     relative path resolves against the *job's* ``cwd``, not windowsill's: the job
     file is written from the project's point of view, while ``windowsill tick``
     runs from wherever cron left it.
@@ -85,7 +89,7 @@ def log_destination(log_path: str | None, *, job_id: int, name: str, cwd: str) -
 
 
 def write_job_md(dir_: Path, text: str) -> Path:
-    """Write ``job.md``: the verbatim submission (§6.2), at submit time."""
+    """Write ``job.md``: the verbatim submission, at submit time."""
     path = dir_ / "job.md"
     path.write_text(text)
     return path
@@ -106,7 +110,7 @@ def write_result_json(dir_: Path, result_event: dict[str, Any]) -> Path:
 
 
 def write_resume_sh(dir_: Path, *, cwd: str, claude_cmd: Sequence[str], conversation_id: str) -> Path:
-    """Write ``resume.sh``: ``cd <cwd> && claude --resume <id>`` (§6.2)."""
+    """Write ``resume.sh``: ``cd <cwd> && claude --resume <id>``."""
     path = dir_ / "resume.sh"
     cmd = " ".join(shlex.quote(part) for part in claude_cmd)
     path.write_text(f"cd {shlex.quote(cwd)} && {cmd} --resume {shlex.quote(conversation_id)}\n")
@@ -115,17 +119,18 @@ def write_resume_sh(dir_: Path, *, cwd: str, claude_cmd: Sequence[str], conversa
 
 
 # ---------------------------------------------------------------------------
-# §3.2 the invocation
+# the invocation
 # ---------------------------------------------------------------------------
 
 
 #: Every ``claude`` flag (confirmed via ``claude --help``, v2.1.218) that
 #: names, restricts, or bypasses tool permissions. A job whose own
-#: pass-through directives (§2.2) name any of these has an opinion of its
-#: own about tool permissions, so §3.3's ``safety.allowed_tools`` default
+#: pass-through directives name any of these has an opinion of its
+#: own about tool permissions, so ``safety.allowed_tools``'s default
 #: must yield to it rather than injecting an allowlist on top -- the job's
 #: own flag always wins; windowsill supplies a default, not a policy
-#: override (§0.4 "pass-through beats validation", extended to defaults).
+#: override (design/tensions.md "pass-through beats validation", extended
+#: to defaults; see also design/decisions/permission-mode-is-the-boundary.md).
 #:
 #: ``--allowed-tools``/``--allowedTools`` and ``--disallowed-tools``/
 #: ``--disallowedTools`` are the CLI's own two spellings for the same
@@ -154,11 +159,12 @@ def names_any_flag(passthrough: Sequence[str], flags: frozenset[str]) -> bool:
 
     Recognises both ``--flag value`` and ``--flag=value`` forms. The shared
     engine behind every "does the job's own pass-through already have an
-    opinion about X" yield rule in this module (§0.4 "pass-through beats
-    validation", extended to defaults) -- :func:`names_tool_permission_flag`
-    (§3.3's ``safety.allowed_tools``) and :func:`names_system_prompt_flag`
-    (§3.2's appended system prompt) are both one-line wrappers over this,
-    not separate implementations of the same read.
+    opinion about X" yield rule in this module (design/tensions.md
+    "pass-through beats validation", extended to defaults) --
+    :func:`names_tool_permission_flag` (``safety.allowed_tools``) and
+    :func:`names_system_prompt_flag` (the appended system prompt) are both
+    one-line wrappers over this, not separate implementations of the same
+    read.
     """
     return any(token.split("=", 1)[0] in flags for token in passthrough)
 
@@ -167,7 +173,7 @@ def names_tool_permission_flag(passthrough: Sequence[str]) -> bool:
     """Whether ``passthrough`` already names a flag in :data:`TOOL_PERMISSION_FLAGS`.
 
     Used by :func:`build_argv` to decide whether to yield, and by callers
-    that need to log the yield (§3.3's "silent-but-visible": no error, but
+    that need to log the yield ("silent-but-visible": no error, but
     the run's event log makes clear windowsill did not inject).
     """
     return names_any_flag(passthrough, TOOL_PERMISSION_FLAGS)
@@ -176,9 +182,9 @@ def names_tool_permission_flag(passthrough: Sequence[str]) -> bool:
 #: Every ``claude`` flag (confirmed via ``claude --help``, v2.1.218, plus a
 #: grep of the installed CLI's bundle for two more it deliberately
 #: ``.hideHelp()``s) that names or replaces the session's system prompt. A
-#: job whose own pass-through directives (§2.2) name any of these has an
+#: job whose own pass-through directives name any of these has an
 #: opinion of its own about the system prompt, so windowsill's default
-#: appended prompt (§3.2) must yield to it entirely, the same shape as
+#: appended prompt must yield to it entirely, the same shape as
 #: :data:`TOOL_PERMISSION_FLAGS` -- the job's own flag always wins; this
 #: also doubles as the feature's free per-job opt-out (``#$
 #: --append-system-prompt ""``), so no new scheduler directive is needed.
@@ -223,7 +229,7 @@ def build_argv(
     system_prompt: str | None = None,
     add_dirs: Sequence[str] = (),
 ) -> list[str]:
-    """The argv for §3.2's invocation, minus ``cd <cwd> &&`` (that's the
+    """The argv for the invocation, minus ``cd <cwd> &&`` (that's the
     subprocess ``cwd=`` kwarg) and minus the body (goes on stdin, never
     argv -- see :func:`spawn`).
 
@@ -231,10 +237,11 @@ def build_argv(
     ``("claude",)``; tests substitute a fake executable/argv that writes a
     canned stream + result and exits.
 
-    ``allowed_tools`` is config's ``safety.allowed_tools`` default (§3.3,
-    design/08-interface.md §8.3), rendered as a single ``--allowed-tools``
-    argv token holding a comma-separated list (confirmed spelling and
-    argument shape: ``claude --help``, v2.1.218 -- "Comma or
+    ``allowed_tools`` is config's ``safety.allowed_tools`` default (see
+    :mod:`windowsill.config`'s ``DEFAULTS`` and
+    design/decisions/allowed-tools-is-additive.md), rendered as a single
+    ``--allowed-tools`` argv token holding a comma-separated list (confirmed
+    spelling and argument shape: ``claude --help``, v2.1.218 -- "Comma or
     space-separated list of tool names to allow"; the CLI also accepts
     ``--allowedTools``, but this file otherwise uses kebab-case flags
     throughout, so ``--allowed-tools`` is used here for consistency).
@@ -243,9 +250,9 @@ def build_argv(
     Injection is also skipped -- silently, from this function's point of
     view -- when ``passthrough`` already names a tool-permission flag of
     its own (:func:`names_tool_permission_flag`); ``run_job`` is
-    responsible for logging that yield (§3.3).
+    responsible for logging that yield.
 
-    ``system_prompt`` is windowsill's default appended system prompt (§3.2),
+    ``system_prompt`` is windowsill's default appended system prompt,
     already fully resolved by :func:`resolve_system_prompt` -- this function
     does no config reading, journal-path substitution, or re-execution
     detection of its own. Injected as ``--append-system-prompt <text>``,
@@ -276,7 +283,7 @@ def build_argv(
 
 
 # ---------------------------------------------------------------------------
-# timeout string -> seconds (§3.3 "--timeout")
+# timeout string -> seconds ("--timeout")
 # ---------------------------------------------------------------------------
 
 _DURATION_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([smhd]?)$")
@@ -334,7 +341,7 @@ def _kill_process_group(pid: int) -> None:
 
 
 # ---------------------------------------------------------------------------
-# detached spawn (§3.3: own process group, output to the job dir)
+# detached spawn (own process group, output to the job dir)
 # ---------------------------------------------------------------------------
 
 
@@ -349,12 +356,12 @@ def spawn(
 ) -> subprocess.Popen:
     """Spawn ``argv`` detached in its own process group.
 
-    The body goes on stdin via a file in ``dir_`` (never argv -- §3.2:
-    bodies exceed ``ARG_MAX`` and contain everything a shell hates). Never
+    The body goes on stdin via a file in ``dir_`` (never argv -- bodies
+    exceed ``ARG_MAX`` and contain everything a shell hates). Never
     ``shell=True``: pass-through directives are user text headed for argv,
     and a shell would turn a quoted directive into a command.
     stdout is redirected straight to ``dir_/stream.jsonl`` so a killed run
-    still leaves a usable partial transcript (§3.2). stderr is discarded
+    still leaves a usable partial transcript. stderr is discarded
     rather than interleaved into the same file, which would corrupt the
     one-json-object-per-line stream format.
 
@@ -379,7 +386,7 @@ def spawn(
 
 
 # ---------------------------------------------------------------------------
-# timeout enforcement (§3.3: SIGTERM the process group, SIGKILL after grace)
+# timeout enforcement (SIGTERM the process group, SIGKILL after grace)
 # ---------------------------------------------------------------------------
 
 
@@ -397,7 +404,7 @@ def wait_with_timeout(
     """Block until ``process`` exits, enforcing ``timeout_seconds``.
 
     On timeout, SIGTERM's the process group and waits up to
-    ``grace_seconds`` more, then SIGKILL's it (§3.3). Returns whether a
+    ``grace_seconds`` more, then SIGKILL's it. Returns whether a
     timeout was enforced. ``process`` only needs ``.pid`` and a
     ``.poll() -> int | None`` method (a real :class:`subprocess.Popen`
     satisfies this; so does a bare test fake).
@@ -431,7 +438,7 @@ def wait_with_timeout(
 
 
 # ---------------------------------------------------------------------------
-# result derivation (§3.2: "derive the result from the last result event")
+# result derivation
 # ---------------------------------------------------------------------------
 
 
@@ -440,8 +447,9 @@ def parse_result_event(stream_path: Path) -> dict[str, Any] | None:
     ``None`` for a missing/empty file, or a stream that ends mid-run (killed
     before a result event was ever emitted).
 
-    Not "the last event", which is what §3.2 says and what this used to do.
-    The result event is not reliably the final line: a run that leaves
+    Not "the last event", which is what the old spec said and what this used
+    to do (design/decisions/result-event-is-not-the-last-line.md). The
+    result event is not reliably the final line: a run that leaves
     background tasks behind gets a teardown tail after it, as the CLI kills
     them and reports each one. Job 2's real capture (2026-08-28) ends
 
@@ -483,12 +491,12 @@ def outcome_from_result(
 ) -> str:
     """Derive a ``runs.outcome`` value from a parsed result event.
 
-    ``timed_out`` (our own §3.3 enforcement fired) always wins. Otherwise:
+    ``timed_out`` (our own timeout enforcement fired) always wins. Otherwise:
     no result event at all means the process died without ever emitting
     one (crashed, OOM-killed, etc.) -- ``"killed"``. A result event's
-    ``is_error`` flag (§3.2) decides ``"done"`` vs. ``"failed"``.
-    ``rate_limited`` is not produced here -- that's a later milestone
-    (§4/§5 rate-limit handling), deliberately out of scope for this module.
+    ``is_error`` flag decides ``"done"`` vs. ``"failed"``.
+    ``rate_limited`` is not produced here -- see :func:`usage.detect_rate_limit`
+    and :func:`_requeue_after_limit`, deliberately out of scope for this module.
 
     ``live_tasks`` is :func:`windowsill.transcript.live_background_tasks`'
     verdict: background work the orchestrator dispatched and did not wait for.
@@ -507,7 +515,7 @@ def outcome_from_result(
 
 
 # ---------------------------------------------------------------------------
-# reap: the lightweight pid-liveness + result check (§3.1 step 2, "windowsill tick")
+# reap: the lightweight pid-liveness + result check (windowsill.scheduler's tick)
 # ---------------------------------------------------------------------------
 
 
@@ -516,7 +524,8 @@ class ReapStatus:
     alive: bool
     outcome: str | None
     result: dict[str, Any] | None
-    #: Background work still in flight when the stream ended (§7 ``blocked``).
+    #: Background work still in flight when the stream ended
+    #: (design/decisions/blocked-not-failed.md's ``blocked``).
     live_tasks: list[dict[str, str]] = field(default_factory=list)
 
 
@@ -537,7 +546,8 @@ def reap(
     ``result.json`` is trusted verbatim if already present; otherwise it's
     derived from ``stream.jsonl``'s last event and written out. The live
     background-task check reads ``stream.jsonl`` either way -- ``result.json``
-    is one event and cannot answer it (§7 ``blocked``).
+    is one event and cannot answer it (design/decisions/blocked-not-failed.md's
+    ``blocked``).
     """
     if alive_check(pid):
         return ReapStatus(alive=True, outcome=None, result=None)
@@ -557,7 +567,7 @@ def reap(
 
 
 # ---------------------------------------------------------------------------
-# run_job: the detached run wrapper (§3.1, §3.2, §3.3, §6.2, end to end)
+# run_job: the detached run wrapper, end to end
 # ---------------------------------------------------------------------------
 
 
@@ -565,12 +575,13 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-# job.state on completion. Run outcomes (§6 runs.outcome) are a different
-# vocabulary from job states (§7): "timeout" and "killed" are run outcomes,
-# never job states, so both map to the terminal job state "failed" -- and a
-# kill -9 mid-run must leave a *failed* job (§11 acceptance #10), not a
-# "killed" one. The "incomplete" run outcome is the one that leaves a job
-# needing a human: job state "blocked" (§7).
+# job.state on completion. Run outcomes (``runs.outcome``, db.SCHEMA_SQL) are
+# a different vocabulary from job states (db.TERMINAL_STATES): "timeout" and
+# "killed" are run outcomes, never job states, so both map to the terminal
+# job state "failed" -- and a kill -9 mid-run must leave a *failed* job, not
+# a "killed" one. The "incomplete" run outcome is the one that leaves a job
+# needing a human: job state "blocked"
+# (design/decisions/blocked-not-failed.md).
 #
 # Public, and imported by windowsill.scheduler for its reboot-safety reap path:
 # the two must agree about what an outcome leaves behind, and sharing the dict
@@ -584,18 +595,19 @@ JOB_STATE_FOR_OUTCOME = {
 }
 
 
-#: §5.4's last-resort reset time when neither the rate-limit signal nor a
-#: ``/usage`` probe supplies one. Deliberately the config'd window length: it
-#: is a guess, and a guess that is too long merely delays, while one that is
-#: too short walks straight back into the limit.
+#: The last-resort reset time when neither the rate-limit signal nor a
+#: ``/usage`` probe supplies one (see :func:`_requeue_after_limit`).
+#: Deliberately the config'd window length: it is a guess, and a guess that
+#: is too long merely delays, while one that is too short walks straight
+#: back into the limit.
 _DEFAULT_WINDOW_LENGTH = "5h"
 
-#: §5.4's replacement body for a rate-limit requeue that resumes.
+#: The replacement body for a rate-limit requeue that resumes.
 RESUME_ON_LIMIT_BODY = "Continue where you left off."
 
 
 # ---------------------------------------------------------------------------
-# §3.2 the default appended system prompt, and the journal it advertises
+# the default appended system prompt, and the journal it advertises
 # ---------------------------------------------------------------------------
 
 #: The filename windowsill writes/advertises the per-job status journal
@@ -607,8 +619,8 @@ JOURNAL_FILENAME = "journal.md"
 
 #: Injected whenever ``[prompt].enabled`` (byte-identical every run, no
 #: per-job substitution). States the operating rules a job's own file would
-#: otherwise have to spell out by hand -- design/02-job-file.md's own
-#: example job file already writes "if you hit a blocker ... write what you
+#: otherwise have to spell out by hand -- README.md's own "The job file"
+#: example already writes "if you hit a blocker ... write what you
 #: tried ... to BLOCKED.md" -- and hoists that boilerplate rather than
 #: competing with it: same filename, same idea.
 SYSTEM_PROMPT_BASE = (
@@ -662,9 +674,10 @@ class SystemPromptPlan:
     ``text`` is the value for ``--append-system-prompt``, or ``None`` when
     nothing should be injected at all (config off, an anchor job, or the
     job's own pass-through already names a system-prompt flag of its own --
-    §3.2's yield rule). ``add_dir`` is the job dir to also pass as
-    ``--add-dir``, or ``None`` whenever ``text`` doesn't mention the journal
-    by path -- kept together with ``text`` so the two can never drift apart
+    see :func:`names_system_prompt_flag`'s yield rule). ``add_dir`` is the
+    job dir to also pass as ``--add-dir``, or ``None`` whenever ``text``
+    doesn't mention the journal by path -- kept together with ``text`` so
+    the two can never drift apart
     (a directory grant for a journal the prompt never told the agent about
     would be silently pointless).
 
@@ -672,7 +685,7 @@ class SystemPromptPlan:
     reader of the morning's event log would want to know about -- the job
     brought its own system-prompt flag -- from the two that are simply
     windowsill having nothing on offer (disabled, or an anchor). Only the
-    first is worth an event: §3.3's "silent-but-visible" shape, the same one
+    first is worth an event: the "silent-but-visible" shape, the same one
     ``allowed_tools_yielded`` already uses. A job that names its own flag
     while ``[prompt].enabled`` is false yielded nothing and reports
     ``False``.
@@ -692,7 +705,7 @@ def resolve_system_prompt(
     prior_runs: Sequence[Mapping[str, Any]],
     resume_id: str | None,
 ) -> SystemPromptPlan:
-    """Resolve §3.2's default appended system prompt for one dispatch.
+    """Resolve the default appended system prompt for one dispatch.
 
     Pure: no I/O, no clock, no probing -- every fact it needs (config,
     whether this is an anchor job, the job's prior ``runs`` rows in
@@ -764,7 +777,8 @@ def resolve_system_prompt(
 def read_journal(job_dir: Path) -> str:
     """The job's ``journal.md``, or ``""`` when there isn't one worth reading.
 
-    Used only as the completion email's fallback summary (§8.4): the primary
+    Used only as the completion email's fallback summary (see
+    :mod:`windowsill.mail`): the primary
     is still the run's closing prose, which is addressed to the reader and
     beats a Goal/Done/Next checklist in the 90% case. This covers the case
     where there *is* no closing prose -- a run killed by ``--timeout``
@@ -789,18 +803,21 @@ class RunOutcome:
     exit_code: int | None
     outcome: str
     result: dict[str, Any] | None
-    #: Δ window % (§4.3), when both probes succeeded.
+    #: Δ window % (design/decisions/window-percent-not-dollars.md), when both
+    #: probes succeeded.
     delta_pct: int | None = None
     #: The job state this run left behind: terminal, ``ready`` when the run was
-    #: requeued for a retry or a rate limit (§5.4), or ``blocked`` when it ended
-    #: with background work still live (§7).
+    #: requeued for a retry or a rate limit (:func:`_requeue_after_limit`), or
+    #: ``blocked`` when it ended with background work still live
+    #: (design/decisions/blocked-not-failed.md).
     job_state: str = ""
-    #: Background work still in flight when the stream ended (§7 ``blocked``).
+    #: Background work still in flight when the stream ended
+    #: (design/decisions/blocked-not-failed.md's ``blocked``).
     live_tasks: list[dict[str, str]] = field(default_factory=list)
 
 
 def _default_probe() -> "usage.ParsedUsage":
-    """The production ``/usage`` oracle (§4.2).
+    """The production ``/usage`` oracle (:func:`usage.probe`).
 
     Deliberately an indirection rather than ``probe=usage.probe`` as a default
     argument: a default is bound once, at import, so a test replacing
@@ -813,9 +830,11 @@ def _default_probe() -> "usage.ParsedUsage":
 def _safe_probe(probe: Callable[[], "usage.ParsedUsage"]) -> "usage.ParsedUsage | None":
     """Probe ``/usage``, or return ``None`` if the probe itself failed.
 
-    The probe is instrumentation (§4.3's Δ%) and a fallback source for §5.4's
-    reset time. A `claude` that won't answer a probe must not take the run
-    down with it, so every failure mode collapses to "no reading".
+    The probe is instrumentation
+    (design/decisions/window-percent-not-dollars.md's Δ%) and a fallback
+    source for :func:`_limit_reset_at`'s reset time. A `claude` that won't
+    answer a probe must not take the run down with it, so every failure
+    mode collapses to "no reading".
     """
     try:
         return probe()
@@ -830,7 +849,7 @@ def _limit_reset_at(
     now_str: str,
     window_length: str,
 ) -> str:
-    """§5.4's reset-time fallback chain, most trustworthy first: a fresh
+    """The reset-time fallback chain, most trustworthy first: a fresh
     ``/usage`` probe, then the error's own timestamp, then ``now`` plus the
     configured window length."""
     if probed is not None and probed.reset_at is not None:
@@ -842,7 +861,7 @@ def _limit_reset_at(
 
 
 def _summary(result_event: dict[str, Any] | None) -> str:
-    """The one-line result a notification carries (§8.4)."""
+    """The one-line result a notification carries (see :mod:`windowsill.notify`)."""
     if not result_event:
         return "no result event"
     text = str(result_event.get("result") or result_event.get("subtype") or "")
@@ -860,7 +879,7 @@ def _requeue_after_limit(
     finished_at: str,
     window_length: str,
 ) -> str:
-    """§5.4: put a rate-limited job back on the queue and block the scheduler.
+    """Put a rate-limited job back on the queue and block the scheduler.
 
     The job returns to ``ready`` with its **retry count untouched** -- it did
     not fail, it ran out of window -- and ``sched.blocked_until`` holds the
@@ -868,11 +887,12 @@ def _requeue_after_limit(
     next job straight into the same wall.
 
     Unless ``--no-resume-on-limit``, the requeued job carries the conversation
-    it got as far as, with §5.4's continuation body. The original submission
-    survives on disk as ``job.md`` (§6.2) either way. Resuming re-pays for the
-    whole conversation, so a job resumed across several windows costs more
-    than the same work split into jobs; this is a safety net for a job that
-    overran, not a plan (README, "Scope a job to finish inside one window").
+    it got as far as, with :data:`RESUME_ON_LIMIT_BODY` as its continuation
+    body. The original submission survives on disk as ``job.md`` either way.
+    Resuming re-pays for the whole conversation, so a job resumed across
+    several windows costs more than the same work split into jobs; this is a
+    safety net for a job that overran, not a plan (README, "Scope a job to
+    finish inside one window").
     """
     blocked_until = _limit_reset_at(signal, probed, now_str=finished_at, window_length=window_length)
     db.update_sched(database, blocked_until=blocked_until, blocked_reason=f"rate limit ({signal.source}: {signal.detail})")
@@ -904,7 +924,7 @@ def _journal_summary(job_dir: Path) -> str:
 
 
 def _attempts(rows: Sequence[Mapping[str, Any]]) -> list["mail.Attempt"]:
-    """The job's ``runs`` rows as the mail's attempt history (§8.4).
+    """The job's ``runs`` rows as the mail's attempt history.
 
     Returns nothing at all for a single row: one attempt is not a history, and
     a mail for the ordinary case must look exactly as it always did.
@@ -940,7 +960,7 @@ def _usage_rows(
     at: str,
     config: Mapping[str, Any] | None,
 ) -> list[tuple[str, str]]:
-    """The §4 window block both notifications carry, so they cannot disagree."""
+    """The window block both notifications carry, so they cannot disagree."""
     return mail.usage_rows(
         reading,
         windows_in_30d=window.windows_in_last_30d(database, datetime.fromisoformat(at.replace("Z", "+00:00"))),
@@ -965,12 +985,14 @@ def _run_facts(
     config: Mapping[str, Any] | None,
     job_dir: Path,
 ) -> "mail.RunFacts":
-    """Assemble what the completion email reports (§8.4).
+    """Assemble what the completion email reports (see :mod:`windowsill.mail`).
 
     Everything here is already in hand or one cheap read away: the ``events``
     the rate-limit check just walked (so the final summary costs no second
-    parse of ``stream.jsonl``), the post-run ``/usage`` reading (§4.3), the
-    ``sched`` block gate (§5.4), and the §5.3 ledger count.
+    parse of ``stream.jsonl``), the post-run ``/usage`` reading
+    (design/decisions/window-percent-not-dollars.md), the ``sched`` block
+    gate (:func:`_requeue_after_limit`), and the window ledger count (see
+    :mod:`windowsill.window`).
 
     ``summary`` is the run's closing prose, falling back to the journal
     (:func:`read_journal`) only when there is none -- see that function for
@@ -980,12 +1002,13 @@ def _run_facts(
 
     ``attempts`` is the one thing here that is not about *this* run: a job that
     was rate-limited twice finished on its third attempt, and a mail describing
-    only the third describes three minutes of a ten-hour night (§8.4).
+    only the third describes three minutes of a ten-hour night.
 
     The ``sched`` hold is passed on only while it is *live*. ``blocked_until``
     is never cleared when it expires -- the scheduler simply stops honouring
-    it (``blocked_until > now``, §3.1) -- so the row outlives the hold by
-    however long it has been since the last rate limit. ``mail`` reads no
+    it (``blocked_until > now``, see :mod:`windowsill.scheduler`) -- so the
+    row outlives the hold by however long it has been since the last rate
+    limit. ``mail`` reads no
     clock by contract, and cannot tell the difference: job 2's mail announced
     "the queue is blocked until 2026-08-21 05:00" on the 28th, quoting a hold
     that had lapsed a week earlier. ``finished_at`` is the comparison, not a
@@ -1021,13 +1044,14 @@ def _compose_email(facts: "mail.RunFacts", channel: str | None) -> "EmailMessage
     ``None`` for every other channel (ntfy sends the one-liner, "none" sends
     nothing), and ``None`` again if composing it raises: a body that would not
     render must not take down a run that already happened, which is the same
-    rule §8.4 sets for the send itself. The plain title/body then goes instead.
+    rule :mod:`windowsill.notify` sets for the send itself. The plain
+    title/body then goes instead.
     """
     if notify.split_channel(channel)[0] != "email":
         return None
     try:
         return mail.build_message(facts)
-    except Exception:  # noqa: BLE001 -- a notification must never fail the job (§8.4)
+    except Exception:  # noqa: BLE001 -- a notification must never fail the job
         return None
 
 
@@ -1040,14 +1064,14 @@ def _notify_job(
     config: Mapping[str, Any] | None,
     notify_fn: Callable[..., "notify.NotifyResult"],
 ) -> None:
-    """Send the job's completion notification and record the attempt (§8.4).
+    """Send the job's completion notification and record the attempt.
 
     Only terminal states send *this* mail -- a requeued job hasn't finished,
     and the most a rate-limited pause earns is :func:`_notify_rate_limit`'s
     one-liner. The result is written to ``events`` whether it succeeded or not:
-    §8.4's contract is that a failed notification is *logged* and never fails
-    the job, and :func:`windowsill.notify.notify` already guarantees the second
-    half.
+    :mod:`windowsill.notify`'s contract is that a failed notification is
+    *logged* and never fails the job, and :func:`windowsill.notify.notify`
+    already guarantees the second half.
 
     A channel that was on but had nowhere to send to is neither a send nor a
     failure, so it gets its own ``notify_skipped`` event: silently dropping the
@@ -1075,7 +1099,7 @@ def _record_notification(
     ts: str,
     what: str = "",
 ) -> None:
-    """Write one notification attempt to ``events`` (§8.4).
+    """Write one notification attempt to ``events``.
 
     Three kinds and no more, so anything reading the audit trail keeps reading
     it: which notification it was goes in ``what``, not in a fourth kind.
@@ -1100,7 +1124,7 @@ def _notify_rate_limit(
     config: Mapping[str, Any] | None,
     notify_fn: Callable[..., "notify.NotifyResult"],
 ) -> None:
-    """The ``[notify].on_rate_limit`` ping: "still alive, back at 02:00" (§8.4).
+    """The ``[notify].on_rate_limit`` ping: "still alive, back at 02:00".
 
     Off unless asked for, and this function is where "off" has to be genuinely
     silent: a job with ``--retry 3`` that keeps hitting the ceiling would send
@@ -1123,7 +1147,7 @@ def _notify_rate_limit(
         job_id=job["id"],
         name=job["name"],
         blocked_until=blocked_until,
-        # §2.3: the rate limit itself consumed none of these, which is the
+        # The rate limit itself consumed none of these, which is the
         # point the mail makes rather than leaving the reader to subtract.
         retries_left=max(0, (job["retry_max"] or 0) - (job["retry_count"] or 0)),
         usage=_usage_rows(database, reading, at=ts, config=config),
@@ -1155,9 +1179,9 @@ def run_job(
     spawn it detached under ``root``'s job directory, block until it
     exits (this wrapper is the child's real parent, so a genuine
     ``wait()``-style block is correct here -- unlike ``windowsill tick``, which
-    never blocks on a running job per §3.1), enforce its ``--timeout``,
-    persist the outcome to ``runs``/``jobs``/``events``, and finally hand
-    off to ``on_complete`` detached (Popen-and-exit, §3.1: "never
+    never blocks on a running job, see :mod:`windowsill.scheduler`), enforce
+    its ``--timeout``, persist the outcome to ``runs``/``jobs``/``events``,
+    and finally hand off to ``on_complete`` detached (Popen-and-exit: "never
     recursive in-process, or a fast-failing job becomes a fork bomb").
 
     Every non-DB dependency (which command to exec, how to spawn it, the
@@ -1172,14 +1196,14 @@ def run_job(
     dir_ = job_dir(root, job_id, job["name"])
     dir_.mkdir(parents=True, exist_ok=True)
 
-    # §3.3: safety.allowed_tools is a default, not a policy override -- a job
+    # safety.allowed_tools is a default, not a policy override -- a job
     # naming its own tool-permission flag in its pass-through directives wins,
     # and build_argv silently omits the injection in that case. Log the yield
-    # here (§3.3 "silent-but-visible") so the run's own record shows why no
+    # here ("silent-but-visible") so the run's own record shows why no
     # allowlist went in, using the same idiom as every other run event.
     allowed_tools = list((config or {}).get("safety", {}).get("allowed_tools") or [])
 
-    # §3.2: the same default/yield shape for the appended system prompt. The
+    # The same default/yield shape for the appended system prompt. The
     # prior runs are read *before* this dispatch's own run row is inserted
     # below, so `prior_runs` is genuinely "attempts that already happened" --
     # which is what decides whether this is a fresh-context re-execution
@@ -1222,12 +1246,12 @@ def run_job(
             detail="pass-through already names a system-prompt flag; windowsill's prompt and journal not injected",
         )
 
-    # §4.3: probe immediately before and after the run; the delta is what the
-    # job cost in the only unit that binds. The "before" reading doubles as the
-    # first read of a window this job's dispatch just opened, so it completes
-    # that ledger row's reset_at (§5.3). Approximate: another surface can move
-    # the number during the run -- acceptable for a single user who is mostly
-    # asleep.
+    # design/decisions/window-percent-not-dollars.md: probe immediately before
+    # and after the run; the delta is what the job cost in the only unit that
+    # binds. The "before" reading doubles as the first read of a window this
+    # job's dispatch just opened, so it completes that ledger row's reset_at
+    # (windowsill.window). Approximate: another surface can move the number
+    # during the run -- acceptable for a single user who is mostly asleep.
     before = _safe_probe(probe)
     if before is not None:
         window.record_probe(database, before, now_str=started_at, opened_by=job_id)
@@ -1252,30 +1276,30 @@ def run_job(
     if result_event is not None:
         write_result_json(dir_, result_event)
 
-    # Render the human-readable transcript (§6.2) from whatever the run left
+    # Render the human-readable transcript from whatever the run left
     # behind -- even a killed/partial stream is worth reading back -- and copy
-    # it to the job's --log destination if it named one (§2.3).
+    # it to the job's --log destination if it named one.
     transcript.write_transcript(
         dir_,
         prompt=job["body"],
         extra_path=log_destination(job.get("log_path"), job_id=job_id, name=job["name"], cwd=job["cwd"]),
     )
 
-    # §5.4: "limit reached" is a schedulable event, not a failure, so it is
+    # "limit reached" is a schedulable event, not a failure, so it is
     # decided from the stream before the ordinary outcome mapping.
     events = list(transcript.iter_events(dir_ / "stream.jsonl")) if (dir_ / "stream.jsonl").exists() else []
     limit = usage.detect_rate_limit(events)
 
-    # §7 "blocked": the main thread ended while work it dispatched was still in
-    # flight. Nothing in the result envelope says so -- only the `system` task
-    # events do.
+    # "blocked" (design/decisions/blocked-not-failed.md): the main thread
+    # ended while work it dispatched was still in flight. Nothing in the
+    # result envelope says so -- only the `system` task events do.
     live_tasks = transcript.live_background_tasks(events)
 
     outcome = "rate_limited" if limit else outcome_from_result(result_event, timed_out=timed_out, live_tasks=live_tasks)
     finished_at = now()
     conversation_id = result_event.get("session_id") if result_event else None
 
-    # design/09-findings.md, "Settled 2026-07-28, second sitting": a denied
+    # design/decisions/permission-denials-are-counted.md: a denied
     # permission does not fail the run -- the envelope can read subtype
     # "success", is_error False, with refusals only visible in this list. Count
     # them per run so a job that wrote nothing doesn't just read "done".
@@ -1302,7 +1326,7 @@ def run_job(
         # exactly one stream.jsonl and the next attempt overwrites it, so a
         # rate-limited run's last words survive only if they are copied out
         # now -- and those are precisely the ones the multi-run summary mail
-        # goes looking for hours later (§8.4).
+        # goes looking for hours later (_attempts).
         summary=_summary(result_event),
     )
 
@@ -1332,11 +1356,12 @@ def run_job(
             notify_fn=notify_fn,
         )
     elif outcome not in ("done", "incomplete") and job["retry_count"] < job["retry_max"]:
-        # §2.3: retries are for ordinary failure. A rate limit never consumes
+        # Retries are for ordinary failure. A rate limit never consumes
         # one -- it didn't fail, it ran out of window. Nor does "incomplete":
         # re-running the body from the top would start a second copy of work
         # whose first copy may still be live, and the job needs a human
-        # anyway (§7 "blocked"), which is what a retry would paper over.
+        # anyway ("blocked", design/decisions/blocked-not-failed.md), which
+        # is what a retry would paper over.
         job_state = "ready"
         db.update_job(
             database,
@@ -1389,8 +1414,9 @@ def run_job(
             notify_fn=notify_fn,
         )
 
-    # Chain dispatch (§3.1): hand off to the next tick detached, never a
-    # recursive in-process call, regardless of this run's outcome.
+    # Chain dispatch (see windowsill.scheduler): hand off to the next tick
+    # detached, never a recursive in-process call, regardless of this run's
+    # outcome.
     popen(list(on_complete), start_new_session=True)
 
     return RunOutcome(
