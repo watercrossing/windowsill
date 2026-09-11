@@ -1,4 +1,4 @@
-"""Tests for windowsill.cli -- the M1 command set (design/08-interface.md §8.1).
+"""Tests for windowsill.cli -- the command set (README "Commands").
 
 These tests spawn NO real `claude`, touch NO network, block on NO real
 clock, and spawn NO real subprocess: every command is driven through
@@ -237,7 +237,7 @@ def test_sub_hold_directive_submits_held(tmp_path: Path, runner: CliRunner) -> N
 
 
 def test_sub_records_the_warming_directives(tmp_path: Path, runner: CliRunner) -> None:
-    """§5.4: `--warm` and `--warm-lead` are scheduler directives, so they land
+    """`--warm` and `--warm-lead` are scheduler directives, so they land
     in columns the tick reads, never in the argv claude sees."""
     home = tmp_path / "home"
     job_file = tmp_path / "j.md"
@@ -275,7 +275,7 @@ def test_sub_defaults_isolate_and_notify_from_config(tmp_path: Path, runner: Cli
     job = db.get_job(make_db(home), job_id)
 
     assert job["isolate"] == "worktree"  # DEFAULTS["safety"]["default_isolate"]
-    # §8.4: notifications are opt-in -- a job file that says nothing gets none.
+    # design/decisions/notifications-are-opt-in.md: a job file that says nothing gets none.
     assert job["notify"] == "none"  # DEFAULTS["notify"]["default"]
 
 
@@ -328,7 +328,7 @@ def test_sub_rejects_resume_and_resume_from_together(tmp_path: Path, runner: Cli
 
 
 def test_sub_rejects_warm_with_window_fresh(tmp_path: Path, runner: CliRunner) -> None:
-    # §5.5 warming needs an OPEN window to spend the tail of; `--window fresh`
+    # Warming (scheduler.warm_gate) needs an OPEN window to spend the tail of; `--window fresh`
     # needs a CLOSED one. The tick applies warming first, so the pair defers
     # every tick and never reaches a terminal state -- a silently dead job.
     home = tmp_path / "home"
@@ -356,8 +356,8 @@ def test_sub_accepts_warm_with_other_window_policies(tmp_path: Path, runner: Cli
 
 
 def test_sub_writes_job_md_verbatim(tmp_path: Path, runner: CliRunner) -> None:
-    # §6.2: job.md is the verbatim submission, written at submit time -- so it
-    # exists even for a job that never runs.
+    # runner.job_dir: job.md is the verbatim submission, written at submit
+    # time -- so it exists even for a job that never runs.
     home = tmp_path / "home"
     job_file = tmp_path / "j.md"
     job_file.write_text(BASIC_JOB)
@@ -501,7 +501,7 @@ def test_stat_without_all_excludes_terminal_entirely(tmp_path: Path, runner: Cli
 
 
 def test_stat_shows_when_in_system_local_time_without_a_zone(tmp_path: Path, runner: CliRunner, pin_tz) -> None:
-    # §8.1: stored UTC, displayed on the reader's own wall clock, no offset.
+    # stored UTC, displayed on the reader's own wall clock, no offset.
     home = tmp_path / "home"
     conn = make_db(home)
     add_job(conn, name="nightly", state="queued", at_time="2026-07-28T01:00:00+00:00")
@@ -572,7 +572,7 @@ def test_show_reports_directives_argv_and_no_delta(tmp_path: Path, runner: CliRu
 
 
 def test_show_reports_warming_state(tmp_path: Path, runner: CliRunner) -> None:
-    """§5.4's three fields. `warmed_by` is the answer to "my --warm job has
+    """The three warming fields. `warmed_by` is the answer to "my --warm job has
     been ready for an hour, is anything happening" -- a job id to show next."""
     home = tmp_path / "home"
     conn = make_db(home)
@@ -616,8 +616,8 @@ def test_show_computes_delta_from_last_run(tmp_path: Path, runner: CliRunner) ->
 
 
 def test_show_reports_permission_denials_of_last_run(tmp_path: Path, runner: CliRunner) -> None:
-    """§9 "Settled 2026-07-28, second sitting": the count for the latest run,
-    surfaced before a person would trust a "done"."""
+    """design/decisions/permission-denials-are-counted.md: the count for the
+    latest run, surfaced before a person would trust a "done"."""
     home = tmp_path / "home"
     conn = make_db(home)
     job_id = add_job(conn, name="showme", state="done", finished_at=PAST)
@@ -641,7 +641,7 @@ def test_show_permission_denials_is_n_a_with_no_runs(tmp_path: Path, runner: Cli
 
 
 def test_show_notify_names_the_address_it_would_reach(tmp_path: Path, runner: CliRunner) -> None:
-    """§8.4: the channel alone is not evidence anything will arrive."""
+    """windowsill.notify: the channel alone is not evidence anything will arrive."""
     home = tmp_path / "home"
     (home / ".windowsill").mkdir(parents=True)
     (home / ".windowsill" / "config.toml").write_text('[notify.email]\nto = "me@real.example"\n')
@@ -948,8 +948,8 @@ def test_tick_without_quiet_prints_summary(tmp_path: Path, runner: CliRunner, mo
 
 
 def test_tick_prints_ceiling_warnings_even_when_quiet(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
-    """§5.3: warn loudly on real work. Under cron, -q is the normal mode and
-    stdout/stderr is the only channel that reaches a human."""
+    """window.at_or_over_ceiling: warn loudly on real work. Under cron, -q is
+    the normal mode and stdout/stderr is the only channel that reaches a human."""
     home = tmp_path / "home"
     conn = make_db(home)
     for _ in range(60):  # DEFAULTS["queue"]["max_sessions_per_month"]
@@ -1053,7 +1053,7 @@ def test_run_executes_job_to_terminal_via_fake_claude(tmp_path: Path, runner: Cl
     assert captured["on_complete"] == ["windowsill", "--home", str(home), "tick"]
     assert captured["claude_cmd"] == claude_cmd
 
-    # Job reached a terminal state and captured the conversation id (§7).
+    # Job reached a terminal state and captured the conversation id.
     job = db.get_job(conn, job_id)
     assert job["state"] == "done"
     assert job["state"] in db.TERMINAL_STATES
@@ -1115,12 +1115,12 @@ def test_default_home_state_dir_is_created(tmp_path: Path, runner: CliRunner, mo
 
 
 # ---------------------------------------------------------------------------
-# windowsill usage (§8.1, §4.2)
+# windowsill usage (usage.probe; design/decisions/probes-are-free.md)
 # ---------------------------------------------------------------------------
 
 
 def test_usage_reads_the_cache_and_never_probes(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, pin_tz) -> None:
-    # §4.2: "windowsill stat reads cache and never probes; windowsill usage --probe is the
+    # "windowsill stat reads cache and never probes; windowsill usage --probe is the
     # explicit override."
     home = tmp_path / "home"
     conn = make_db(home)
@@ -1158,12 +1158,13 @@ def test_usage_probe_refreshes_the_cache(tmp_path: Path, runner: CliRunner, monk
 
     assert result.exit_code == 0, result.output
     assert "window: open · 42% used" in result.output
-    # ...and it is cached, so the next read needs no probe (§4.2).
+    # ...and it is cached, so the next read needs no probe
+    # (design/decisions/probes-are-free.md).
     assert db.current_window(make_db(home), NOW)["pct_used"] == 42
 
 
 def test_usage_probe_is_rate_limited(tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch) -> None:
-    """§4.2: 1 probe per 10s. Free is not the same as polite."""
+    """design/decisions/probes-are-free.md: 1 probe per 10s. Free is not the same as polite."""
     home = tmp_path / "home"
     conn = make_db(home)
     db.insert_window(conn, opened_at=PAST, reset_at=FUTURE, probed_at=NOW, pct_used=15)
@@ -1187,7 +1188,7 @@ def test_usage_shows_a_live_block(tmp_path: Path, runner: CliRunner, pin_tz) -> 
 
 
 # ---------------------------------------------------------------------------
-# windowsill report (§8.1: the actual product at 08:00)
+# windowsill report (the actual product at 08:00)
 # ---------------------------------------------------------------------------
 
 
@@ -1230,9 +1231,9 @@ def test_report_includes_a_job_with_no_delta(tmp_path: Path, runner: CliRunner) 
 
 
 def test_report_flags_nonzero_permission_denials(tmp_path: Path, runner: CliRunner) -> None:
-    """§9 "Settled 2026-07-28, second sitting": a run that was blocked from
-    doing anything must draw attention even in the terse one-line-per-job
-    digest that is "the actual product at 08:00"."""
+    """design/decisions/permission-denials-are-counted.md: a run that was
+    blocked from doing anything must draw attention even in the terse
+    one-line-per-job digest that is "the actual product at 08:00"."""
     home = tmp_path / "home"
     conn = make_db(home)
     job_id = add_job(conn, name="blocked-writer", state="done", started_at=PAST, finished_at=NOW)
@@ -1245,7 +1246,7 @@ def test_report_flags_nonzero_permission_denials(tmp_path: Path, runner: CliRunn
 
 
 def test_report_stays_silent_on_permission_denials_when_zero(tmp_path: Path, runner: CliRunner) -> None:
-    """Terse (§8.1): a clean run's line doesn't grow a "denied=0" nobody needs."""
+    """Terse: a clean run's line doesn't grow a "denied=0" nobody needs."""
     home = tmp_path / "home"
     conn = make_db(home)
     job_id = add_job(conn, name="clean-run", state="done", started_at=PAST, finished_at=NOW)
@@ -1298,7 +1299,7 @@ def test_argv_builders_omit_home_when_it_is_the_default(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# the short verbs as standalone console scripts (design/08-interface.md §8.1)
+# the short verbs as standalone console scripts
 # ---------------------------------------------------------------------------
 
 
@@ -1380,14 +1381,14 @@ def test_declared_console_scripts_all_resolve(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# windowsill show: §3.2 system prompt parity, elided to keep one screen
+# windowsill show: runner.resolve_system_prompt parity, elided to keep one screen
 # ---------------------------------------------------------------------------
 
 
 def test_show_argv_reflects_the_injected_system_prompt_elided(tmp_path: Path, runner: CliRunner) -> None:
     """ "Resolved argv" is a promise: it must be what would actually dispatch,
     or it is a lie you debug against at 3am. But the prompt is ~950 characters
-    and §8.1's constraint is one screen, so the text is elided to its length --
+    and the constraint is one screen, so the text is elided to its length --
     the flag and the `--add-dir` are what a reader is checking for."""
     home = tmp_path / "home"
     conn = make_db(home)

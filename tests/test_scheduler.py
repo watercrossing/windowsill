@@ -1,5 +1,5 @@
-"""Tests for windowsill.scheduler -- the `windowsill tick` dispatch step (§3.1) and the
-M1 slice of the §7 job-lifecycle state machine.
+"""Tests for windowsill.scheduler -- the `windowsill tick` dispatch step and
+the job-lifecycle state machine.
 
 These tests spawn NO real process and read NO real clock: `tick`'s `now`,
 `spawn_run`, and `alive_check` are all injectable, so every "detached run"
@@ -81,16 +81,17 @@ def add_job(
 class ProbeSpy:
     """A `/usage` oracle that answers from a canned reading and counts calls.
 
-    §4.2 allows a probe only when a dispatch decision depends on window state,
-    so "how many times was this called" is itself the assertion in several
-    tests below. No `claude` is ever invoked.
+    A probe only happens when a dispatch decision depends on window state
+    (design/decisions/probes-are-free.md), so "how many times was this
+    called" is itself the assertion in several tests below. No `claude` is
+    ever invoked.
     """
 
     def __init__(self, *, open_until: str | None, pct_used: int | None = None) -> None:
         self.reset_at = datetime.fromisoformat(open_until) if open_until else None
-        # §5.5 cares how *full* an open window is, not just that it is open,
-        # so the percentage is settable. Left alone it keeps the reading the
-        # rest of the suite was written against.
+        # scheduler.warm_gate cares how *full* an open window is, not just
+        # that it is open, so the percentage is settable. Left alone it
+        # keeps the reading the rest of the suite was written against.
         self.pct_used = (15 if self.reset_at else 0) if pct_used is None else pct_used
         self.calls = 0
 
@@ -100,7 +101,7 @@ class ProbeSpy:
 
 
 def exploding_probe() -> usage.ParsedUsage:
-    """A probe that must never be called (§4.2: don't probe with no question)."""
+    """A probe that must never be called (design/decisions/probes-are-free.md: don't probe with no question)."""
     raise AssertionError("tick probed /usage when no decision depended on window state")
 
 
@@ -261,7 +262,7 @@ def test_tick_defaults_max_parallel_to_one_without_config(tmp_path: Path) -> Non
 
 
 # ---------------------------------------------------------------------------
-# blocked_until gate (§3.1 "a blocked_until expiring")
+# blocked_until gate (design/decisions/blocked-until-is-compared-not-cleared.md)
 # ---------------------------------------------------------------------------
 
 
@@ -291,7 +292,7 @@ def test_tick_dispatches_once_block_has_expired(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# before_time -> expired (§7: "--before passed => expired")
+# before_time -> expired ("--before passed => expired")
 # ---------------------------------------------------------------------------
 
 
@@ -358,7 +359,7 @@ def _job_dir_with_stream(root: Path, job_id: int, name: str, stream: str | None)
 def test_tick_reaps_dead_running_job_with_no_result_to_failed(tmp_path: Path) -> None:
     conn = make_db(tmp_path)
     job_id = add_job(conn, name="crashed", state="running", pid=123)
-    # no stream.jsonl -> reap derives "killed" -> job state "failed" (§7)
+    # no stream.jsonl -> reap derives "killed" -> job state "failed"
     _job_dir_with_stream(tmp_path, job_id, "crashed", None)
     spawn = SpawnSpy()
 
@@ -406,7 +407,7 @@ def test_tick_reaps_dead_running_job_with_result_to_done(tmp_path: Path) -> None
 def test_tick_reaps_a_run_with_live_background_work_to_blocked(tmp_path: Path) -> None:
     """The reap path and run_job must agree about what an outcome leaves
     behind -- both read runner.JOB_STATE_FOR_OUTCOME, so "incomplete" is
-    "blocked" here too (§7)."""
+    "blocked" here too (design/decisions/blocked-not-failed.md)."""
     conn = make_db(tmp_path)
     job_id = add_job(conn, name="unfinished", state="running", pid=321)
     stream = (
@@ -432,7 +433,8 @@ def test_tick_reaps_a_run_with_live_background_work_to_blocked(tmp_path: Path) -
 
 def test_tick_never_dispatches_a_blocked_job(tmp_path: Path) -> None:
     """`blocked` is not terminal, so the guard against re-dispatch has to come
-    from the scheduler selecting by explicit state name (§7)."""
+    from the scheduler selecting by explicit state name
+    (design/decisions/blocked-not-failed.md)."""
     conn = make_db(tmp_path)
     job_id = add_job(conn, name="stuck", state="blocked")
     spawn = SpawnSpy()
@@ -547,7 +549,7 @@ def test_tick_commits_claim_before_spawning_run(tmp_path: Path) -> None:
 def test_two_ticks_serialise_on_the_real_dispatch_lock(tmp_path: Path) -> None:
     """Two ticks, one temp DB, the real BEGIN IMMEDIATE dispatch lock: the
     first claims the single slot; the second sees the winner's claim
-    committed and no-ops (§3.1 concurrent-tick serialisation)."""
+    committed and no-ops (concurrent-tick serialisation)."""
     path = tmp_path / "windowsill.db"
     conn1 = db.connect(path)
     conn2 = db.connect(path)
@@ -617,7 +619,7 @@ def test_default_spawn_run_popens_detached_windowsill_run(tmp_path: Path) -> Non
 
 
 # ---------------------------------------------------------------------------
-# dependencies: --hold-jid and --resume-from gate promotion (§2.3, §7)
+# dependencies: --hold-jid and --resume-from gate promotion
 # ---------------------------------------------------------------------------
 
 
@@ -639,8 +641,9 @@ def test_hold_jid_keeps_a_job_queued_until_its_dependency_is_done(tmp_path: Path
 
 
 def test_hold_jid_resolves_a_dependency_by_name_after_it_finished(tmp_path: Path) -> None:
-    # A name resolves among non-terminal jobs (§6.1) -- but a dependency is
-    # only satisfied once it is terminal, so the lookup has to keep working.
+    # A name resolves among non-terminal jobs (db.resolve_identifier) -- but a
+    # dependency is only satisfied once it is terminal, so the lookup has to
+    # keep working.
     conn = make_db(tmp_path)
     add_job(conn, name="audit", state="done")
     waiter = add_job(conn, name="refactor", hold_jid=["audit"])
@@ -703,7 +706,7 @@ def test_explicit_resume_id_is_not_overwritten(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# --priority orders dispatch (§2.3: lower runs first)
+# --priority orders dispatch (lower runs first)
 # ---------------------------------------------------------------------------
 
 
@@ -730,7 +733,8 @@ def test_equal_priority_dispatches_fifo_by_id(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# --window policies (§5.1) and the probe rule (§4.2)
+# --window policies (window.policy_permits) and the probe rule
+# (design/decisions/probes-are-free.md)
 # ---------------------------------------------------------------------------
 
 
@@ -810,7 +814,7 @@ def test_offpeak_policy_dispatches_outside_the_peak_band(tmp_path: Path) -> None
 
 
 # ---------------------------------------------------------------------------
-# anchors fire conditionally (§5.2)
+# anchors fire conditionally (examples/06-anchor.md)
 # ---------------------------------------------------------------------------
 
 
@@ -839,7 +843,8 @@ def test_anchor_dispatches_when_no_window_is_open(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# the window ledger and the 30d ceiling (§5.3)
+# the window ledger and the 30d ceiling (window.at_or_over_ceiling,
+# design/01-motivation.md)
 # ---------------------------------------------------------------------------
 
 
@@ -908,7 +913,7 @@ def test_real_job_warns_at_the_ceiling_but_still_runs(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# window warming (§5.5)
+# window warming (scheduler.warm_gate; README "--warm"; examples/07-warm.md)
 #
 # The clock in this section: NOW is 12:00Z. TAIL_RESET is 20 minutes later,
 # so with the default `[warm].lead` of 30m a window resetting then is already
@@ -937,7 +942,7 @@ def only_warmer(conn: sqlite_utils.Database, parent_name: str = "nightly") -> di
 
 
 def test_warm_job_with_no_window_spawns_a_warmer_instead_of_dispatching(tmp_path: Path) -> None:
-    """The whole point (§5.5): a warm job that arrives with no window open
+    """The whole point of warming: a warm job that arrives with no window open
     must NOT open one itself -- doing that spends a window and owns exactly
     one. It inserts an anchor to open the window and waits for the tail."""
     conn = make_db(tmp_path)
@@ -951,7 +956,7 @@ def test_warm_job_with_no_window_spawns_a_warmer_instead_of_dispatching(tmp_path
     assert result.deferred == [job_id]
     # Deferred, never terminal: a later tick asks again.
     assert db.get_job(conn, job_id)["state"] == "ready"
-    # ... and nothing was written to the §5.3 ledger, because nothing ran.
+    # ... and nothing was written to the window ledger, because nothing ran.
     assert list(conn["window"].rows) == []
 
 
@@ -962,7 +967,7 @@ def test_the_spawned_warmer_is_an_anchor_carrying_the_anchor_config(tmp_path: Pa
     scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=SpawnSpy(), probe=ProbeSpy(open_until=None))
 
     warmer = only_warmer(conn)
-    assert warmer["is_anchor"] == 1  # §5.2 does the dispatching, not §5.5
+    assert warmer["is_anchor"] == 1  # anchor handling does the dispatching, not warming
     assert warmer["state"] == "ready"
     assert warmer["body"] == "Reply with the single word: ok"
     assert warmer["cwd"] == "/srv/project"
@@ -976,7 +981,7 @@ def test_the_spawned_warmer_is_an_anchor_carrying_the_anchor_config(tmp_path: Pa
 
 
 def test_the_spawned_warmer_is_dispatched_by_the_existing_anchor_path(tmp_path: Path) -> None:
-    """§5.5 inserts a row and stops; the next tick's ordinary §5.2 anchor
+    """Warming inserts a row and stops; the next tick's ordinary anchor
     handling is what runs it and writes the window ledger."""
     conn = make_db(tmp_path)
     job_id = add_job(conn, name="nightly", state="ready", warm=True)
@@ -1079,7 +1084,7 @@ def test_warm_job_dispatches_in_the_tail_with_room_left(tmp_path: Path) -> None:
 
 
 def test_warm_job_in_the_tail_of_a_spent_window_defers_rather_than_fails(tmp_path: Path) -> None:
-    """§5.5: a window with nothing left in it is not an error. Failing or
+    """A window with nothing left in it is not an error. Failing or
     skipping the job here would throw away work over a condition that fixes
     itself in five hours."""
     conn = make_db(tmp_path)
@@ -1178,8 +1183,9 @@ def test_an_unparseable_lead_falls_back_instead_of_breaking_every_tick(tmp_path:
 
 
 def test_warm_job_forces_a_probe_even_on_the_share_policy(tmp_path: Path) -> None:
-    """§4.2 allows a probe only when the decision needs one -- and this
-    decision does: `min_pct_free` is about the window right now."""
+    """A probe only happens when the decision needs one
+    (design/decisions/probes-are-free.md) -- and this decision does:
+    `min_pct_free` is about the window right now."""
     conn = make_db(tmp_path)
     add_job(conn, name="nightly", state="ready", window_policy="share", warm=True)
     probe = ProbeSpy(open_until=TAIL_RESET, pct_used=PLENTY_FREE)
@@ -1206,9 +1212,10 @@ def test_warming_never_bypasses_blocked_until(tmp_path: Path) -> None:
 
 
 def test_no_warmer_is_spawned_at_the_30d_ceiling(tmp_path: Path) -> None:
-    """§5.3: a warmer is an anchor, and an anchor gives way first. Spawning
-    one anyway would also loop -- the anchor path skips it, a skipped warmer
-    is replaceable, and the next tick submits another."""
+    """A warmer is an anchor, and an anchor gives way first at the 30d
+    ceiling (window.at_or_over_ceiling). Spawning one anyway would also
+    loop -- the anchor path skips it, a skipped warmer is replaceable, and
+    the next tick submits another."""
     conn = make_db(tmp_path)
     _fill_window_ledger(conn, 3)
     job_id = add_job(conn, name="nightly", state="ready", warm=True)
@@ -1250,8 +1257,8 @@ def test_a_new_window_says_so_again(tmp_path: Path) -> None:
 
 def test_a_window_opened_this_tick_is_not_guessed_at(tmp_path: Path) -> None:
     """A window an earlier dispatch in this same tick opened is real but has
-    no `reset_at` yet (§5.3). Deriving one from `opened_at + [window].length`
-    is exactly the mistake §5.5 exists to avoid, so the job waits a tick."""
+    no `reset_at` yet. Deriving one from `opened_at + [window].length` is
+    exactly the mistake warming exists to avoid, so the job waits a tick."""
     conn = make_db(tmp_path)
     other = add_job(conn, name="ordinary", state="ready")
     job_id = add_job(conn, name="nightly", state="ready", warm=True)
@@ -1265,14 +1272,14 @@ def test_a_window_opened_this_tick_is_not_guessed_at(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# ... and none of it happens to a job that didn't ask (§5.5 defaults to off)
+# ... and none of it happens to a job that didn't ask (warming defaults to off)
 # ---------------------------------------------------------------------------
 
 
 def test_a_non_warm_job_takes_the_old_path_exactly(tmp_path: Path) -> None:
     """The default-off proof: no probe (`exploding_probe` asserts it), no
     warmer, no warm event, and the dispatch that opens a window still opens
-    it -- byte for byte the tick a job got before §5.5 existed."""
+    it -- byte for byte the tick a job got before warming existed."""
     conn = make_db(tmp_path)
     job_id = add_job(conn, name="nightly", at_time=PAST)
     spawn = SpawnSpy()
