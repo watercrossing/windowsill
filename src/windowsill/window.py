@@ -1,22 +1,25 @@
-"""Window policies and accounting (design/05-windows.md §5).
+"""Window policies and accounting.
 
 Two things live here, both consumed by the scheduler:
 
-- **Dispatch policies (§5.1).** ``--window share`` dispatches any time;
-  ``offpeak`` only outside the configured ``peak_band``; ``fresh`` only when a
-  probe (§4.2) reports **no** live window -- the big overnight job that should
-  own a whole window. :func:`policy_needs_probe` tells the scheduler which
-  policies require a probe before deciding, so it never probes on a tick with
-  no question to ask (§4.2).
-- **Window accounting (§5.3).** The ``window`` table *is* the ledger: every
-  dispatch made while no window was open inserts a row. :func:`windows_in_last_30d`
-  is the trailing-30d count and :func:`at_or_over_ceiling` compares it against
-  ``max_sessions_per_month`` -- the ceiling from §1 that keeps the account off
+- **Dispatch policies** (:func:`policy_permits`). ``--window share``
+  dispatches any time; ``offpeak`` only outside the configured
+  ``peak_band``; ``fresh`` only when a probe (:func:`usage.probe`) reports
+  **no** live window -- the big overnight job that should own a whole
+  window. :func:`policy_needs_probe` tells the scheduler which policies
+  require a probe before deciding, so it never probes on a tick with no
+  question to ask.
+- **Window accounting.** The ``window`` table *is* the ledger: every
+  dispatch made while no window was open inserts a row.
+  :func:`windows_in_last_30d` is the trailing-30d count and
+  :func:`at_or_over_ceiling` compares it against ``max_sessions_per_month``
+  -- the ceiling from design/01-motivation.md that keeps the account off
   Anthropic's "excessive" radar.
 
-``peak_band`` is passed in as plain config data (§8.3): it is Anthropic policy
-that has already changed, so nothing here is hardcoded -- days, times, and zone
-are all read from the mapping.
+``peak_band`` is passed in as plain config data (see
+:data:`windowsill.config.DEFAULTS`): it is Anthropic policy that has
+already changed, so nothing here is hardcoded -- days, times, and zone are
+all read from the mapping.
 
 Clock-injected: every function takes an explicit UTC-aware ``now``; no real
 clock is read.
@@ -34,13 +37,13 @@ from windowsill import db, usage
 
 _WEEKDAYS = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
 
-#: Only ``fresh`` verifies against a probe (§5.1/§4.2); the rest decide from
+#: Only ``fresh`` verifies against a probe (:func:`usage.probe`); the rest decide from
 #: the clock or unconditionally.
 _PROBE_POLICIES = frozenset({"fresh"})
 
 
 # ---------------------------------------------------------------------------
-# peak band (§5.1 offpeak, §1 secondary benefit)
+# peak band (offpeak policy; secondary benefit, see design/01-motivation.md)
 # ---------------------------------------------------------------------------
 
 
@@ -85,7 +88,7 @@ def is_peak(now: datetime, peak_band: Mapping[str, Any]) -> bool:
 
 
 # ---------------------------------------------------------------------------
-# policies (§5.1)
+# policies
 # ---------------------------------------------------------------------------
 
 
@@ -123,7 +126,7 @@ def policy_permits(
 
 
 # ---------------------------------------------------------------------------
-# accounting (§5.3)
+# accounting -- the trailing-30d ceiling from design/01-motivation.md
 # ---------------------------------------------------------------------------
 
 
@@ -134,14 +137,16 @@ def record_probe(
     now_str: str,
     opened_by: int | None = None,
 ) -> int | None:
-    """Record a ``/usage`` probe in the ``window`` table (§4.2: "cache anyway").
+    """Record a ``/usage`` probe in the ``window`` table (probes are cached
+    regardless, see design/decisions/probes-are-free.md).
 
     Only an *open* window produces a row: a closed reading is the absence of a
-    row (§4.1), never a row with a NULL ``reset_at``. Returns the row's id, or
-    ``None`` for a closed reading.
+    row (design/decisions/reset-clause-is-the-discriminator.md), never a row
+    with a NULL ``reset_at``. Returns the row's id, or ``None`` for a closed
+    reading.
 
     Three cases, in order, and the order is the point -- each exists to stop
-    one window being counted twice against §5.3's ceiling:
+    one window being counted twice against :func:`at_or_over_ceiling`'s ceiling:
 
     1. A row already carries this ``reset_at``: same window, seen again. Update
        it.
@@ -180,7 +185,8 @@ def record_probe(
 
 
 def windows_in_last_30d(database: sqlite_utils.Database, now: datetime) -> int:
-    """The trailing-30d count of windows *we* opened -- the §5.3 ledger read.
+    """The trailing-30d count of windows *we* opened -- the ledger read behind
+    :func:`at_or_over_ceiling`.
 
     ``opened_at`` is stored as a UTC ISO-8601 string; the cutoff is formatted
     the same way so the ``>=`` is both a correct chronological and lexical
@@ -194,7 +200,7 @@ def at_or_over_ceiling(database: sqlite_utils.Database, now: datetime, *, max_se
     """Whether the trailing-30d window count has reached ``max_sessions_per_month``.
 
     At or over the ceiling, anchors are refused outright and real jobs warn but
-    still run (§5.3) -- this predicate reports the fact; the policy split is the
+    still run -- this predicate reports the fact; the policy split is the
     caller's.
     """
     return windows_in_last_30d(database, now) >= max_sessions

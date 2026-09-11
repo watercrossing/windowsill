@@ -1,4 +1,4 @@
-"""The completion email's body (design/08-interface.md §8.4).
+"""The completion email's body.
 
 An overnight run's mail has one job: answer "what happened, and what does the
 queue do next" without making the reader open a terminal. The first attempt
@@ -6,17 +6,20 @@ sent the *first line* of the final message plus a bare ``Δ 32%``, which
 answered neither. So this module builds the body out of four things, in the
 order a person reads them:
 
-1. **The run's own final summary** -- the last assistant turn (§8.4 via
-   :func:`windowsill.transcript.final_summary`), which is already written as
+1. **The run's own final summary** -- the last assistant turn
+   (:func:`windowsill.transcript.final_summary`), which is already written as
    Markdown, rendered to HTML.
 2. **The outcome footer** -- the same fields the rendered transcript prints
-   (:func:`windowsill.transcript.result_parts`), plus the Δ window % (§4.3) and
-   the permission-denial count (§9) when there is one.
-3. **The next action windowsill itself will take** -- read off the job's §7
-   state and the ``sched`` block gate (§6), never invented, plus the
-   ``windowsill resume <id>`` escape hatch that is the morning-after path (§8.1).
-4. **Window usage** -- whatever the ``/usage`` oracle last read (§4), which is
-   the only unit that binds (§1).
+   (:func:`windowsill.transcript.result_parts`), plus the Δ window % (see
+   design/decisions/window-percent-not-dollars.md) and the permission-denial
+   count (design/decisions/permission-denials-are-counted.md) when there is one.
+3. **The next action windowsill itself will take** -- read off the job's state
+   and the ``sched`` block gate (:data:`windowsill.db.SCHEMA_SQL`), never
+   invented, plus the ``windowsill resume <id>`` escape hatch that is the
+   morning-after path (see README's "Commands" section).
+4. **Window usage** -- whatever the ``/usage`` oracle last read (see
+   :mod:`windowsill.usage`), which is the only unit that binds (see
+   design/01-motivation.md).
 
 A job that hit the window ceiling gets a fifth: an **attempt history**, one
 line per ``runs`` row with that attempt's own last words under it, and a totals
@@ -37,7 +40,7 @@ Constraints that shape the implementation:
   A mail client will strip or refuse to fetch all three.
 - **A plaintext alternative that is worth reading.** The summary *is* Markdown,
   so the text part is the same content unrendered -- not a degraded stub.
-- **Stdlib only** (§0.6). :mod:`email.message` builds the
+- **Stdlib only.** :mod:`email.message` builds the
   ``multipart/alternative``; the Markdown subset below is rendered by hand
   rather than by adding a dependency for one email body.
 
@@ -60,7 +63,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from windowsill import transcript, usage
 
 # ---------------------------------------------------------------------------
-# inline styles (§8.4: self-contained, because it is email)
+# inline styles (self-contained, because it is email)
 # ---------------------------------------------------------------------------
 
 _FONT = "-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif"
@@ -272,12 +275,14 @@ def markdown_to_html(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# the facts the body reports (§6 runs row + §7 state + §4 usage)
+# the facts the body reports (:mod:`windowsill.db` runs row + job state +
+# :mod:`windowsill.usage` reading)
 # ---------------------------------------------------------------------------
 
-#: How the §7 job state a run left behind reads as "what happens next". Only
+#: How the job state a run left behind reads as "what happens next". Only
 #: states the lifecycle actually has; the two non-terminal ones are refined by
-#: :func:`next_action` from the ``sched`` block gate (§5.4).
+#: :func:`next_action` from the ``sched`` block gate
+#: (:func:`windowsill.runner._requeue_after_limit`).
 _NEXT_ACTION: dict[str, str] = {
     "done": "finished — nothing further.",
     "failed": "failed — will not retry.",
@@ -288,18 +293,21 @@ _NEXT_ACTION: dict[str, str] = {
     "queued": "queued; a tick will promote it when it is due.",
     "held": "held — needs `windowsill release` before it runs again.",
     "running": "still running.",
-    # §7 "blocked": the main thread ended while work it dispatched was still
-    # running, so its closing summary describes work that had not happened.
-    # Nothing moves this job on its own -- :func:`next_action` names the human.
+    # "blocked" (see design/decisions/blocked-not-failed.md): the main thread
+    # ended while work it dispatched was still running, so its closing summary
+    # describes work that had not happened. Nothing moves this job on its own
+    # -- :func:`next_action` names the human.
     "blocked": "blocked — the run ended while work it had started was still going, so it is not finished.",
 }
 
 
 @dataclass(frozen=True)
 class Attempt:
-    """One row of the ``runs`` table (§6), as the mail reports it.
+    """One row of the ``runs`` table (:data:`windowsill.db.SCHEMA_SQL`), as the
+    mail reports it.
 
-    A job that hits the window ceiling is requeued rather than failed (§5.4), so
+    A job that hits the window ceiling is requeued rather than failed
+    (:func:`windowsill.runner._requeue_after_limit`), so
     "the run" a completion mail describes is routinely the *last* of several,
     and the two that came before it are where the night actually went. The job
     dir holds only the last attempt's ``stream.jsonl`` -- the next dispatch
@@ -322,22 +330,25 @@ class RunFacts:
     """Everything the completion email says about one finished run.
 
     Assembled by the caller from the pieces it already has in hand -- the
-    ``jobs``/``runs`` rows (§6), the result envelope, and the post-run
-    ``/usage`` reading (§4.3) -- so this module reads no database and no clock.
+    ``jobs``/``runs`` rows (:data:`windowsill.db.SCHEMA_SQL`), the result
+    envelope, and the post-run ``/usage`` reading (see
+    design/decisions/window-percent-not-dollars.md) -- so this module reads no
+    database and no clock.
     """
 
     job_id: int
     name: str
-    #: The §7 job state the run left behind.
+    #: The job state the run left behind.
     job_state: str
-    #: The §6 ``runs.outcome`` value.
+    #: The ``runs.outcome`` value (:data:`windowsill.db.SCHEMA_SQL`).
     outcome: str
     #: The final assistant message, as Markdown.
     summary: str = ""
     result: Mapping[str, Any] | None = None
     delta_pct: int | None = None
     permission_denials: int | None = None
-    #: ``sched.blocked_until`` when the queue is held (§5.4), and why. Set
+    #: ``sched.blocked_until`` when the queue is held
+    #: (:func:`windowsill.runner._requeue_after_limit`), and why. Set
     #: only while the hold is *live*: an expired one is left in the ``sched``
     #: row forever (the scheduler just stops honouring it), and this module
     #: reads no clock, so the caller does the comparison -- see
@@ -347,10 +358,12 @@ class RunFacts:
     #: Whether ``windowsill resume <id>`` has a conversation to resume.
     has_conversation: bool = False
     #: Background work still in flight when the run's stream ended -- what put
-    #: the job in §7's ``blocked`` state. ``task_id`` / ``description`` /
+    #: the job in the ``blocked`` state (see
+    #: design/decisions/blocked-not-failed.md). ``task_id`` / ``description`` /
     #: ``task_type``, from :func:`windowsill.transcript.live_background_tasks`.
     live_tasks: list[dict[str, str]] = field(default_factory=list)
-    #: The window reading (§4) behind the usage block, as label/value pairs.
+    #: The window reading (:mod:`windowsill.usage`) behind the usage block, as
+    #: label/value pairs.
     usage: list[tuple[str, str]] = field(default_factory=list)
     #: Every attempt at this job, oldest first, when there was more than one.
     #: Left empty for a single-run job so its mail is exactly what it always
@@ -360,15 +373,18 @@ class RunFacts:
 
 def outcome_line(facts: RunFacts) -> str:
     """The run's one-line result: the transcript's own footer fields, plus the
-    two things only the DB knows (§4.3's Δ%, §9's denial count).
+    two things only the DB knows (the Δ% from
+    design/decisions/window-percent-not-dollars.md, the denial count from
+    design/decisions/permission-denials-are-counted.md).
 
     Same fields, same order as ``transcript.md``'s footer -- the email is not a
     second opinion about how the run went.
     """
     parts = list(transcript.result_parts(facts.result)) if facts.result else [facts.outcome]
     # The envelope of an "incomplete" run reads "success" -- that is the whole
-    # problem it names (§7 "blocked"), so the count has to be stated next to it
-    # or the line says the opposite of what happened.
+    # problem "blocked" names (see design/decisions/blocked-not-failed.md), so
+    # the count has to be stated next to it or the line says the opposite of
+    # what happened.
     if facts.live_tasks:
         count = len(facts.live_tasks)
         parts.append(f"{count} background task{'s' if count != 1 else ''} still running")
@@ -380,20 +396,22 @@ def outcome_line(facts: RunFacts) -> str:
 
 
 def next_action(facts: RunFacts) -> list[str]:
-    """What windowsill will do next, in plain sentences (§7 + §5.4).
+    """What windowsill will do next, in plain sentences.
 
-    The states are §7's, read off the job row -- nothing here invents one. The
+    The states are read off the job row -- nothing here invents one. The
     interesting case is a job back at ``ready`` while ``sched.blocked_until``
-    holds the queue: that is §5.4's rate-limit requeue, i.e. the run ran out of
+    holds the queue: that is the rate-limit requeue
+    (:func:`windowsill.runner._requeue_after_limit`), i.e. the run ran out of
     window and will pick up by itself when the next one opens.
 
-    The last line is always the manual path (§8.1's ``windowsill resume``), because
-    the point of the mail is that the reader never has to go looking for it.
+    The last line is always the manual path (``windowsill resume``, see
+    README's "Commands" section), because the point of the mail is that the
+    reader never has to go looking for it.
 
-    ``blocked`` (§7) is the state where that last line stops being a footnote
-    and becomes the instruction: nothing in windowsill will move the job, so
-    the mail names the human's command outright and lists what was still
-    running when the run stopped.
+    ``blocked`` (see design/decisions/blocked-not-failed.md) is the state
+    where that last line stops being a footnote and becomes the instruction:
+    nothing in windowsill will move the job, so the mail names the human's
+    command outright and lists what was still running when the run stopped.
     """
     lines: list[str] = []
     blocked = bool(facts.blocked_until)
@@ -428,17 +446,19 @@ def usage_rows(
     windows_in_30d: int | None = None,
     max_sessions: int | None = None,
 ) -> list[tuple[str, str]]:
-    """The window block: what the ``/usage`` oracle last read (§4).
+    """The window block: what the ``/usage`` oracle last read
+    (:mod:`windowsill.usage`).
 
     The same data as Claude Code's own ``/usage`` -- session %, when the window
-    resets, the weekly buckets it reported -- plus §5.3's trailing-30d window
-    count against the ceiling, which is the number the whole tool exists to
-    keep down (§1).
+    resets, the weekly buckets it reported -- plus the trailing-30d window
+    count against the ceiling (:func:`windowsill.window.windows_in_last_30d`),
+    which is the number the whole tool exists to keep down (see
+    design/01-motivation.md).
 
     A closed window is stated as closed rather than shown as ``0%``: the
-    percentage is display-only and the reset clause is the discriminator
-    (§4.1), so printing a bare 0% would read as "a fresh window" when it means
-    "no window".
+    percentage is display-only and the reset clause is the discriminator (see
+    design/decisions/reset-clause-is-the-discriminator.md), so printing a bare
+    0% would read as "a fresh window" when it means "no window".
     """
     rows: list[tuple[str, str]] = []
     if reading is not None:
@@ -460,7 +480,8 @@ def usage_rows(
 
 
 # ---------------------------------------------------------------------------
-# the attempt history (§5.4: a requeued job runs more than once)
+# the attempt history (:func:`windowsill.runner._requeue_after_limit`: a
+# requeued job runs more than once)
 # ---------------------------------------------------------------------------
 
 #: How much of an attempt's closing line the history shows. ``runs.summary``
@@ -471,7 +492,7 @@ ATTEMPT_SUMMARY_CHARS = 240
 #: The sentence that keeps the totals honest, printed next to them.
 #:
 #: windowsill records no token counts and no dollar cost anywhere; the only
-#: cost unit in the database is window percentage (§4.3's ``pct_before`` /
+#: cost unit in the database is window percentage (``pct_before`` /
 #: ``pct_after``), so that is the only one reported here and nothing is
 #: estimated from it. It is also not additive across attempts: a rate-limited
 #: run ends at 100% and its successor starts at 0% *of a different window*, so
@@ -571,7 +592,7 @@ def totals_line(attempts: Sequence[Attempt]) -> str:
 
 
 def subject(facts: RunFacts) -> str:
-    """The Subject line: job id, name, state, and how it went (§8.4).
+    """The Subject line: job id, name, state, and how it went.
 
     ``windowsill-complete: done`` said neither which job nor whether it did anything;
     a subject is the only part of the mail a phone shows.
@@ -583,8 +604,9 @@ def subject(facts: RunFacts) -> str:
     # reader deciding on a lock screen whether to open it.
     if len(facts.attempts) > 1:
         detail.append(f"{len(facts.attempts)} runs")
-    # A blocked run's envelope subtype is "success" (§7); on a phone that is
-    # the only word the reader sees, so it must not be the last one.
+    # A blocked run's envelope subtype is "success" (see
+    # design/decisions/blocked-not-failed.md); on a phone that is the only
+    # word the reader sees, so it must not be the last one.
     if facts.live_tasks:
         detail.append(f"{len(facts.live_tasks)} still running")
     if facts.permission_denials:
@@ -593,12 +615,12 @@ def subject(facts: RunFacts) -> str:
 
 
 # ---------------------------------------------------------------------------
-# timestamps (§8.1: stored UTC, displayed as bare system local time)
+# timestamps (stored UTC, displayed as bare system local time)
 # ---------------------------------------------------------------------------
 
 
 def _local(value: str | None) -> str:
-    """A stored UTC timestamp as bare local wall-clock time (§8.1).
+    """A stored UTC timestamp as bare local wall-clock time.
 
     The CLI's own copy of this rule is ``cli._local``; mail must not import the
     CLI (the CLI imports the runner, which sends the mail), and the rule is
@@ -655,7 +677,7 @@ def _usage_block_html(rows: Iterable[tuple[str, str]]) -> str:
 
 
 def render_html(facts: RunFacts) -> str:
-    """The HTML part: the summary, then the three appended blocks (§8.4)."""
+    """The HTML part: the summary, then the three appended blocks."""
     summary = markdown_to_html(facts.summary.strip() or NO_SUMMARY)
     sections = [
         summary,
@@ -663,7 +685,8 @@ def render_html(facts: RunFacts) -> str:
         _facts_block_html("Outcome", [outcome_line(facts)]),
     ]
     # The history sits under the outcome because it is the outcome, widened:
-    # the run this mail is about is only the last of several (§5.4).
+    # the run this mail is about is only the last of several
+    # (:func:`windowsill.runner._requeue_after_limit`).
     if len(facts.attempts) > 1:
         sections.append(_attempts_block_html(facts.attempts))
     sections.append(_facts_block_html("Next", next_action(facts)))
@@ -680,7 +703,7 @@ def render_html(facts: RunFacts) -> str:
 
 
 def render_text(facts: RunFacts) -> str:
-    """The plaintext part: the same content, unrendered (§8.4).
+    """The plaintext part: the same content, unrendered.
 
     The summary is Markdown, so a text-only reader loses the styling and
     nothing else -- which is the whole reason the body is built from the
@@ -714,7 +737,8 @@ def build_message(facts: RunFacts) -> EmailMessage:
 
 
 # ---------------------------------------------------------------------------
-# the rate-limit ping (§5.4 + [notify].on_rate_limit)
+# the rate-limit ping (:func:`windowsill.runner._requeue_after_limit` +
+# [notify].on_rate_limit)
 # ---------------------------------------------------------------------------
 
 
@@ -726,17 +750,18 @@ def rate_limit_notice(
     retries_left: int | None = None,
     usage: Sequence[tuple[str, str]] = (),
 ) -> tuple[str, str]:
-    """``(title, body)`` for the "still alive, back at 02:00" ping (§8.4).
+    """``(title, body)`` for the "still alive, back at 02:00" ping.
 
     Deliberately not a report. A rate-limited run is requeued, not finished
-    (§5.4), so the summary mail has not been earned yet and sending one now
+    (:func:`windowsill.runner._requeue_after_limit`), so the summary mail has not been earned yet and sending one now
     would describe a job that is still going. What the reader needs at 21:21 is
     the one thing they cannot see from silence: that the queue knows, and when
     it will pick up again. So: one line, then the same usage block the summary
     mail carries (:func:`usage_rows`), so the two agree.
 
     The retry line says what it says because a rate limit deliberately does
-    *not* consume a retry -- it did not fail, it ran out of window (§2.3, and
+    *not* consume a retry -- it did not fail, it ran out of window (README's
+    "Scheduler directives" table, and
     :func:`windowsill.runner._requeue_after_limit`). Printing a bare "2 of 3
     retries left" invites the reader to assume this pause used one.
     """

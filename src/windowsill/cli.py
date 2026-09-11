@@ -1,4 +1,4 @@
-"""windowsill command line interface (design/08-interface.md §8.1).
+"""windowsill command line interface.
 
 Thin glue over the already-built sibling modules -- this module owns no
 parsing, execution, or scheduling logic of its own:
@@ -20,14 +20,14 @@ them directly. This mirrors the injectable-keyword seams
 invoked through ``CliRunner`` can't pass extra Python kwargs, so a
 module-level attribute is the equivalent seam here.
 
-The M1 and M2 command set (design/08-interface.md §8.1) is implemented:
-``sub``, ``stat``, ``show``, ``log``, ``del``, ``hold``, ``release``,
-``resume``, ``usage``, ``report``, ``run``, ``tick``. ``gc``, ``doctor``,
-and ``sub -e`` are M3 and are intentionally absent.
+The full command set is implemented: ``sub``, ``stat``, ``show``, ``log``,
+``del``, ``hold``, ``release``, ``resume``, ``usage``, ``report``, ``run``,
+``tick``. ``gc``, ``doctor``, and ``sub -e`` are not implemented yet (see
+README "Commands").
 
-Every timestamp this module prints goes through :func:`_local` (§8.1):
-stored UTC, displayed as bare system local time, with ``--with-timezone``
-as the opt-in for the offset-bearing form.
+Every timestamp this module prints goes through :func:`_local`: stored UTC,
+displayed as bare system local time, with ``--with-timezone`` as the
+opt-in for the offset-bearing form.
 
 This module is imported on *every* ``windowsill`` invocation -- and will soon
 be imported on every TAB press too, once Click shell completion ships (it
@@ -83,7 +83,7 @@ def _sleep(seconds: float) -> None:
 
 
 def _default_terminate(pid: int) -> None:
-    """SIGTERM a process group (§8.1 ``windowsill del``: "SIGTERM the process
+    """SIGTERM a process group (``windowsill del``: "SIGTERM the process
     group if running"). Best-effort -- a pid that's already gone is not
     an error."""
     try:
@@ -100,8 +100,8 @@ _claude_cmd: tuple[str, ...] = ("claude",)
 
 
 def _default_exec(argv: list[str], cwd: str) -> None:
-    """``exec`` into ``argv`` after ``chdir``-ing to ``cwd`` (§8.1
-    ``windowsill resume``). Replaces the current process image -- never returns
+    """``exec`` into ``argv`` after ``chdir``-ing to ``cwd`` (``windowsill
+    resume``). Replaces the current process image -- never returns
     on success."""
     os.chdir(cwd)
     os.execvp(argv[0], argv)
@@ -142,8 +142,9 @@ def _resolve_run_job():
     return runner.run_job
 
 
-#: The ``/usage`` oracle handed to :func:`windowsill.scheduler.tick` (§4) and read
-#: directly by ``windowsill usage --probe``. Same ``None``-sentinel seam style
+#: The ``/usage`` oracle handed to :func:`windowsill.scheduler.tick` (see
+#: :mod:`windowsill.usage`) and read directly by ``windowsill usage --probe``.
+#: Same ``None``-sentinel seam style
 #: again: tests replace it so no real ``claude`` is ever probed.
 _probe = None
 
@@ -168,7 +169,7 @@ def home_option(f):
     """Give a command its own ``--home``.
 
     The four short verbs are console scripts in their own right
-    (``ccsub``, ``ccstat``, ``ccdel``, ``ccresume`` -- design/08-interface.md §8.1), so
+    (``ccsub``, ``ccstat``, ``ccdel``, ``ccresume`` -- see README "Commands"), so
     the ``main`` group's callback never runs for them and ``ctx.obj`` is
     ``None``. Carrying the option on the command is what makes
     ``ccsub --home /tmp/scratch job.md`` work at all, and pointing at a
@@ -221,7 +222,7 @@ def _resolve(database: sqlite_utils.Database, identifier: str) -> int:
 
 
 def _default_name(source: str) -> str:
-    """§2.3 ``--name``'s default: the filename stem. Stdin has no
+    """``--name``'s default: the filename stem. Stdin has no
     filename, so it falls back to a fixed label."""
     if source in ("-", "<stdin>"):
         return "stdin"
@@ -231,7 +232,7 @@ def _default_name(source: str) -> str:
 def _expand_log(value: str | None) -> str | None:
     """Expand ``~`` in a ``--log`` value, keeping any trailing separator.
 
-    The trailing ``/`` is load-bearing (§2.3: it means "a directory", even one
+    The trailing ``/`` is load-bearing (it means "a directory", even one
     that does not exist yet) and :meth:`Path.expanduser` normalises it away.
     """
     if not value:
@@ -272,7 +273,7 @@ _WHEN_WIDTH = {False: 16, True: 25}
 
 
 def _local(value: str | None, *, with_timezone: bool = False) -> str:
-    """Render a stored timestamp for a human (§8.1).
+    """Render a stored timestamp for a human.
 
     Everything is stored UTC; everything is displayed in the system's own
     zone, and by default with no offset at all -- on a single-user machine
@@ -297,7 +298,8 @@ def _local(value: str | None, *, with_timezone: bool = False) -> str:
 
 
 def _notify_display(value: str | None, cfg: Mapping[str, object]) -> str:
-    """A job's ``--notify`` plus the destination it would actually reach (§8.4).
+    """A job's ``--notify`` plus the destination it would actually reach
+    (see :mod:`windowsill.notify`).
 
     Notifications are opt-in and have no default destination, so ``email`` on
     its own is not evidence that anything will arrive -- and a surface that
@@ -403,16 +405,17 @@ def sub(ctx: click.Context, file, run_now: bool, home: Path | None) -> None:
         jf = jobfile.parse_jobfile(text)
         d = jf.directives
 
-        # §2.3: mutually exclusive. The parser deliberately doesn't reject this
-        # (pass-through beats validation, §0.4) -- the scheduler side does, and
-        # failing at submit beats failing at 02:00.
+        # Mutually exclusive. The parser deliberately doesn't reject this
+        # (pass-through beats validation, design/tensions.md) -- the scheduler
+        # side does, and failing at submit beats failing at 02:00.
         if d.resume and d.resume_from:
             raise click.ClickException("--resume and --resume-from are mutually exclusive")
 
-        # §5.5 vs §5.1: the two gates want opposite worlds. `warm_gate` only
-        # lets a job through while a window is OPEN (it is waiting to spend that
-        # window's tail); `--window fresh` only lets one through while a window
-        # is CLOSED. The tick applies warming first and the policy second, so
+        # `--warm` and `--window fresh` want opposite worlds: `scheduler.warm_gate`
+        # only lets a job through while a window is OPEN (it is waiting to
+        # spend that window's tail); `--window fresh` (`window.policy_permits`)
+        # only lets one through while a window is CLOSED. The tick applies
+        # warming first and the policy second, so
         # the pair never dispatches -- and because a deferred warm job is never
         # terminal, it would sit `ready` until someone noticed. Refuse it here,
         # where the answer is a message rather than a silent night.
@@ -460,7 +463,7 @@ def sub(ctx: click.Context, file, run_now: bool, home: Path | None) -> None:
             warm_lead=d.warm_lead,
         )
 
-        # job.md -- the verbatim submission (§6.2). Written here rather than
+        # job.md -- the verbatim submission. Written here rather than
         # at dispatch so the job dir holds what was submitted even for a job
         # that is cancelled, expires, or never runs at all.
         dir_ = runner.job_dir(root, job_id, name)
@@ -517,7 +520,8 @@ def stat(ctx: click.Context, show_all: bool, with_timezone: bool, home: Path | N
 # windowsill usage
 # ---------------------------------------------------------------------------
 
-#: §4.2: "Rate-limit to 1 probe per 10s". A probe is free but not polite.
+#: A probe is free (design/decisions/probes-are-free.md) but not polite --
+#: rate-limit to 1 probe per 10s.
 PROBE_MIN_INTERVAL_SECONDS = 10
 
 
@@ -534,7 +538,7 @@ def usage_(ctx: click.Context, force_probe: bool, with_timezone: bool) -> None:
         window_row = db.current_window(database, now_str)
 
         if force_probe:
-            # §4.2: cheap, but not free of manners -- refuse to hammer it.
+            # cheap, but not free of manners -- refuse to hammer it.
             last = (window_row or {}).get("probed_at")
             if last and (_parse_iso(now_str) - _parse_iso(last)).total_seconds() < PROBE_MIN_INTERVAL_SECONDS:
                 raise click.ClickException(f"probed less than {PROBE_MIN_INTERVAL_SECONDS}s ago; showing cache is `windowsill usage`")
@@ -581,7 +585,8 @@ def _since_cutoff(now_str: str, since: str) -> str:
 
 
 def _delta_pct(database: sqlite_utils.Database, job_id: int) -> int | None:
-    """Δ window % of a job's last run (§4.3), when both probes landed."""
+    """Δ window % of a job's last run (design/decisions/window-percent-not-dollars.md),
+    when both probes landed."""
     from windowsill import db  # deferred: see module docstring
 
     runs = db.list_runs(database, job_id=job_id)
@@ -595,9 +600,10 @@ def _delta_pct(database: sqlite_utils.Database, job_id: int) -> int | None:
 
 def _permission_denials(database: sqlite_utils.Database, job_id: int) -> int | None:
     """Permission denials of a job's last run, or ``None`` when there is no
-    run yet / the run predates this column (§9 "Settled 2026-07-28, second
-    sitting"): a run can read ``done`` having written nothing because every
-    write was refused, and nothing else in the output flags that."""
+    run yet / the run predates this column
+    (design/decisions/permission-denials-are-counted.md): a run can read
+    ``done`` having written nothing because every write was refused, and
+    nothing else in the output flags that."""
     from windowsill import db  # deferred: see module docstring
 
     runs = db.list_runs(database, job_id=job_id)
@@ -638,7 +644,7 @@ def report(ctx: click.Context, since: str, with_timezone: bool) -> None:
             denials = _permission_denials(database, job["id"])
             # Terse and silent when zero/unknown (the report's one-screen rule,
             # see :func:`report`) -- only a non-zero count is worth a reader's
-            # attention (§9 "Settled 2026-07-28, second sitting").
+            # attention (design/decisions/permission-denials-are-counted.md).
             denial_text = f" denied={denials}" if denials else ""
             click.echo(
                 f"{job['id']:<5} {job['name']:<24} {job['state']:<10} {_elapsed(job, now_str):<9} "
@@ -671,7 +677,7 @@ def show(ctx: click.Context, identifier: str) -> None:
         job = db.get_job(database, job_id)
         runs = db.list_runs(database, job_id=job_id)
         dir_ = runner.job_dir(root, job_id, job["name"])
-        # §3.3/§3.2: reflect the same allowed_tools *and* system-prompt
+        # runner.build_argv/runner.resolve_system_prompt: reflect the same allowed_tools *and* system-prompt
         # default/yield behaviour run_job actually applies, so "resolved argv"
         # here matches what would dispatch. `runs` is every run so far, which
         # for a job about to be re-dispatched is exactly the `prior_runs` the
@@ -706,7 +712,7 @@ def show(ctx: click.Context, identifier: str) -> None:
             delta = last_run["pct_after"] - last_run["pct_before"]
         denials = last_run.get("permission_denials") if last_run else None
 
-        # Prefer the rendered, human-readable transcript (§6.2); fall back to
+        # Prefer the rendered, human-readable transcript; fall back to
         # the raw stream for a run that hasn't produced one yet.
         transcript_path = dir_ / "transcript.md"
         tail = _tail(transcript_path if transcript_path.exists() else dir_ / "stream.jsonl")
@@ -717,14 +723,14 @@ def show(ctx: click.Context, identifier: str) -> None:
         click.echo(f"cwd: {job['cwd']}")
         click.echo(f"model: {job['model'] or '-'}")
         click.echo(f"conversation_id: {job['conversation_id'] or '-'}")
-        # Not a directive -- the scheduler writes it (§5.5) -- so it sits up
+        # Not a directive -- the scheduler writes it (scheduler.warm_gate) -- so it sits up
         # here with the other run state rather than under `directives:`. It is
         # the answer to "my --warm job has been ready for an hour, is anything
         # actually happening": a job id to `windowsill show` in turn.
         click.echo(f"warmed_by: {job['warmed_by'] or '-'}")
         click.echo(f"delta%: {delta if delta is not None else 'n/a'}")
         click.echo(f"permission denials (last run): {denials if denials is not None else 'n/a'}")
-        # §3.2: whether the job actually kept the journal windowsill asked for.
+        # runner.resolve_system_prompt: whether the job actually kept the journal windowsill asked for.
         # "absent" on a finished job is the signal that the prompt is not
         # landing -- the thing worth knowing before the next overnight run.
         click.echo(f"journal: {'present' if runner.read_journal(dir_) else 'absent'}")
@@ -951,7 +957,7 @@ def tick(ctx: click.Context, quiet: bool) -> None:
             spawn_run=partial(_resolve_spawn_run(), home=home),
             probe=_resolve_probe(),
         )
-        # §5.3's ceiling warning survives -q on purpose: "warn loudly" is the
+        # window.at_or_over_ceiling's warning survives -q on purpose: "warn loudly" is the
         # whole point, and under cron stdout is the only thing that reaches you.
         for warning in result.warnings:
             click.echo(f"warning: {warning}", err=True)

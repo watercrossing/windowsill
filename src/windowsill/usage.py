@@ -1,17 +1,19 @@
-"""The /usage window oracle (design/04-usage-oracle.md §4).
+"""The /usage window oracle.
 
 ``claude -p "/usage" --output-format json`` returns ground truth about the
 account's 5-hour window. The ``--output-format json`` envelope wraps the
-human string in ``result`` but does **not** structure it (§4.1), so the text
-is parsed here. It is treated as hostile: every regex lives in the one
-module-level :data:`USAGE_PATTERNS` constant, because this string will change.
+human string in ``result`` but does **not** structure it
+(design/decisions/usage-text-is-parsed-not-json.md), so the text is parsed
+here. It is treated as hostile: every regex lives in the one module-level
+:data:`USAGE_PATTERNS` constant, because this string will change.
 
-The load-bearing rules, verbatim from §4.1:
+The load-bearing rules:
 
 - **The reset clause is the sole discriminator.** ``Current session: N% used``
   with a ``· resets …`` clause ⇒ the window is open until that time; the same
   line *without* the clause ⇒ closed. The line is always present, so the
-  absence of the line is never the signal.
+  absence of the line is never the signal
+  (design/decisions/reset-clause-is-the-discriminator.md).
 - **The percentage is display-only.** A window opened by one tiny request
   reads ``0% used · resets …`` -- still open. State is never inferred from %.
 - **A missing reset is ``None``, never ``now + 5h``.** Defaulting it would read
@@ -48,7 +50,7 @@ from typing import Any, Callable, Iterable, Sequence
 from zoneinfo import ZoneInfo
 
 # ---------------------------------------------------------------------------
-# patterns -- all of them here, because this string will change (§4.1)
+# patterns -- all of them here, because this string will change
 # ---------------------------------------------------------------------------
 
 USAGE_PATTERNS: dict[str, re.Pattern[str]] = {
@@ -60,7 +62,7 @@ USAGE_PATTERNS: dict[str, re.Pattern[str]] = {
     "week": re.compile(r"Current week \((?P<bucket>[^)]+)\):\s*(?P<pct>\d+)%\s*used(?P<reset>[^\n]*)"),
     # the reset clause itself: "resets Jul 17, 7:09pm (Europe/London)" -- and,
     # on the hour, "resets Jul 28, 7am (Europe/London)" with no ":mm" at all
-    # (observed live 2026-07-28, §9). The minutes are optional for that reason:
+    # (design/decisions/reset-minutes-are-optional.md). The minutes are optional for that reason:
     # requiring them read a live 74%-used window as *closed*.
     "reset": re.compile(
         r"resets\s+(?P<mon>[A-Za-z]{3})\s+(?P<day>\d{1,2}),\s+(?P<hour>\d{1,2})(?::(?P<min>\d{2}))?\s*(?P<ampm>[ap]m)\s*\((?P<tz>[^)]+)\)"
@@ -68,15 +70,16 @@ USAGE_PATTERNS: dict[str, re.Pattern[str]] = {
 }
 
 #: argv appended to ``claude_cmd`` for a probe. ``--output-format json`` gives
-#: the parseable envelope (§3.2); ``/usage`` is the metadata read (§4.2).
+#: the parseable envelope; ``/usage`` is the metadata read.
 USAGE_ARGV_SUFFIX: tuple[str, ...] = ("-p", "/usage", "--output-format", "json")
 
 # ---------------------------------------------------------------------------
-# rate-limit signals (§5.4) -- one constant, because the shape is still open
+# rate-limit signals -- one constant, because the shape is still open
+# (design/decisions/open.md)
 # ---------------------------------------------------------------------------
 
-#: How a run says "limit reached" rather than "failed". §9 lists the shape as
-#: an open question -- exit code, a subtype, or only a human string -- so both
+#: How a run says "limit reached" rather than "failed". design/decisions/open.md
+#: lists the shape as an open question -- exit code, a subtype, or only a human string -- so both
 #: known channels are matched and every pattern lives here, where a future
 #: observation can correct it without touching the detection logic.
 RATE_LIMIT_PATTERNS: dict[str, re.Pattern[str]] = {
@@ -87,7 +90,7 @@ RATE_LIMIT_PATTERNS: dict[str, re.Pattern[str]] = {
 }
 
 #: ``rate_limit_event.rate_limit_info.status`` values that mean the request was
-#: let through. Anything else is a limit (§5.4). ``allowed_warning`` is the
+#: let through. Anything else is a limit. ``allowed_warning`` is the
 #: "you are close" heartbeat, not a refusal.
 RATE_LIMIT_ALLOWED_STATUSES: frozenset[str] = frozenset({"allowed", "allowed_warning"})
 
@@ -98,15 +101,16 @@ _RESET_FIELDS: tuple[str, ...] = ("resetsAt", "resets_at", "reset_at", "retryAt"
 _MONTHS = {name: i for i, name in enumerate(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], start=1)}
 
 # the aggregate weekly bucket; any *other* "Current week (X)" line is the extra
-# (model-specific) bucket, whose name we read rather than assume (§4).
+# (model-specific) bucket, whose name we read rather than assume.
 _AGGREGATE_WEEKLY_BUCKET = "all models"
 
 
 @dataclass
 class ParsedUsage:
     """One parse of ``/usage``. ``reset_at`` (and the ``is_open`` derived from
-    it) is the only field the dispatcher needs; the rest feed the ``window``
-    ledger (§6) and ``windowsill report``. All datetimes are UTC-aware."""
+    it) is the only field the dispatcher needs; the rest feed the
+    :data:`windowsill.db.SCHEMA_SQL` ``window`` ledger and ``windowsill report``.
+    All datetimes are UTC-aware."""
 
     pct_used: int | None
     reset_at: datetime | None
@@ -118,13 +122,14 @@ class ParsedUsage:
 
     @property
     def is_open(self) -> bool:
-        """A window is open iff the session line carried a reset clause (§4.1).
+        """A window is open iff the session line carried a reset clause
+        (design/decisions/reset-clause-is-the-discriminator.md).
         Derived from ``reset_at`` alone -- never from the percentage."""
         return self.reset_at is not None
 
 
 # ---------------------------------------------------------------------------
-# timestamp resolution (§4.1)
+# timestamp resolution
 # ---------------------------------------------------------------------------
 
 
@@ -179,7 +184,7 @@ def _reset_from_tail(tail: str, now: datetime) -> datetime | None:
 def parse_usage(text: str, *, now: datetime) -> ParsedUsage:
     """Parse ``/usage`` output into a :class:`ParsedUsage`.
 
-    ``now`` must be UTC-aware; it drives year inference only (§4.1). No I/O,
+    ``now`` must be UTC-aware; it drives year inference only. No I/O,
     no clock -- the sole external input beyond ``text`` is ``now``.
     """
     session = USAGE_PATTERNS["session"].search(text)
@@ -213,16 +218,17 @@ def parse_usage(text: str, *, now: datetime) -> ParsedUsage:
 
 
 # ---------------------------------------------------------------------------
-# rate-limit detection (§5.4)
+# rate-limit detection
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class RateLimitSignal:
-    """A run that stopped because of a limit, not because it failed (§5.4).
+    """A run that stopped because of a limit, not because it failed
+    (:func:`windowsill.runner._requeue_after_limit`).
 
     ``source`` says which channel tripped -- useful in the events log while
-    §9's open question is still open. ``reset_at`` is whatever the signal
+    design/decisions/open.md's open question is still open. ``reset_at`` is whatever the signal
     itself claimed, UTC-aware, or ``None``: the caller prefers a fresh
     ``/usage`` probe over this and falls back to it, never the other way.
     """
@@ -276,9 +282,9 @@ def _rate_limit_from_result(event: dict[str, Any]) -> RateLimitSignal | None:
 
 
 def detect_rate_limit(events: Iterable[dict[str, Any]]) -> RateLimitSignal | None:
-    """Whether a run's event stream says it hit a limit (§5.4).
+    """Whether a run's event stream says it hit a limit.
 
-    Two channels, both matched because §9 hasn't settled which one a real
+    Two channels, both matched because design/decisions/open.md hasn't settled which one a real
     limit uses: a ``rate_limit_event`` reporting a status that isn't an
     allowed one, and an erroring ``result`` event whose text matches
     :data:`RATE_LIMIT_PATTERNS`. A signal carrying its own reset time wins
@@ -308,7 +314,7 @@ def detect_rate_limit(events: Iterable[dict[str, Any]]) -> RateLimitSignal | Non
 
 
 # ---------------------------------------------------------------------------
-# probe: invoke claude, unwrap the envelope, parse (§4.1/§4.2)
+# probe: invoke claude, unwrap the envelope, parse
 # ---------------------------------------------------------------------------
 
 
@@ -324,7 +330,7 @@ def invoke(*, run: Callable[[Sequence[str]], str] = _default_run, claude_cmd: Se
 
     Exposed separately from :func:`probe` so ``windowsill doctor`` can inspect the
     envelope directly (e.g. assert ``num_turns == 0`` -- that a probe is still
-    free, §4.2)."""
+    free, design/decisions/probes-are-free.md)."""
     stdout = run([*claude_cmd, *USAGE_ARGV_SUFFIX])
     return json.loads(stdout)
 
@@ -337,7 +343,8 @@ def probe(
 ) -> ParsedUsage:
     """Probe ``/usage`` and return the parsed window state.
 
-    Free and account-global (§4.2): reads server-side truth, sees other
+    Free (design/decisions/probes-are-free.md) and account-global
+    (design/decisions/usage-is-account-global.md): reads server-side truth, sees other
     surfaces, and does not open a window. ``run`` is the injectable command
     seam; ``now`` defaults to the real UTC clock but is injectable for tests.
 
