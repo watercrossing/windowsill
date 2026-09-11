@@ -46,9 +46,9 @@ def test_defaults_used_when_no_file_exists(tmp_path: Path) -> None:
         "allow_dirty": False,
     }
 
-    # §8.4: notifications are opt-in, and neither channel ships a destination.
-    # A default recipient is an address that bounces (or worse, someone else's);
-    # a default ntfy topic is a public one.
+    # design/decisions/notifications-are-opt-in.md: neither channel ships a
+    # destination. A default recipient is an address that bounces (or
+    # worse, someone else's); a default ntfy topic is a public one.
     assert cfg["notify"]["default"] == "none"
     assert cfg["notify"]["ntfy"] == {"url": "https://ntfy.sh"}
     assert cfg["notify"]["email"] == {"sendmail": "/usr/sbin/sendmail"}
@@ -185,9 +185,10 @@ def test_list_values_are_replaced_not_merged(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Full file: every nested table from the §8.3 example loads verbatim --
-# notifications included, which in §8.3 are commented out because they are
-# opt-in (§8.4). This is what a user who has actually turned them on has.
+# Full file: every nested table from config.DEFAULTS loads verbatim --
+# notifications included, which are commented out below because they are
+# opt-in (design/decisions/notifications-are-opt-in.md). This is what a
+# user who has actually turned them on has.
 # ---------------------------------------------------------------------------
 
 
@@ -344,15 +345,16 @@ def test_malformed_toml_raises(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# [prompt]: §3.2's appended system prompt and its journal
+# [prompt]: runner.resolve_system_prompt's appended system prompt and its journal
 # ---------------------------------------------------------------------------
 
 
 def test_prompt_defaults_are_on_with_an_empty_override(tmp_path: Path) -> None:
     """Default on, per the `safety.allowed_tools` precedent (a default-on
-    injection), not §8.4's "opt-in, never guessed" -- that rule is about not
-    mailing strangers, a blast-radius concern that does not apply to a system
-    prompt. `text` ships empty, meaning "use the built-in"."""
+    injection), not design/decisions/notifications-are-opt-in.md's "opt-in,
+    never guessed" -- that rule is about not mailing strangers, a
+    blast-radius concern that does not apply to a system prompt. `text`
+    ships empty, meaning "use the built-in"."""
     cfg = load_config(tmp_path / "config.toml")
     assert cfg["prompt"] == {"enabled": True, "journal": True, "text": ""}
 

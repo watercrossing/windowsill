@@ -1,7 +1,7 @@
-"""Tests for windowsill.usage -- the /usage window oracle (design/04-usage-oracle.md §4).
+"""Tests for windowsill.usage -- the /usage window oracle.
 
-Fixture-first and clock-injected (design/00-instructions.md §0.3): the parser
-is pinned to the verbatim §4 fixtures -- **both** the open and closed forms,
+Fixture-first and clock-injected: the parser is pinned to the verbatim
+fixtures -- **both** the open and closed forms,
 because a parser tested only against the open branch never meets the closed
 one, which is the branch that decides "window closed, dispatch a fresh job".
 No `claude` is ever invoked: `probe` takes an injectable `run` seam that
@@ -22,14 +22,15 @@ OPEN_TEXT = (FIXTURES / "usage_open.txt").read_text()
 CLOSED_TEXT = (FIXTURES / "usage_closed.txt").read_text()
 
 # The open fixture was captured mid-afternoon on 2026-07-17; the closed one at
-# ~02:00 the same night (§4). Anchoring `now` there keeps every reset a
+# ~02:00 the same night. Anchoring `now` there keeps every reset a
 # near-future one, which is what the year-inference rule expects.
 NOW_OPEN = datetime(2026, 7, 17, 12, 0, tzinfo=timezone.utc)
 NOW_CLOSED = datetime(2026, 7, 17, 2, 0, tzinfo=timezone.utc)
 
 
 # ---------------------------------------------------------------------------
-# the discriminator: reset clause present ⇒ open; absent ⇒ closed (§4.1)
+# the discriminator: reset clause present ⇒ open; absent ⇒ closed
+# (design/decisions/reset-clause-is-the-discriminator.md)
 # ---------------------------------------------------------------------------
 
 
@@ -47,7 +48,8 @@ def test_closed_fixture_is_closed() -> None:
 
 def test_closed_state_is_the_missing_reset_clause_not_the_percentage() -> None:
     # 0% with a reset clause is an OPEN window opened by one tiny request --
-    # the percentage is display-only and must never decide state (§4.1).
+    # the percentage is display-only and must never decide state
+    # (design/decisions/reset-clause-is-the-discriminator.md).
     text = "Current session: 0% used · resets Jul 17, 7:09pm (Europe/London)\n"
     parsed = usage.parse_usage(text, now=NOW_OPEN)
     assert parsed.is_open is True
@@ -56,7 +58,7 @@ def test_closed_state_is_the_missing_reset_clause_not_the_percentage() -> None:
 
 
 def test_missing_reset_is_none_never_now_plus_5h() -> None:
-    # §4.1: never default a missing reset_at to now+5h -- that reads closed as
+    # never default a missing reset_at to now+5h -- that reads closed as
     # live and starves --window fresh jobs forever.
     parsed = usage.parse_usage(CLOSED_TEXT, now=NOW_CLOSED)
     assert parsed.reset_at is None
@@ -85,7 +87,8 @@ def test_extra_bucket_name_read_not_hardcoded() -> None:
 
 
 def test_extra_bucket_follows_a_renamed_model() -> None:
-    # §4: "read the bucket name from the output; do not hardcode a model."
+    # design/decisions/extra-weekly-bucket-is-optional.md: "read the bucket
+    # name from the output; do not hardcode a model."
     text = "Current session: 0% used\nCurrent week (all models): 3% used\nCurrent week (Sonnet): 2% used\n"
     parsed = usage.parse_usage(text, now=NOW_OPEN)
     assert parsed.extra_bucket == "Sonnet"
@@ -93,7 +96,7 @@ def test_extra_bucket_follows_a_renamed_model() -> None:
 
 
 # ---------------------------------------------------------------------------
-# timestamp: tz → UTC, year inference (§4.1)
+# timestamp: tz → UTC, year inference
 # ---------------------------------------------------------------------------
 
 
@@ -132,7 +135,8 @@ def test_year_inference_new_years_eve_same_day_future_stays_this_year() -> None:
 
 
 # ---------------------------------------------------------------------------
-# probe: envelope unwrap + no real claude (§4.1/§3.2)
+# probe: envelope unwrap (design/decisions/usage-text-is-parsed-not-json.md)
+# + no real claude
 # ---------------------------------------------------------------------------
 
 
@@ -165,7 +169,8 @@ def test_probe_open_window() -> None:
 
 
 # ---------------------------------------------------------------------------
-# rate-limit detection (§5.4) -- shape still open (§9), so both channels
+# rate-limit detection -- shape still open (design/decisions/open.md), so
+# both channels
 # ---------------------------------------------------------------------------
 
 
@@ -245,7 +250,8 @@ def test_malformed_events_are_skipped() -> None:
 
 
 # ---------------------------------------------------------------------------
-# on-the-hour resets: "7am", not "7:00am" (observed live 2026-07-28, §9)
+# on-the-hour resets: "7am", not "7:00am"
+# (design/decisions/reset-minutes-are-optional.md)
 # ---------------------------------------------------------------------------
 
 ON_THE_HOUR_TEXT = (FIXTURES / "usage_open_on_the_hour.txt").read_text()
@@ -254,8 +260,9 @@ NOW_ON_THE_HOUR = datetime(2026, 7, 28, 1, 30, tzinfo=timezone.utc)
 
 def test_on_the_hour_reset_is_still_an_open_window() -> None:
     # The bug this pins: a reset clause with no ":mm" failed to match, so a
-    # 74%-used *live* window read as closed -- exactly the failure §4.1 warns
-    # about, in the direction that dispatches --window fresh into a live one.
+    # 74%-used *live* window read as closed -- exactly the failure
+    # design/decisions/reset-clause-is-the-discriminator.md warns about, in
+    # the direction that dispatches --window fresh into a live one.
     parsed = usage.parse_usage(ON_THE_HOUR_TEXT, now=NOW_ON_THE_HOUR)
 
     assert parsed.is_open is True

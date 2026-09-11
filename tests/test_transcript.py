@@ -1,6 +1,6 @@
 """Tests for windowsill.transcript -- rendering a run's stream.jsonl to Markdown.
 
-Fixture-first (design/00-instructions.md §0.3): the renderer is a parser of
+Fixture-first: the renderer is a parser of
 the ``--output-format stream-json --verbose`` event stream, so it is pinned
 to a fixture (``tests/fixtures/stream/basic.jsonl``) whose event shapes were
 taken from a real captured run -- assistant text/thinking/tool_use blocks, a
@@ -144,7 +144,7 @@ def test_blank_and_malformed_lines_skipped(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# final_summary + result_parts -- shared with the completion email (§8.4)
+# final_summary + result_parts -- shared with the completion email (windowsill.mail)
 # ---------------------------------------------------------------------------
 
 
@@ -175,9 +175,9 @@ def test_final_summary_excludes_thinking() -> None:
 
 
 def test_final_summary_ignores_a_trailing_thinking_only_turn() -> None:
-    """final_summary feeds the completion email body (§8.4); a thinking block
-    must never leak into it, even when it is the stream's literal last
-    assistant turn (the fixture's second turn is thinking-only)."""
+    """final_summary feeds the completion email body (windowsill.mail); a
+    thinking block must never leak into it, even when it is the stream's
+    literal last assistant turn (the fixture's second turn is thinking-only)."""
     events = list(transcript.iter_events(FIXTURES / "thinking_and_prose.jsonl"))
     summary = transcript.final_summary(events)
     assert summary == "I'll start by reading the module, then patch it."
@@ -234,7 +234,8 @@ def test_subagent_turns_are_marked_in_the_transcript() -> None:
 
 
 # ---------------------------------------------------------------------------
-# live_background_tasks -- the §7 "blocked" discriminator
+# live_background_tasks -- the "blocked" discriminator
+# (design/decisions/blocked-not-failed.md)
 # ---------------------------------------------------------------------------
 
 
@@ -322,7 +323,8 @@ def test_write_transcript_missing_stream_returns_none(tmp_path: Path) -> None:
 
 
 def test_write_transcript_extra_path_gets_the_same_rendering(tmp_path: Path) -> None:
-    """§2.3 --log: an addition, never a move -- the job dir keeps its copy."""
+    """README "Scheduler directives" --log: an addition, never a move --
+    the job dir keeps its copy."""
     (tmp_path / "stream.jsonl").write_text(
         json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "done"}]}}) + "\n"
     )

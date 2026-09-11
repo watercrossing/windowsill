@@ -1,4 +1,4 @@
-"""Tests for windowsill.db — the SQLite state layer (design/06-state.md §6).
+"""Tests for windowsill.db — the SQLite state layer.
 
 These tests never touch the real ~/.windowsill: every DB is opened at a path
 under pytest's tmp_path fixture. No network, no clock — timestamps are
@@ -113,14 +113,15 @@ def test_migrate_adds_a_missing_column_to_an_existing_database(tmp_path: Path) -
 
 
 def test_migrate_adds_the_warming_columns_to_an_existing_database(tmp_path: Path) -> None:
-    """§5.4's three columns arrived after databases existed on disk, so the
-    queue that has been running since June must gain them without a rebuild --
-    and every job already in it must read as "not a warm job"."""
+    """The three warming columns in db.SCHEMA_SQL arrived after databases
+    existed on disk, so the queue that has been running since June must
+    gain them without a rebuild -- and every job already in it must read
+    as "not a warm job"."""
     path = tmp_path / "old.db"
     conn = db.connect(path)
     job_id = insert_bare_job(conn, name="pre-existing", state="queued")
     for column in ("warm", "warm_lead", "warmed_by"):
-        conn.conn.execute(f"ALTER TABLE jobs DROP COLUMN {column}")  # pretend it predates §5.4
+        conn.conn.execute(f"ALTER TABLE jobs DROP COLUMN {column}")  # pretend it predates the warming columns
     conn.close()
 
     reopened = db.connect(path)
@@ -154,7 +155,7 @@ def test_runs_table_has_permission_denials_column(tmp_path: Path) -> None:
 def test_migrate_adds_permission_denials_to_an_existing_runs_table(tmp_path: Path) -> None:
     """A DB created before this column existed gets it added in place,
     keeping its run rows -- the same story as the jobs.log_path migration
-    above, now for runs (§9 "Settled 2026-07-28, second sitting")."""
+    above, now for runs (design/decisions/permission-denials-are-counted.md)."""
     path = tmp_path / "old.db"
     conn = db.connect(path)
     job_id = insert_bare_job(conn, name="pre-existing", state="done")
@@ -509,8 +510,9 @@ def test_current_window_returns_latest_open_row(tmp_path: Path) -> None:
 
 
 def test_current_window_null_reset_at_is_closed(tmp_path: Path) -> None:
-    """NULL reset_at means the window was opened but never probed — §4.1
-    treats that as closed, not open."""
+    """NULL reset_at means the window was opened but never probed —
+    design/decisions/reset-clause-is-the-discriminator.md treats that as
+    closed, not open."""
     conn = make_db(tmp_path)
     db.insert_window(conn, opened_at="2026-07-18T00:00:00Z", reset_at=None)
     assert db.current_window(conn, now="2026-07-18T00:30:00Z") is None
@@ -549,7 +551,7 @@ def test_log_and_list_events(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# §6.1 identifier resolution
+# db.resolve_identifier: identifier resolution
 # ---------------------------------------------------------------------------
 
 
@@ -608,7 +610,7 @@ def test_resolve_name_unknown_raises(tmp_path: Path) -> None:
 
 def test_resolve_name_ambiguous_raises(tmp_path: Path) -> None:
     """Two non-terminal jobs sharing a name can't be disambiguated —
-    this is the case §6.1 explicitly calls out as an error."""
+    this is the case db.resolve_identifier explicitly calls out as an error."""
     conn = make_db(tmp_path)
     insert_bare_job(conn, name="nightly-lint", state="queued", submitted_at="2026-07-17T00:00:00Z")
     insert_bare_job(conn, name="nightly-lint", state="running", submitted_at="2026-07-18T00:00:00Z")

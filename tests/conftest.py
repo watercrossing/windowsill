@@ -1,8 +1,9 @@
-"""Suite-wide guards (design/00-instructions.md §0.3: "No network, no ``claude``
-invocation, and no real clock in the test suite").
+"""Suite-wide guards: no network, no ``claude`` invocation, and no real clock
+in the test suite.
 
-``windowsill.runner.run_job`` probes ``/usage`` before and after every run (§4.3), so
-a test that only cares about, say, the timeout path would otherwise shell out
+``windowsill.runner.run_job`` probes ``/usage`` before and after every run
+(design/decisions/window-percent-not-dollars.md), so a test that only cares
+about, say, the timeout path would otherwise shell out
 to a real ``claude`` just by existing. The autouse fixture below makes the
 default oracle a fixed *closed-window* reading, and makes the one function that
 actually spawns ``claude`` fail loudly if anything still reaches it.
@@ -19,7 +20,8 @@ import pytest
 
 from windowsill import usage
 
-#: What an un-injected probe answers: no window open (§4.1's closed state).
+#: What an un-injected probe answers: no window open (the closed state from
+#: design/decisions/reset-clause-is-the-discriminator.md).
 CLOSED_WINDOW = usage.ParsedUsage(pct_used=0, reset_at=None)
 
 

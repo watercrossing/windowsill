@@ -1,12 +1,12 @@
-"""Tests for windowsill.mail -- the HTML completion email body (design/08-interface.md §8.4).
+"""Tests for windowsill.mail -- the HTML completion email body.
 
 Two things this module cannot be allowed to do: emit markup an untrusted
 summary supplied (the run's own prose is Claude's, but the point of escaping
-first is that it doesn't matter whose it is), and raise. §8.4's rule for the
-whole notification path is "a failed notification is logged and never fails
-the job" -- for mail that means every render here takes degenerate input
-(empty summary, no result event, no usage) and returns *something*, not an
-exception.
+first is that it doesn't matter whose it is), and raise. windowsill.notify's
+rule for the whole notification path is "a failed notification is logged
+and never fails the job" -- for mail that means every render here takes
+degenerate input (empty summary, no result event, no usage) and returns
+*something*, not an exception.
 
 ``markdown_to_html`` is tested against hand-written snippets for each construct
 and once against the real ``markdown_summary.jsonl`` fixture, the same one
@@ -195,8 +195,9 @@ def _blocked_facts(**overrides: object) -> mail.RunFacts:
 
 
 def test_next_action_blocked_names_the_human_and_the_command() -> None:
-    """§7: nothing in windowsill moves a blocked job, so the mail says so and
-    gives the command. It must never reach the generic state fallback."""
+    """design/decisions/blocked-not-failed.md: nothing in windowsill moves a
+    blocked job, so the mail says so and gives the command. It must never
+    reach the generic state fallback."""
     lines = mail.next_action(_blocked_facts())
 
     assert lines[0].startswith("blocked — the run ended while work it had started was still going")
@@ -231,8 +232,9 @@ def test_next_action_no_conversation_points_at_windowsill_show() -> None:
 
 
 def test_next_action_rate_limited_requeue_reads_as_automatic() -> None:
-    """§5.4: job back at `ready` with the queue blocked is the rate-limit
-    requeue -- the reader should be told it resolves itself."""
+    """runner._requeue_after_limit: job back at `ready` with the queue
+    blocked is the rate-limit requeue -- the reader should be told it
+    resolves itself."""
     facts = mail.RunFacts(
         job_id=3,
         name="n",
@@ -334,7 +336,8 @@ def test_subject_falls_back_to_outcome_with_no_result_event() -> None:
 
 
 # ---------------------------------------------------------------------------
-# the attempt history (§5.4: a rate-limited job runs more than once)
+# the attempt history (a rate-limited job runs more than once via
+# runner._requeue_after_limit)
 # ---------------------------------------------------------------------------
 
 #: Three attempts of the shape the user actually reported: two runs that hit
@@ -491,8 +494,8 @@ def test_rate_limit_notice_names_the_resume_time_in_the_title() -> None:
 
 
 def test_rate_limit_notice_says_the_pause_cost_no_retry() -> None:
-    """§2.3: a rate limit does not consume a retry, and a bare "2 retries left"
-    would let the reader assume it had."""
+    """README "Scheduler directives": a rate limit does not consume a retry,
+    and a bare "2 retries left" would let the reader assume it had."""
     _, body = mail.rate_limit_notice(job_id=20, name="n", blocked_until="2026-07-21T02:00:00Z", retries_left=2)
     assert "This pause cost no retry (2 still available for an actual failure)." in body
 
@@ -555,8 +558,8 @@ def test_render_html_contains_summary_outcome_next_and_usage_blocks() -> None:
 
 
 def test_render_html_is_self_contained_no_external_refs() -> None:
-    """§8.4: inline styles only, no external CSS/JS/images -- a mail client
-    strips or refuses all three."""
+    """Self-contained HTML: inline styles only, no external CSS/JS/images --
+    a mail client strips or refuses all three."""
     html = mail.render_html(_facts())
     assert "<link" not in html
     assert "<script" not in html
@@ -624,9 +627,9 @@ def test_build_message_survives_as_string() -> None:
 
 
 def test_build_message_survives_as_string_with_degenerate_facts() -> None:
-    """§8.4's rule for the whole notification path: it must never fail a run.
-    A run with no summary, no result event and no usage must still produce a
-    complete, serialisable message."""
+    """windowsill.notify's rule for the whole notification path: it must
+    never fail a run. A run with no summary, no result event and no usage
+    must still produce a complete, serialisable message."""
     facts = mail.RunFacts(job_id=1, name="n", job_state="failed", outcome="error", summary="", result=None, usage=[])
     message = mail.build_message(facts)
     rendered = message.as_string()

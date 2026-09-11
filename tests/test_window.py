@@ -1,9 +1,9 @@
-"""Tests for windowsill.window -- dispatch policies and window accounting (§5).
+"""Tests for windowsill.window -- dispatch policies and window accounting.
 
 No real clock: every predicate takes an explicit ``now``. The peak-band
 tests build ``now`` already in the band's own zone so the UTC↔local
 conversion under test is exercised without hand-computed offsets. Accounting
-tests run against a real tmp_path DB (the ``window`` ledger, §5.3).
+tests run against a real tmp_path DB (the ``window`` ledger).
 """
 
 from __future__ import annotations
@@ -25,7 +25,8 @@ def make_db(tmp_path: Path) -> sqlite_utils.Database:
 
 
 # ---------------------------------------------------------------------------
-# peak band (§1 secondary benefit; §5.1 offpeak)
+# peak band (design/01-motivation.md's secondary benefit;
+# window.policy_permits's offpeak)
 # ---------------------------------------------------------------------------
 
 
@@ -58,7 +59,7 @@ def test_is_peak_converts_from_utc() -> None:
 
 
 # ---------------------------------------------------------------------------
-# policies (§5.1)
+# policies (window.policy_permits)
 # ---------------------------------------------------------------------------
 
 
@@ -88,7 +89,7 @@ def test_only_fresh_needs_a_probe() -> None:
 
 
 # ---------------------------------------------------------------------------
-# accounting (§5.3)
+# accounting (design/01-motivation.md's 30-day ceiling)
 # ---------------------------------------------------------------------------
 
 

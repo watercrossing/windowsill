@@ -1,8 +1,8 @@
-"""Tests for windowsill.notify -- ntfy + sendmail (design/08-interface.md §8.4).
+"""Tests for windowsill.notify -- ntfy + sendmail.
 
 No network and no sendmail: the HTTP POST and the sendmail invocation are
 both injectable seams the tests replace with spies. The load-bearing contract
-is that **a failed notification is logged and never fails the job** (§8.4), so
+is that **a failed notification is logged and never fails the job**, so
 several tests assert that a raising transport yields a not-ok result rather
 than an exception.
 
@@ -55,7 +55,7 @@ class SendmailSpy:
 
 
 # ---------------------------------------------------------------------------
-# compose (§8.4 body shape)
+# compose (body shape)
 # ---------------------------------------------------------------------------
 
 
@@ -78,9 +78,9 @@ def test_compose_body_omits_delta_when_absent() -> None:
 
 
 def test_compose_body_flags_nonzero_permission_denials() -> None:
-    """§9 "Settled 2026-07-28, second sitting": a run can read "done" with
-    every write refused -- the notification is where the reader would
-    otherwise trust that "done" blind."""
+    """design/decisions/permission-denials-are-counted.md: a run can read
+    "done" with every write refused -- the notification is where the
+    reader would otherwise trust that "done" blind."""
     _, body = notify.compose(job_id=42, name="refactor-auth", state="done", permission_denials=2)
     assert "2 permission denials" in body
 
@@ -102,8 +102,9 @@ def test_compose_body_omits_permission_denials_when_absent() -> None:
 
 
 def test_compose_flags_live_background_work_on_a_blocked_job() -> None:
-    """§7 "blocked": the summary above this line is the run's own closing
-    message, which describes work that had not finished."""
+    """design/decisions/blocked-not-failed.md: the summary above this line
+    is the run's own closing message, which describes work that had not
+    finished."""
     title, body = notify.compose(job_id=16, name="windowsill-updates-1", state="blocked", summary="Two agents are running.", live_tasks=2)
     assert title == "windowsill-updates-1: blocked"
     assert "2 background tasks still running" in body
@@ -195,7 +196,8 @@ def test_rate_limit_ping_goes_out_over_email_as_a_plain_message() -> None:
 
 
 # ---------------------------------------------------------------------------
-# opt-in, and no destination is ever invented (§8.4)
+# opt-in, and no destination is ever invented
+# (design/decisions/notifications-are-opt-in.md)
 # ---------------------------------------------------------------------------
 
 
@@ -253,7 +255,8 @@ def test_email_recipient_from_the_global_config_is_used() -> None:
 
 
 def test_email_recipient_from_the_job_file_alone_is_enough() -> None:
-    """§2.3 `--notify email:<address>`: the global config names nobody."""
+    """README "Scheduler directives" `--notify email:<address>`: the global
+    config names nobody."""
     mail = SendmailSpy()
 
     result = notify.notify("email:me@real.example", "t", "b", config=NO_DESTINATION, run_sendmail=mail, http_post=PostSpy())
@@ -311,7 +314,7 @@ def test_destination_never_guesses() -> None:
 
 
 # ---------------------------------------------------------------------------
-# failure never raises (§8.4)
+# failure never raises
 # ---------------------------------------------------------------------------
 
 

@@ -1,10 +1,11 @@
 """Tests for windowsill.jobfile — directive parsing and pass-through split.
 
-Covers design/02-job-file.md §2 exactly: §2.1's parsing rules (shebang, comments,
+Covers windowsill.jobfile's parsing rules (shebang, comments,
 trailing-``\\`` continuation, ``shlex`` tokenisation, header-terminated-
-by-prose, verbatim body), and §2.2's central design rule — scheduler
+by-prose, verbatim body), and its central design rule — scheduler
 directives are consumed, everything else passes through untouched, in
-argv order, never validated.
+argv order, never validated (design/tensions.md: pass-through beats
+validation).
 
 Pure parsing: these tests only ever read fixture text from disk and feed
 it to ``parse_jobfile``. No network, no subprocess, no clock.
@@ -24,7 +25,7 @@ def _read(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# The §2 example, verbatim — the canonical fixture
+# The README's "The job file" example, verbatim — the canonical fixture
 # ---------------------------------------------------------------------------
 
 
@@ -236,8 +237,8 @@ def test_retry_and_priority_are_ints_and_priority_may_be_negative() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §2.2: --resume shadows the real claude flag; scheduler directives never
-# reach passthrough
+# README "Scheduler directives": --resume shadows the real claude flag;
+# scheduler directives never reach passthrough
 # ---------------------------------------------------------------------------
 
 
@@ -274,8 +275,8 @@ def test_scheduler_directives_never_appear_in_passthrough() -> None:
 
 
 def test_log_is_consumed_as_a_scheduler_directive() -> None:
-    # §2.3 --log: where the rendered transcript is *also* written. Scheduler
-    # directive, so it never reaches claude's argv.
+    # README "Scheduler directives" --log: where the rendered transcript is
+    # *also* written. Scheduler directive, so it never reaches claude's argv.
     jf = parse_jobfile("#$ --log ~/logs/nightly/\n\nbody\n")
 
     assert jf.directives.log == "~/logs/nightly/"
@@ -293,7 +294,7 @@ def test_log_defaults_to_none() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §5.5 --warm / --warm-lead
+# README "`--warm`: spend the tail of one window and roll into the next"
 # ---------------------------------------------------------------------------
 
 
@@ -315,8 +316,8 @@ def test_warm_lead_is_a_value_directive_overriding_the_config_default() -> None:
 
 
 def test_warming_directives_default_to_off() -> None:
-    """§5.5 is opt-in: a job file that says nothing about warming is not a
-    warm job, and carries no lead of its own for the scheduler to prefer
+    """Warming is opt-in: a job file that says nothing about warming is not
+    a warm job, and carries no lead of its own for the scheduler to prefer
     over `[warm].lead`."""
     d = parse_jobfile(_read("basic.md")).directives
 
@@ -325,9 +326,10 @@ def test_warming_directives_default_to_off() -> None:
 
 
 def test_warm_lead_without_warm_is_inert_not_an_error() -> None:
-    """The parser validates nothing (§2.2), and the pair is deliberately not
-    coupled: `--warm-lead` alone records a lead on a job that is not warm,
-    exactly as `--retry 3` records a retry count on a job that may never run."""
+    """The parser validates nothing (design/tensions.md: pass-through beats
+    validation), and the pair is deliberately not coupled: `--warm-lead`
+    alone records a lead on a job that is not warm, exactly as `--retry 3`
+    records a retry count on a job that may never run."""
     d = parse_jobfile("#$ --warm-lead 90m\n\nbody\n").directives
 
     assert d.warm is False
@@ -335,9 +337,10 @@ def test_warm_lead_without_warm_is_inert_not_an_error() -> None:
 
 
 def test_resume_and_resume_from_both_present_is_not_rejected() -> None:
-    # Pass-through beats validation (§0.4): jobfile.py must not reject
-    # this even though §2.3 documents them as mutually exclusive — that
-    # is the scheduler's job, at dispatch time, not the parser's.
+    # Pass-through beats validation (design/tensions.md): jobfile.py must
+    # not reject this even though README "Scheduler directives" documents
+    # them as mutually exclusive — that is the scheduler's job, at dispatch
+    # time, not the parser's.
     text = "#$ --resume conv-1\n#$ --resume-from other-job\n\nbody\n"
     jf = parse_jobfile(text)
 
