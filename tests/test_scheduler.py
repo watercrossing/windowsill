@@ -1254,6 +1254,66 @@ def test_an_unparseable_lead_falls_back_instead_of_breaking_every_tick(tmp_path:
     assert scheduler.warm_lead_seconds({"warm_lead": "thirty minutes"}, None) == 30 * 60
 
 
+def test_a_rate_lead_starts_as_many_minutes_early_as_percent_is_free(tmp_path: Path) -> None:
+    """`1%/min` with 95% free: the tail starts 95 minutes before the reset.
+    A reset 100 minutes away is not in it yet; one 90 minutes away is."""
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True, warm_lead="1%/min")
+
+    early = scheduler.tick(
+        conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=SpawnSpy(),
+        probe=ProbeSpy(open_until="2026-07-21T13:40:00Z", pct_used=5),
+    )
+    assert early.deferred == [job_id]
+    assert warm_events(conn, job_id) == ["waiting for the window tail at 2026-07-21T12:05:00+00:00"]
+
+    late = scheduler.tick(
+        conn, root=tmp_path, config=cfg(1), now="2026-07-21T12:10:00Z", spawn_run=SpawnSpy(),
+        probe=ProbeSpy(open_until="2026-07-21T13:40:00Z", pct_used=5),
+    )
+    assert late.dispatched == [job_id]
+
+
+def test_a_rate_lead_shrinks_when_the_window_is_already_spent(tmp_path: Path) -> None:
+    """70% used leaves 30%: at 2%/min that is a 15-minute tail, so a reset
+    20 minutes away waits and the same job with 1%/min would already go."""
+    conn = make_db(tmp_path)
+    fast = add_job(conn, name="fast", state="ready", warm=True, warm_lead="2%/min")
+    slow = add_job(conn, name="slow", state="ready", warm=True, warm_lead="1%/min")
+
+    result = scheduler.tick(
+        conn, root=tmp_path, config=cfg(2), now=NOW, spawn_run=SpawnSpy(),
+        probe=ProbeSpy(open_until=TAIL_RESET, pct_used=70),
+    )
+
+    assert result.deferred == [fast]
+    assert result.dispatched == [slow]
+
+
+def test_a_rate_lead_can_come_from_config(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True)
+    config = {"queue": {"max_parallel": 1}, "warm": {"lead": "1%/min"}}
+
+    result = scheduler.tick(
+        conn, root=tmp_path, config=config, now=NOW, spawn_run=SpawnSpy(),
+        probe=ProbeSpy(open_until="2026-07-21T13:00:00Z", pct_used=30),
+    )
+
+    assert result.dispatched == [job_id]  # 70 free -> 70 minutes, reset in 60
+
+
+def test_warm_rate_parsing() -> None:
+    assert scheduler.warm_rate("1%/min") == 1.0
+    assert scheduler.warm_rate(" 0.8 % / min ") == 0.8
+    assert scheduler.warm_rate("0%/min") is None
+    assert scheduler.warm_rate("30m") is None
+    assert scheduler.warm_rate(None) is None
+    # A rate needs the window reading; without one there is no lead yet.
+    assert scheduler.warm_lead_seconds({"warm_lead": "1%/min"}, None) is None
+    assert scheduler.warm_lead_seconds({"warm_lead": "1%/min"}, None, pct_free=95) == 95 * 60
+
+
 def test_warm_job_forces_a_probe_even_on_the_share_policy(tmp_path: Path) -> None:
     """A probe only happens when the decision needs one
     (design/decisions/probes-are-free.md) -- and this decision does:

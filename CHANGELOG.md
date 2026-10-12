@@ -13,6 +13,10 @@
   See `design/05-windows.md` §5.5, which includes the measured burn rate this
   queue's own ledger gives for a Pro plan (median 2.76 %/min ⇒ ~36 minutes to
   spend a whole window) and how to re-derive the lead for a Max plan.
+- **A warm lead can be a burn rate** (`--warm-lead 1%/min`, or `[warm].lead`):
+  the tail then starts as many minutes before the reset as the window has
+  percent free at that tick, so a part-spent window gets a shorter run and an
+  empty one gets all of it.
 - **A warm job no longer expires waiting for its tail.** Within
   `[warm].deadline_margin` (default 20m) of its `--before`, a warm job
   dispatches regardless of the tail, `min_pct_free`, or whether a window is

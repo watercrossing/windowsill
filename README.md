@@ -160,7 +160,7 @@ That cuts both ways, and `--model` is where it bites: the name is checked by the
 | `--window <policy>` | `share` | `fresh` \| `share` \| `offpeak` |
 | `--anchor` | false | This is an anchor job: a trivial prompt whose only purpose is to open a window. Does not choose a model — name one with `--model`; `[anchor].model` applies only to the anchors the scheduler spawns for `--warm` |
 | `--warm` | false | Open the window at `--at`, but run the job near the window's end. See below |
-| `--warm-lead <dur>` | config (`30m`) | How long before the window resets a `--warm` job goes |
+| `--warm-lead <dur\|rate>` | config (`30m`) | How long before the window resets a `--warm` job goes. A rate such as `1%/min` makes it proportional to what is left: 95% free means 95 minutes |
 | `--cwd <path>` | submit-time cwd | Working directory. `~` expanded at submit |
 | `--log <path>` | job dir only | Also write the rendered transcript here. A trailing `/` (or an existing directory) means "in there", as `<id>-<name>.md`; otherwise it is the file. Relative to `--cwd` |
 | `--resume <conversation_id>` | — | Continue an explicit conversation |
@@ -210,6 +210,8 @@ deadline_margin = "20m"   # this close to --before, stop waiting and dispatch
 ```
 
 `lead` is the only number worth tuning, and it is a **quota budget** that happens to be measured in minutes. On a Pro plan this queue's own ledger puts the median burn at 2.76 %/min, i.e. about **36 minutes** to spend a whole window — so 30m spends most of one. The errors are not symmetric: too long only costs waiting (a rate-limit requeue consumes no `--retry` and resumes the same conversation), while too short wastes quota permanently. Err long. A Max plan buys more tokens per window at the same wall-clock length, so it needs a **longer** lead, not a shorter one. Measured over 12 runs; to set your own, divide 100 by your observed %/min.
+
+A fixed lead assumes the window is empty when the tail starts. If something else has already spent part of it, give the lead as a burn rate instead: `lead = "1%/min"` (or `--warm-lead 1%/min`) starts the job as many minutes before the reset as there are percent free at that tick, read from the same live probe as `min_pct_free`. Use your observed %/min, as above.
 
 `--warm` cannot be combined with `--window fresh` — warming waits for the tail of an open window and `fresh` waits for there being no window at all, so the pair would defer on every tick forever. `ccsub` refuses it at submit. A warm job has no use for `fresh` regardless: the window it crosses into is empty by construction.
 

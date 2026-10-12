@@ -50,6 +50,7 @@ reads no real clock and touches no real ``~/.windowsill``.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -337,13 +338,35 @@ def warmer_name(parent_name: str) -> str:
     return f"warm-{parent_name}"
 
 
-def warm_lead_seconds(job: Mapping[str, Any], config: Mapping[str, Any] | None) -> float:
+#: A proportional lead: ``"1%/min"`` means "start as many minutes before the
+#: reset as there are percent of the window still free", at that burn rate.
+_RATE_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*%\s*/\s*min\s*$")
+
+
+def warm_rate(value: object) -> float | None:
+    """The burn rate in ``value`` (``"1%/min"`` -> ``1.0``), or ``None`` if it is
+    not a positive rate."""
+    match = _RATE_RE.match(str(value)) if value else None
+    if not match or float(match.group(1)) <= 0:
+        return None
+    return float(match.group(1))
+
+
+def warm_lead_seconds(
+    job: Mapping[str, Any],
+    config: Mapping[str, Any] | None,
+    pct_free: float | None = None,
+) -> float | None:
     """How far before ``reset_at`` this job may go, in seconds.
 
-    ``--warm-lead`` on the job wins over ``[warm].lead``; both are ordinary
-    duration strings, parsed by the one parser this codebase has
+    ``--warm-lead`` on the job wins over ``[warm].lead``; both are either an
+    ordinary duration string, parsed by the one parser this codebase has
     (:func:`windowsill.runner.parse_timeout_seconds`, which also reads
-    ``--timeout`` and ``[window].length``).
+    ``--timeout`` and ``[window].length``), or a burn rate such as
+    ``"1%/min"``. A rate makes the lead track what is left: with 95% of the
+    window free at 1%/min the tail starts 95 minutes before the reset, so a
+    window someone else already half spent gets a shorter run. It needs
+    ``pct_free``; without it a rate gives ``None`` ("cannot tell yet").
 
     An unparseable value falls through to the next source rather than
     raising. This is called inside the dispatch lock: a ``ValueError`` here
@@ -355,6 +378,9 @@ def warm_lead_seconds(job: Mapping[str, Any], config: Mapping[str, Any] | None) 
     for candidate in sources:
         if not candidate:
             continue
+        rate = warm_rate(candidate)
+        if rate is not None:
+            return None if pct_free is None else max(pct_free, 0.0) / rate * 60
         try:
             seconds = runner.parse_timeout_seconds(str(candidate))
         except ValueError:
@@ -553,17 +579,22 @@ def warm_gate(
         _warm_defer(database, result, job, now_str, "window is open but its reset time is not known yet")
         return False
 
-    tail_start = _parse_dt(row["reset_at"]) - timedelta(seconds=warm_lead_seconds(job, config))
-    if now_dt < tail_start:
-        _warm_defer(database, result, job, now_str, f"waiting for the window tail at {tail_start.isoformat()}")
-        return False
-
     # The live reading, not the cached one: the whole decision is "is there
     # anything left in this window worth burning", and a `pct_used` from an
     # hour ago cannot answer that. `probed` is always present here -- a warm
     # candidate forces the tick's probe for this reason -- and the ledger row
     # is only a fallback for a reading that arrived without a percentage.
     pct_used = probed.pct_used if probed is not None and probed.pct_used is not None else row.get("pct_used")
+
+    # A rate lead (`1%/min`) is a function of that reading; with no reading
+    # it is `None` and falls to the "usage is unknown" defer below.
+    lead = warm_lead_seconds(job, config, pct_free=None if pct_used is None else 100 - float(pct_used))
+    if lead is not None:
+        tail_start = _parse_dt(row["reset_at"]) - timedelta(seconds=lead)
+        if now_dt < tail_start:
+            _warm_defer(database, result, job, now_str, f"waiting for the window tail at {tail_start.isoformat()}")
+            return False
+
     min_pct_free = int(_setting(config, "warm", "min_pct_free"))
     if pct_used is None:
         _warm_defer(database, result, job, now_str, "window usage is unknown; not spending the tail blind")
