@@ -486,6 +486,24 @@ def _ensure_warmer(
     _warm_defer(database, result, job, now_str, f"spawned warmer job {warmer_id} to open a window")
 
 
+def _deadline_close(job: Mapping[str, Any], now_dt: datetime, config: Mapping[str, Any] | None) -> bool:
+    """Whether ``now`` is within ``[warm].deadline_margin`` of the job's ``--before``.
+
+    An unparseable margin falls back to the shipped default rather than
+    raising, for the reason :func:`warm_lead_seconds` gives: this runs inside
+    the dispatch lock.
+    """
+    if not job.get("before_time"):
+        return False
+    try:
+        margin = runner.parse_timeout_seconds(str(_setting(config, "warm", "deadline_margin")))
+    except ValueError:
+        margin = None
+    if margin is None:
+        margin = runner.parse_timeout_seconds(config_mod.DEFAULTS["warm"]["deadline_margin"]) or 0.0
+    return now_dt >= _parse_dt(job["before_time"]) - timedelta(seconds=margin)
+
+
 def warm_gate(
     database: sqlite_utils.Database,
     result: TickResult,
@@ -510,7 +528,18 @@ def warm_gate(
     the caller has already applied ``blocked_until``, ``max_parallel``, the
     dependencies and the ceiling, and applies ``--window`` afterwards. A
     ``True`` from here is permission to *keep going*, not permission to run.
+
+    The one exception to "only in the tail": a job with a ``--before`` that
+    is within ``[warm].deadline_margin`` of it goes now, whatever the window
+    says. Every refusal below is a defer, and a defer that outlasts the
+    deadline is an expiry -- the job never runs at all, which is worse than
+    running outside the tail, opening its own window, or starting into a
+    nearly spent one (a rate limit requeues it; an expiry is final).
     """
+    if _deadline_close(job, now_dt, config):
+        _log_warm(database, job["id"], now_str, f"--before {job['before_time']} is close; dispatching without waiting for the tail")
+        return True
+
     if not window_open:
         _ensure_warmer(database, result, job, now_str=now_str, config=config, at_ceiling=at_ceiling, max_sessions=max_sessions)
         return False

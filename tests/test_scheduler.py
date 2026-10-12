@@ -1125,6 +1125,78 @@ def test_min_pct_free_is_read_from_config(tmp_path: Path) -> None:
     assert result.dispatched == [job_id]  # 5% free clears a 5% floor
 
 
+#: Ten minutes after NOW: inside the default 20m `[warm].deadline_margin`.
+CLOSE_DEADLINE = "2026-07-21T12:10:00Z"
+
+
+def test_warm_job_near_its_deadline_dispatches_instead_of_waiting_for_a_late_tail(tmp_path: Path) -> None:
+    """The 22:00 window's tail is hours after the 12:10 deadline. Waiting for
+    it means expiring at 12:10 without ever running; going now does not."""
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True, before_time=CLOSE_DEADLINE)
+
+    result = scheduler.tick(
+        conn,
+        root=tmp_path,
+        config=cfg(1),
+        now=NOW,
+        spawn_run=SpawnSpy(),
+        probe=ProbeSpy(open_until=FUTURE, pct_used=PLENTY_FREE),
+    )
+
+    assert result.dispatched == [job_id]
+    assert "is close" in warm_events(conn, job_id)[-1]
+
+
+def test_warm_job_near_its_deadline_opens_its_own_window_rather_than_warming(tmp_path: Path) -> None:
+    """A warmer would take a tick to open the window and the parent another
+    to follow it; with the deadline this close there is no second tick."""
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True, before_time=CLOSE_DEADLINE)
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=SpawnSpy(), probe=ProbeSpy(open_until=None))
+
+    assert result.dispatched == [job_id]
+    assert db.list_jobs(conn, name="warm-nightly") == []
+
+
+def test_warm_job_near_its_deadline_starts_into_a_spent_window(tmp_path: Path) -> None:
+    """A rate limit requeues the run; an expiry is final."""
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True, before_time=CLOSE_DEADLINE)
+
+    result = scheduler.tick(
+        conn,
+        root=tmp_path,
+        config=cfg(1),
+        now=NOW,
+        spawn_run=SpawnSpy(),
+        probe=ProbeSpy(open_until=TAIL_RESET, pct_used=NEARLY_SPENT),
+    )
+
+    assert result.dispatched == [job_id]
+
+
+def test_warm_job_with_a_distant_deadline_still_waits_for_the_tail(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True, before_time=FUTURE)
+
+    result = scheduler.tick(conn, root=tmp_path, config=cfg(1), now=NOW, spawn_run=SpawnSpy(), probe=ProbeSpy(open_until=FUTURE))
+
+    assert result.deferred == [job_id]
+    assert warm_events(conn, job_id) == ["waiting for the window tail at 2026-07-21T21:30:00+00:00"]
+
+
+def test_deadline_margin_is_read_from_config(tmp_path: Path) -> None:
+    conn = make_db(tmp_path)
+    job_id = add_job(conn, name="nightly", state="ready", warm=True, before_time=CLOSE_DEADLINE)
+    config = {"queue": {"max_parallel": 1}, "warm": {"deadline_margin": "5m"}}
+
+    result = scheduler.tick(conn, root=tmp_path, config=config, now=NOW, spawn_run=SpawnSpy(), probe=ProbeSpy(open_until=FUTURE))
+
+    assert result.deferred == [job_id]  # 10 minutes out is not within 5
+
+
 def test_warm_lead_directive_overrides_the_configured_lead(tmp_path: Path) -> None:
     """The 22:00 window is nowhere near its tail under a 30m lead, but a job
     that asks for ten hours of tail is in it already."""

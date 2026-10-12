@@ -215,8 +215,9 @@ default_isolate = "worktree"
 allow_dirty     = false
 
 [warm]
-lead          = "30m"
-min_pct_free  = 20
+lead            = "30m"
+min_pct_free    = 20
+deadline_margin = "20m"
 
 [notify]
 default       = "email"
@@ -265,7 +266,7 @@ def test_full_example_config_round_trips(tmp_path: Path) -> None:
         "default_isolate": "worktree",
         "allow_dirty": False,
     }
-    assert cfg["warm"] == {"lead": "30m", "min_pct_free": 20}
+    assert cfg["warm"] == {"lead": "30m", "min_pct_free": 20, "deadline_margin": "20m"}
     assert cfg["notify"] == {
         "default": "email",
         "on_rate_limit": True,

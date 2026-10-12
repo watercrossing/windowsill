@@ -13,6 +13,11 @@
   See `design/05-windows.md` §5.5, which includes the measured burn rate this
   queue's own ledger gives for a Pro plan (median 2.76 %/min ⇒ ~36 minutes to
   spend a whole window) and how to re-derive the lead for a Max plan.
+- **A warm job no longer expires waiting for its tail.** Within
+  `[warm].deadline_margin` (default 20m) of its `--before`, a warm job
+  dispatches regardless of the tail, `min_pct_free`, or whether a window is
+  open. Before, a rate lead whose tail receded past the deadline left the job
+  `ready` until it expired, without ever running.
 - **The completion email now covers every attempt, not just the last one.** A
   job that was rate-limited twice and finished on the third try used to send a
   mail describing a three-minute run. It now reports the run count, each

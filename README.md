@@ -204,15 +204,18 @@ At `--at`, the scheduler spawns a throwaway anchor that opens the window and sto
 
 ```toml
 [warm]
-lead         = "30m"   # how much of window one to spend first, expressed as time
-min_pct_free = 20      # below this, defer rather than start a run that cannot finish
+lead            = "30m"   # how much of window one to spend first, expressed as time
+min_pct_free    = 20      # below this, defer rather than start a run that cannot finish
+deadline_margin = "20m"   # this close to --before, stop waiting and dispatch
 ```
 
 `lead` is the only number worth tuning, and it is a **quota budget** that happens to be measured in minutes. On a Pro plan this queue's own ledger puts the median burn at 2.76 %/min, i.e. about **36 minutes** to spend a whole window — so 30m spends most of one. The errors are not symmetric: too long only costs waiting (a rate-limit requeue consumes no `--retry` and resumes the same conversation), while too short wastes quota permanently. Err long. A Max plan buys more tokens per window at the same wall-clock length, so it needs a **longer** lead, not a shorter one. Measured over 12 runs; to set your own, divide 100 by your observed %/min.
 
 `--warm` cannot be combined with `--window fresh` — warming waits for the tail of an open window and `fresh` waits for there being no window at all, so the pair would defer on every tick forever. `ccsub` refuses it at submit. A warm job has no use for `fresh` regardless: the window it crosses into is empty by construction.
 
-Every warming refusal is a *defer*, never a terminal state, so a warm job that never gets its window sits `ready` and quiet rather than failing. `windowsill show <id>` prints the `warm` events explaining which gate held it. Give the job a `--before` if being late makes it worthless.
+Every warming refusal is a *defer*, never a terminal state, so a warm job that never gets its window sits `ready` and quiet rather than failing. `windowsill show <id>` prints the `warm` events explaining which gate held it.
+
+A `--before` on a warm job is a start-by time, and it beats every warming gate. Once the deadline is within `[warm].deadline_margin` the job dispatches on that tick, tail or no tail: into a window that is not in its tail yet, into a nearly spent one, or opening a window of its own if none is open. Running outside the tail costs some quota; expiring costs the run. A rate lead makes this matter, because its tail moves later as the window fills and can drift past the deadline. The margin must exceed the gap between ticks (15 minutes with the cron line above), or the last chance falls between two ticks.
 
 [`examples/07-warm.md`](examples/07-warm.md) is a commented, runnable job file with the tick-by-tick behaviour and the measurements.
 

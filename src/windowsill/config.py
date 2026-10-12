@@ -70,11 +70,19 @@ DEFAULTS: dict[str, Any] = {
     # job is better off waiting for a window of its own than starting one
     # minute of work before a rate limit.
     #
+    # `deadline_margin` overrides both: a warm job with a `--before` stops
+    # waiting once `now` is this close to the deadline and dispatches, rather
+    # than expiring while it waits for a tail that lands too late (a rate lead
+    # shrinks as the window fills, so its tail recedes). The last tick before
+    # the deadline is the last chance, so the margin has to cover the gap
+    # between ticks: a little over the 15-minute cron line in the README.
+    #
     # The warming prompt itself is not configured here -- it is an anchor, and
     # uses `[anchor].model` and `[anchor].body`.
     "warm": {
         "lead": "30m",
         "min_pct_free": 20,
+        "deadline_margin": "20m",
     },
     "safety": {
         # design/decisions/allowed-tools-is-additive.md: `--allowed-tools` was

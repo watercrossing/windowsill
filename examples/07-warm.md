@@ -80,9 +80,13 @@
 #
 #   - `ccstat` in the morning, and `windowsill show <id>` if it is still
 #     `ready`. The `warm` events say which gate held it and why.
-#   - Give it a `--before` if the work is worthless once it is late, so
-#     it expires loudly instead of waiting forever. Write it in UTC with
-#     the `+00:00` offset -- see `03-long-refactor.md` on why.
+#   - Give it a `--before` if the work is worthless once it is late.
+#     Within `[warm].deadline_margin` (20m) of it, the job stops waiting
+#     and dispatches whatever the window says -- outside the tail, into a
+#     spent window, or opening its own -- so it runs late-ish rather than
+#     expiring unrun. It expires only if it cannot dispatch at all (a
+#     busy slot, `blocked_until`). Write it in UTC with the `+00:00`
+#     offset -- see `03-long-refactor.md` on why.
 #
 # `--warm` and `--window fresh` CANNOT be combined: warming waits for an
 # open window to spend the tail of, `fresh` waits for no window at all,
